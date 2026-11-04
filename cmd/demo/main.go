@@ -3,10 +3,11 @@ package main
 import (
 	"log"
 	"time"
+
+	"mux"
 )
 
-// logging 是中间件：调用 c.Next() 进入下游，回来后记录耗时。
-func logging(c *Ctx) error {
+func logging(c *mux.Ctx) error {
 	start := time.Now()
 	err := c.Next()
 	log.Printf("%s %s %v", c.Request.Method, c.Request.URL.Path, time.Since(start))
@@ -14,14 +15,14 @@ func logging(c *Ctx) error {
 }
 
 func main() {
-	r := New()
+	r := mux.New()
 	r.Use(logging)
 
-	r.Get("/health", func(c *Ctx) error {
+	r.Get("/health", func(c *mux.Ctx) error {
 		return c.String(200, "ok")
 	})
 
-	r.Get("/hello/{name}", func(c *Ctx) error {
+	r.Get("/hello/{name}", func(c *mux.Ctx) error {
 		return c.JSON(200, map[string]string{"hello": c.Param("name")})
 	})
 

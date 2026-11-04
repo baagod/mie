@@ -1,6 +1,7 @@
-package main
+package mux
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -21,7 +22,7 @@ func TestRouterResponses(t *testing.T) {
 
 	r.Get("/ok", func(c *Ctx) error { return c.String(http.StatusOK, "ok") })
 	r.Get("/bad", func(c *Ctx) error {
-		return NewHTTPError(http.StatusBadRequest, "bad request")
+		return NewError(http.StatusBadRequest, "bad request")
 	})
 	r.Get("/boom", func(c *Ctx) error { panic("boom") })
 	r.Get("/fail", func(c *Ctx) error { return errors.New("db down") })
@@ -90,7 +91,7 @@ func TestMiddlewareShortCircuit(t *testing.T) {
 	called := false
 	r := New()
 	r.Use(func(c *Ctx) error {
-		return NewHTTPError(http.StatusUnauthorized, "unauthorized")
+		return NewError(http.StatusUnauthorized, "unauthorized")
 	})
 	r.Get("/secret", func(c *Ctx) error {
 		called = true
@@ -109,13 +110,12 @@ func TestMiddlewareShortCircuit(t *testing.T) {
 
 func TestCustomErrorHandler(t *testing.T) {
 	var gotErr error
-	r := New()
-	r.OnError(func(c *Ctx, err error) {
+	r := New(Config{ErrorHandler: func(c *Ctx, err error) {
 		gotErr = err
 		c.Writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		c.Writer.WriteHeader(http.StatusTeapot)
 		c.Writer.Write([]byte("custom"))
-	})
+	}})
 	r.Get("/fail", func(c *Ctx) error { return errors.New("db down") })
 	r.Get("/boom", func(c *Ctx) error { panic("boom") })
 
@@ -129,7 +129,82 @@ func TestCustomErrorHandler(t *testing.T) {
 			t.Fatalf("%s: body = %q, want %q", path, rec.Body.String(), "custom")
 		}
 		if gotErr == nil {
-			t.Fatalf("%s: OnError did not receive an error", path)
+			t.Fatalf("%s: ErrorHandler did not receive an error", path)
 		}
 	}
+}
+
+func TestErrorFunnelEdgeCases(t *testing.T) {
+	t.Run("client canceled writes nothing", func(t *testing.T) {
+		r := New()
+		r.Get("/canceled", func(c *Ctx) error { return context.Canceled })
+
+		rec := do(t, r, http.MethodGet, "/canceled")
+
+		if rec.Code != http.StatusOK || rec.Body.Len() != 0 {
+			t.Fatalf("got status %d body %q, want no response", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("error after direct write does not write again", func(t *testing.T) {
+		r := New()
+		r.Get("/partial", func(c *Ctx) error {
+			if _, err := c.Writer.Write([]byte("partial")); err != nil {
+				return err
+			}
+			return errors.New("boom")
+		})
+
+		rec := do(t, r, http.MethodGet, "/partial")
+
+		if rec.Code != http.StatusOK || rec.Body.String() != "partial" {
+			t.Fatalf("got status %d body %q, want 200 %q", rec.Code, rec.Body.String(), "partial")
+		}
+	})
+
+	t.Run("invalid status falls back to 500", func(t *testing.T) {
+		r := New()
+		r.Get("/bad-status", func(c *Ctx) error { return NewError(0, "oops") })
+
+		rec := do(t, r, http.MethodGet, "/bad-status")
+
+		if rec.Code != http.StatusInternalServerError || rec.Body.String() != "oops\n" {
+			t.Fatalf("got status %d body %q", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("typed nil error falls back to 500", func(t *testing.T) {
+		r := New()
+		r.Get("/typed-nil", func(c *Ctx) error {
+			var e *Error
+			return e
+		})
+
+		rec := do(t, r, http.MethodGet, "/typed-nil")
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500", rec.Code)
+		}
+	})
+
+	t.Run("http.ErrAbortHandler is re-panicked", func(t *testing.T) {
+		r := New()
+		r.Get("/abort", func(c *Ctx) error { panic(http.ErrAbortHandler) })
+
+		panicked := false
+		func() {
+			defer func() {
+				if p := recover(); p != nil {
+					panicked = true
+					if p != http.ErrAbortHandler {
+						t.Fatalf("recovered %v, want http.ErrAbortHandler", p)
+					}
+				}
+			}()
+			do(t, r, http.MethodGet, "/abort")
+		}()
+		if !panicked {
+			t.Fatal("expected http.ErrAbortHandler to propagate")
+		}
+	})
 }
