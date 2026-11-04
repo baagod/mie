@@ -10,7 +10,7 @@ import (
 func logging(c *mux.Ctx, in any) (any, error) {
 	start := time.Now()
 	out, err := c.Next(in)
-	log.Printf("%s %s %v", c.Request.Method, c.Request.URL.Path, time.Since(start))
+	log.Printf("%s %s %v", c.R.Method, c.R.URL.Path, time.Since(start))
 	return out, err
 }
 

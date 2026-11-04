@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"slices"
 	"syscall"
 	"time"
@@ -24,13 +25,18 @@ type Config struct {
 	// ErrorHandler 是响应错误的唯一出口：分类、日志、渲染都只在这里发生。
 	// 为 nil 时使用 defaultErrorHandler。
 	//
-	// panic 不经过这里：内置 Recoverer 直接写 500。
+	// panic 不经过这里：由内置 Recoverer 处理，可用 RecoverHandler 定制。
 	// ServeMux 直接返回的 404/405 由 Router 接管后也走本函数。
 	ErrorHandler func(c *Ctx, err error)
+
+	// RecoverHandler 处理已捕获的 panic，可写自定义响应；不写响应时补通用 500。
+	// 为 nil 时记录默认日志（Panic.Text）并补通用 500。
+	RecoverHandler RecoverHandler
 }
 
 type Router struct {
 	mux         *http.ServeMux
+	recoverer   Handler
 	middlewares []Handler
 	config      Config
 	frozen      bool
@@ -44,29 +50,49 @@ func defaultErrorHandler(c *Ctx, err error) {
 	// 状态码非法时降级为 500：WriteHeader 在状态码不在 100..999 时会 panic。
 	if e, ok := errors.AsType[*Error](err); ok && e != nil {
 		status := e.Status
-		if status < 100 || status > 999 {
+		if status < 200 || status > 599 {
 			status = http.StatusInternalServerError
 		}
-		writeErrorJSON(c, status, e.Msg)
+		respond(c, status, map[string]string{"error": e.Msg})
 		return
 	}
 
 	// 2. 未知错误：记日志，对外只给通用 500，避免泄露内部细节。
 	slog.Error(
 		"request failed",
-		"method", c.Request.Method,
-		"path", c.Request.URL.Path,
+		"method", c.R.Method,
+		"path", c.R.URL.Path,
 		"err", err,
 	)
 
-	writeErrorJSON(c, http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+	respond(c, http.StatusInternalServerError, map[string]string{"error": http.StatusText(http.StatusInternalServerError)})
 }
 
-func writeErrorJSON(c *Ctx, status int, msg string) {
-	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
-	c.Writer.WriteHeader(status)
-	if err := json.NewEncoder(c.Writer).Encode(map[string]string{"error": msg}); err != nil {
-		slog.Error("write error response", "path", c.Request.URL.Path, "err", err)
+// respond 是唯一的 JSON 响应写法，成功与错误路径共用。
+// 先编码到内存，编码成功后才提交状态码与响应体：编码失败时响应尚未写出，
+// 可以安全降级为通用 500；204/304 按 HTTP 语义不写响应体。
+func respond(c *Ctx, status int, v any) {
+	if status == 0 {
+		status = http.StatusOK
+	}
+	if status == http.StatusNoContent || status == http.StatusNotModified || isNoOutput(v) {
+		c.W.WriteHeader(status)
+		return
+	}
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(v); err != nil {
+		slog.Error("encode response", "path", c.R.URL.Path, "err", err)
+		if status != http.StatusInternalServerError {
+			respond(c, http.StatusInternalServerError, map[string]string{"error": http.StatusText(http.StatusInternalServerError)})
+		}
+		return
+	}
+
+	c.W.Header().Set("Content-Type", "application/json; charset=utf-8")
+	c.W.WriteHeader(status)
+	if _, err := c.W.Write(buf.Bytes()); err != nil {
+		slog.Error("write response", "path", c.R.URL.Path, "err", err)
 	}
 }
 
@@ -88,7 +114,8 @@ func New(cfg ...Config) *Router {
 
 	return &Router{
 		mux:         http.NewServeMux(),
-		middlewares: []Handler{Recoverer()},
+		recoverer:   Recoverer(c.RecoverHandler),
+		middlewares: nil,
 		config:      c,
 	}
 }
@@ -103,49 +130,45 @@ func (r *Router) Use(h Handler) {
 
 // Get 注册一个 GET 路由。
 // 处理器签名统一为 func(c *Ctx, in In) (Out, error)：
-//   - 不需要输入时 In 写 struct{}
-//   - 不需要响应体时 Out 写 struct{}（或返回 nil）
+//   - In 写 struct{} 表示不读取请求体（跳过解码，坏 body 也不会报 400）
+//   - Out 写 struct{} 或返回 nil 表示不写响应体；命名空结构体会正常序列化为 {}
 func (r *Router) Get[In, Out any](pattern string, h func(*Ctx, In) (Out, error)) {
-	decode, handler := typed(h)
-	r.register(GET, pattern, decode, handler)
+	r.register(http.MethodGet, pattern, decode[In](), typed(h))
 }
 
 // Post 注册一个 POST 路由，签名规则同 Get。
 func (r *Router) Post[In, Out any](pattern string, h func(*Ctx, In) (Out, error)) {
-	decode, handler := typed(h)
-	r.register(POST, pattern, decode, handler)
+	r.register(http.MethodPost, pattern, decode[In](), typed(h))
 }
 
-// typed 把具体类型的处理器适配成运行时的 Handler，并生成输入解码函数。
-func typed[In, Out any](h func(*Ctx, In) (Out, error)) (func(*Ctx) (any, error), Handler) {
-	decode := func(c *Ctx) (any, error) {
+// decode 把请求体解码成 In，并把结果作为输入传给下一环。
+// In=struct{} 时不读请求体；没有 body 或 body 为空时保留零值。
+func decode[In any]() Handler {
+	return func(c *Ctx, _ any) (any, error) {
 		var in In
-		if _, ok := any(in).(struct{}); ok {
-			return in, nil
-		}
-		if c.Request.Body == nil {
-			return in, nil
+		if _, ok := any(in).(struct{}); ok || c.R.Body == nil {
+			return c.Next(in)
 		}
 
-		dec := json.NewDecoder(http.MaxBytesReader(c.Writer, c.Request.Body, maxBodyBytes))
-		if err := dec.Decode(&in); err != nil {
-			if errors.Is(err, io.EOF) {
-				return in, nil
-			}
+		dec := json.NewDecoder(http.MaxBytesReader(c.W, c.R.Body, maxBodyBytes))
+		if err := dec.Decode(&in); err != nil && !errors.Is(err, io.EOF) {
 			var tooLarge *http.MaxBytesError
 			if errors.As(err, &tooLarge) {
 				return nil, NewError(http.StatusRequestEntityTooLarge, "request body too large")
 			}
-			return nil, err
+			return nil, NewError(http.StatusBadRequest, "invalid request body")
 		}
-		return in, nil
+		return c.Next(in)
 	}
+}
 
-	run := func(c *Ctx, v any) (any, error) {
-		var zero In
+// typed 把具体类型的处理器适配成链上的 Handler；输入已经由 decode 解好。
+func typed[In, Out any](h func(*Ctx, In) (Out, error)) Handler {
+	return func(c *Ctx, v any) (any, error) {
 		in, ok := v.(In)
 		if !ok {
-			return nil, fmt.Errorf("mux: input type %T does not match %T", v, zero)
+			var zero In
+			return nil, NewError(http.StatusInternalServerError, fmt.Sprintf("mux: input type %T does not match %T", v, zero))
 		}
 		out, err := h(c, in)
 		if err != nil {
@@ -153,82 +176,63 @@ func typed[In, Out any](h func(*Ctx, In) (Out, error)) (func(*Ctx) (any, error),
 		}
 		return out, nil
 	}
-
-	return decode, run
 }
 
-func (r *Router) register(method, pattern string, decode func(*Ctx) (any, error), h Handler) {
+func (r *Router) register(method, pattern string, decode Handler, h Handler) {
 	r.frozen = true
 
-	// 链在注册时构造一次，请求期间只读。Recoverer 已在 New 里放进 r.middlewares。
-	chain := slices.Concat(r.middlewares, []Handler{h})
+	// 链在注册时构造一次，请求期间只读。
+	// 顺序：Recoverer → 输入解码 → 用户中间件 → 路由处理器。
+	chain := slices.Concat([]Handler{r.recoverer, decode}, r.middlewares, []Handler{h})
 
 	r.mux.Handle(method+" "+pattern, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		c := &Ctx{
-			Writer:  w,
-			Request: req,
-			index:   -1,
-			chain:   chain,
-		}
+		c := &Ctx{R: req, index: -1, chain: chain}
+		c.W = &committedWriter{ResponseWriter: w, c: c}
 
-		in, err := decode(c)
-		if err != nil {
-			if _, ok := errors.AsType[*Error](err); ok {
-				r.config.ErrorHandler(c, err)
-			} else {
-				r.config.ErrorHandler(c, NewError(http.StatusBadRequest, "invalid request body"))
+		// Recoverer 只覆盖链内 panic；写响应与错误处理器里的 panic 在这一层兜底。
+		defer func() {
+			if p := recover(); p != nil {
+				// net/http 约定：ErrAbortHandler 静默中止响应，继续抛回给 net/http。
+				if p == http.ErrAbortHandler {
+					panic(p)
+				}
+				slog.Error(
+					"panic outside handler chain",
+					"method", req.Method,
+					"path", req.URL.Path,
+					"panic", p,
+					"stack", string(debug.Stack()),
+				)
+				if !c.wrote {
+					respond(c, http.StatusInternalServerError, map[string]string{"error": http.StatusText(http.StatusInternalServerError)})
+				}
 			}
-			return
-		}
+		}()
 
-		out, err := c.Next(in)
+		out, err := c.Next(nil)
 		// panic 已由 Recoverer 记为 500 并处理完，这里只负责结束请求。
 		if errors.Is(err, errRecovered) {
 			return
 		}
 		if err != nil {
+			if c.wrote {
+				slog.Error("handler wrote response before returning an error", "method", req.Method, "path", req.URL.Path, "err", err)
+				return
+			}
 			// 客户端已断开：响应没人收，不进入错误处理。
 			// 只认 context.Canceled；服务端超时（DeadlineExceeded）仍交给 ErrorHandler。
-			if !errors.Is(c.Request.Context().Err(), context.Canceled) {
+			if !errors.Is(c.R.Context().Err(), context.Canceled) {
 				r.config.ErrorHandler(c, err)
 			}
 			return
 		}
 
-		r.write(c, out)
+		if c.wrote {
+			slog.Error("handler wrote response and also returned a value", "method", req.Method, "path", req.URL.Path)
+			return
+		}
+		respond(c, c.status, out)
 	}))
-}
-
-// write 在整条链成功返回后统一写响应，因此处理器无法“响应后再出错”。
-// 先编码到内存再提交，编码失败时响应尚未写出，可以安全交给错误漏斗。
-func (r *Router) write(c *Ctx, out any) {
-	status := c.status
-	if status == 0 {
-		status = http.StatusOK
-	}
-
-	// 204/304 按 HTTP 语义不允许响应体，忽略返回值。
-	if status == http.StatusNoContent || status == http.StatusNotModified {
-		c.Writer.WriteHeader(status)
-		return
-	}
-
-	if isNoOutput(out) {
-		c.Writer.WriteHeader(status)
-		return
-	}
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(out); err != nil {
-		r.config.ErrorHandler(c, err)
-		return
-	}
-
-	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
-	c.Writer.WriteHeader(status)
-	if _, err := c.Writer.Write(buf.Bytes()); err != nil {
-		slog.Error("write response", "path", c.Request.URL.Path, "err", err)
-	}
 }
 
 func isNoOutput(v any) bool {
@@ -296,7 +300,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		w.Header()[k] = vv
 	}
 
-	r.config.ErrorHandler(&Ctx{Writer: w, Request: req, index: -1}, NewError(status, http.StatusText(status)))
+	r.config.ErrorHandler(&Ctx{W: w, R: req, index: -1}, NewError(status, http.StatusText(status)))
 }
 
 // Run 启动服务并在收到中断信号后优雅关停。

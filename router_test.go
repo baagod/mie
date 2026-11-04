@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -18,6 +19,12 @@ func do(t *testing.T, h http.Handler, method, path string) *httptest.ResponseRec
 	h.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
 	return rec
 }
+
+func panicLeaf() { panic("boom") }
+
+func panicMiddle() { panicLeaf() }
+
+func panicTop() { panicMiddle() }
 
 func TestRouterResponses(t *testing.T) {
 	r := New()
@@ -228,9 +235,9 @@ func TestCustomErrorHandler(t *testing.T) {
 	var gotErr error
 	r := New(Config{ErrorHandler: func(c *Ctx, err error) {
 		gotErr = err
-		c.Writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		c.Writer.WriteHeader(http.StatusTeapot)
-		c.Writer.Write([]byte("custom"))
+		c.W.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		c.W.WriteHeader(http.StatusTeapot)
+		c.W.Write([]byte("custom"))
 	}})
 	r.Get("/fail", func(c *Ctx, _ struct{}) (struct{}, error) {
 		return struct{}{}, errors.New("db down")
@@ -324,8 +331,8 @@ func TestNotFoundUsesErrorHandler(t *testing.T) {
 	var got error
 	r := New(Config{ErrorHandler: func(c *Ctx, err error) {
 		got = err
-		c.Writer.WriteHeader(http.StatusNotFound)
-		_, _ = c.Writer.Write([]byte("custom 404"))
+		c.W.WriteHeader(http.StatusNotFound)
+		_, _ = c.W.Write([]byte("custom 404"))
 	}})
 
 	do(t, r, http.MethodGet, "/nope")
@@ -364,7 +371,7 @@ func TestErrorFunnelEdgeCases(t *testing.T) {
 		called := false
 		r := New(Config{ErrorHandler: func(c *Ctx, err error) { called = true }})
 		r.Get("/canceled", func(c *Ctx, _ struct{}) (struct{}, error) {
-			return struct{}{}, c.Request.Context().Err()
+			return struct{}{}, c.R.Context().Err()
 		})
 
 		req := httptest.NewRequest(http.MethodGet, "/canceled", nil)
@@ -385,7 +392,7 @@ func TestErrorFunnelEdgeCases(t *testing.T) {
 
 	t.Run("deadline exceeded still goes through ErrorHandler", func(t *testing.T) {
 		called := false
-		r := New(Config{ErrorHandler: func(c *Ctx, err error) { called = true; http.Error(c.Writer, "timeout", http.StatusGatewayTimeout) }})
+		r := New(Config{ErrorHandler: func(c *Ctx, err error) { called = true; http.Error(c.W, "timeout", http.StatusGatewayTimeout) }})
 		r.Get("/timeout", func(c *Ctx, _ struct{}) (struct{}, error) {
 			return struct{}{}, errors.New("upstream slow")
 		})
@@ -473,15 +480,15 @@ func TestErrorFunnelEdgeCases(t *testing.T) {
 func TestRecovererMiddleware(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c := &Ctx{
-		Writer:  rec,
-		Request: httptest.NewRequest(http.MethodGet, "/panic", nil),
-		index:   -1,
+		W:     rec,
+		R:     httptest.NewRequest(http.MethodGet, "/panic", nil),
+		index: -1,
 		chain: []Handler{func(*Ctx, any) (any, error) {
 			panic("boom")
 		}},
 	}
 
-	out, err := Recoverer()(c, struct{}{})
+	out, err := Recoverer(nil)(c, struct{}{})
 
 	if out != nil {
 		t.Fatalf("out = %v, want nil", out)
@@ -499,9 +506,9 @@ func TestRecovererMiddleware(t *testing.T) {
 
 func TestRecovererRepanicsErrAbortHandler(t *testing.T) {
 	c := &Ctx{
-		Writer:  httptest.NewRecorder(),
-		Request: httptest.NewRequest(http.MethodGet, "/abort", nil),
-		index:   -1,
+		W:     httptest.NewRecorder(),
+		R:     httptest.NewRequest(http.MethodGet, "/abort", nil),
+		index: -1,
 		chain: []Handler{func(*Ctx, any) (any, error) {
 			panic(http.ErrAbortHandler)
 		}},
@@ -513,5 +520,170 @@ func TestRecovererRepanicsErrAbortHandler(t *testing.T) {
 		}
 	}()
 
-	_, _ = Recoverer()(c, struct{}{})
+	_, _ = Recoverer(nil)(c, struct{}{})
+}
+
+func TestRecoverHandlerReceivesPanicInfo(t *testing.T) {
+	var info *Panic
+	r := New(Config{RecoverHandler: func(c *Ctx, p *Panic) {
+		info = p
+		c.W.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		c.W.WriteHeader(http.StatusTeapot)
+		_, _ = c.W.Write([]byte("custom panic"))
+	}})
+	r.Get("/boom", func(c *Ctx, _ struct{}) (struct{}, error) {
+		panicTop()
+		return struct{}{}, nil
+	})
+
+	rec := do(t, r, http.MethodGet, "/boom")
+
+	if rec.Code != http.StatusTeapot || rec.Body.String() != "custom panic" {
+		t.Fatalf("status = %d body = %q, want 418 custom panic", rec.Code, rec.Body.String())
+	}
+	if info == nil {
+		t.Fatal("RecoverHandler did not receive PanicInfo")
+	}
+	if info.Method != http.MethodGet || info.Path != "/boom" {
+		t.Fatalf("method/path = %s %s", info.Method, info.Path)
+	}
+	if len(info.Stacks) != maxPanicFrames {
+		t.Fatalf("stack frames = %d, want %d", len(info.Stacks), maxPanicFrames)
+	}
+	for i, f := range info.Stacks {
+		if f.File == "" || f.Line <= 0 || f.Func == "" {
+			t.Fatalf("frame %d incomplete: %+v", i, f)
+		}
+		if len(f.Source) == 0 {
+			t.Fatalf("frame %d has no source: %+v", i, f)
+		}
+	}
+
+	text := info.Text()
+	for _, want := range []string{"PANIC RECOVERED", "ContentType:", "Error:", "boom", "File: ", "> "} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Text() missing %q:\n%s", want, text)
+		}
+	}
+	if got := strings.Count(text, "File: "); got != maxPanicFrames {
+		t.Fatalf("Text() frame headers = %d, want %d", got, maxPanicFrames)
+	}
+
+	var got struct {
+		Time   string `json:"time"`
+		Method string `json:"method"`
+		Path   string `json:"path"`
+		Error  string `json:"error"`
+		Stack  []struct {
+			File string `json:"file"`
+			Line int    `json:"line"`
+			Func string `json:"func"`
+		} `json:"stack"`
+	}
+	if err := json.Unmarshal([]byte(info.JSON()), &got); err != nil {
+		t.Fatalf("JSON() is not valid JSON: %v", err)
+	}
+	if got.Method != http.MethodGet || got.Path != "/boom" || got.Error != "boom" {
+		t.Fatalf("json = %+v", got)
+	}
+	if len(got.Stack) != len(info.Stacks) {
+		t.Fatalf("json stack = %d, want %d", len(got.Stack), len(info.Stacks))
+	}
+}
+
+func TestRecoverHandlerFallsBackTo500(t *testing.T) {
+	r := New(Config{RecoverHandler: func(c *Ctx, p *Panic) {}})
+	r.Get("/boom", func(c *Ctx, _ struct{}) (struct{}, error) {
+		panic("boom")
+	})
+
+	rec := do(t, r, http.MethodGet, "/boom")
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if rec.Body.String() != "{\"error\":\"Internal Server Error\"}\n" {
+		t.Fatalf("body = %q, want generic 500", rec.Body.String())
+	}
+}
+
+func TestMiddlewareReadingBodyDoesNotBreakDecode(t *testing.T) {
+	type in struct {
+		Name string `json:"name"`
+	}
+	r := New()
+	r.Use(func(c *Ctx, v any) (any, error) {
+		// 中间件读 body 不应影响输入解码：解码已经在中间件之前完成。
+		_, _ = io.ReadAll(c.R.Body)
+		return c.Next(v)
+	})
+	r.Post("/users", func(c *Ctx, i in) (string, error) { return i.Name, nil })
+
+	req := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"ada"}`))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != "\"ada\"\n" {
+		t.Fatalf("status = %d body = %q, want 200 \"ada\"", rec.Code, rec.Body.String())
+	}
+}
+
+type panicMarshaler struct{}
+
+func (panicMarshaler) MarshalJSON() ([]byte, error) { panic("marshal boom") }
+
+func TestWritePanicIsRecovered(t *testing.T) {
+	r := New()
+	r.Get("/x", func(c *Ctx, _ struct{}) (panicMarshaler, error) {
+		return panicMarshaler{}, nil
+	})
+
+	rec := do(t, r, http.MethodGet, "/x")
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if rec.Body.String() != "{\"error\":\"Internal Server Error\"}\n" {
+		t.Fatalf("body = %q, want generic 500", rec.Body.String())
+	}
+}
+
+func TestCommittedResponseSkipsErrorHandler(t *testing.T) {
+	called := false
+	r := New(Config{ErrorHandler: func(c *Ctx, err error) { called = true }})
+	r.Use(func(c *Ctx, in any) (any, error) {
+		c.W.WriteHeader(http.StatusAccepted)
+		return nil, errors.New("late error")
+	})
+	r.Get("/x", func(c *Ctx, _ struct{}) (struct{}, error) { return struct{}{}, nil })
+
+	rec := do(t, r, http.MethodGet, "/x")
+
+	if called {
+		t.Fatal("ErrorHandler must not run after the response is committed")
+	}
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", rec.Code)
+	}
+}
+
+func TestStatusOutOfRangeIsRejected(t *testing.T) {
+	r := New()
+	r.Get("/interim", func(c *Ctx, _ struct{}) (struct{}, error) {
+		c.Status(http.StatusEarlyHints)
+		return struct{}{}, nil
+	})
+	r.Get("/bad-error", func(c *Ctx, _ struct{}) (struct{}, error) {
+		return struct{}{}, NewError(http.StatusEarlyHints, "interim")
+	})
+
+	rec := do(t, r, http.MethodGet, "/interim")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("1xx status = %d, want 500", rec.Code)
+	}
+
+	rec = do(t, r, http.MethodGet, "/bad-error")
+	if rec.Code != http.StatusInternalServerError || rec.Body.String() != "{\"error\":\"interim\"}\n" {
+		t.Fatalf("1xx error = %d %q, want 500 with message", rec.Code, rec.Body.String())
+	}
 }
