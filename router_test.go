@@ -144,7 +144,7 @@ func TestUseAfterRoutePanics(t *testing.T) {
 	r.Use(func(c *Ctx, in any) (any, error) { return c.Next(in) })
 }
 
-func TestInvalidStatusIsCaughtByFunnel(t *testing.T) {
+func TestInvalidStatusIsCaughtByRecoverer(t *testing.T) {
 	r := New()
 	r.Get("/bad-status", func(c *Ctx, _ struct{}) (struct{}, error) {
 		c.Status(99)
@@ -239,18 +239,23 @@ func TestCustomErrorHandler(t *testing.T) {
 		panic("boom")
 	})
 
-	for _, path := range []string{"/fail", "/boom"} {
-		gotErr = nil
-		rec := do(t, r, http.MethodGet, path)
-		if rec.Code != http.StatusTeapot {
-			t.Fatalf("%s: status = %d, want %d", path, rec.Code, http.StatusTeapot)
-		}
-		if rec.Body.String() != "custom" {
-			t.Fatalf("%s: body = %q, want %q", path, rec.Body.String(), "custom")
-		}
-		if gotErr == nil {
-			t.Fatalf("%s: ErrorHandler did not receive an error", path)
-		}
+	gotErr = nil
+	rec := do(t, r, http.MethodGet, "/fail")
+	if rec.Code != http.StatusTeapot || rec.Body.String() != "custom" {
+		t.Fatalf("/fail: status = %d body = %q, want 418 custom", rec.Code, rec.Body.String())
+	}
+	if gotErr == nil {
+		t.Fatal("/fail: ErrorHandler did not receive an error")
+	}
+
+	// panic 不经过 ErrorHandler：由 Recoverer 直接写 500。
+	gotErr = nil
+	rec = do(t, r, http.MethodGet, "/boom")
+	if rec.Code != http.StatusInternalServerError || rec.Body.String() != "{\"error\":\"Internal Server Error\"}\n" {
+		t.Fatalf("/boom: status = %d body = %q, want generic 500", rec.Code, rec.Body.String())
+	}
+	if gotErr != nil {
+		t.Fatalf("/boom: panic should not reach ErrorHandler, got %v", gotErr)
 	}
 }
 
@@ -463,4 +468,50 @@ func TestErrorFunnelEdgeCases(t *testing.T) {
 			t.Fatal("expected http.ErrAbortHandler to propagate")
 		}
 	})
+}
+
+func TestRecovererMiddleware(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c := &Ctx{
+		Writer:  rec,
+		Request: httptest.NewRequest(http.MethodGet, "/panic", nil),
+		index:   -1,
+		chain: []Handler{func(*Ctx, any) (any, error) {
+			panic("boom")
+		}},
+	}
+
+	out, err := Recoverer()(c, struct{}{})
+
+	if out != nil {
+		t.Fatalf("out = %v, want nil", out)
+	}
+	if !errors.Is(err, errRecovered) {
+		t.Fatalf("err = %v, want errRecovered", err)
+	}
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if rec.Body.String() != "{\"error\":\"Internal Server Error\"}\n" {
+		t.Fatalf("body = %q, want generic 500", rec.Body.String())
+	}
+}
+
+func TestRecovererRepanicsErrAbortHandler(t *testing.T) {
+	c := &Ctx{
+		Writer:  httptest.NewRecorder(),
+		Request: httptest.NewRequest(http.MethodGet, "/abort", nil),
+		index:   -1,
+		chain: []Handler{func(*Ctx, any) (any, error) {
+			panic(http.ErrAbortHandler)
+		}},
+	}
+
+	defer func() {
+		if p := recover(); p != http.ErrAbortHandler {
+			t.Fatalf("recovered %v, want http.ErrAbortHandler", p)
+		}
+	}()
+
+	_, _ = Recoverer()(c, struct{}{})
 }
