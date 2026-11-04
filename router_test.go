@@ -834,3 +834,17 @@ func TestTraceIDTooLongIsReplaced(t *testing.T) {
 		t.Fatalf("body trace id %q != header %q", body, header)
 	}
 }
+
+func TestRemoteIP(t *testing.T) {
+	c := &Ctx{R: httptest.NewRequest(http.MethodGet, "/", nil)}
+
+	c.R.RemoteAddr = "192.0.2.10:5678"
+	if got := c.RemoteIP(); got != "192.0.2.10" {
+		t.Fatalf("RemoteIP() = %q, want 192.0.2.10", got)
+	}
+
+	c.R.RemoteAddr = "192.0.2.10"
+	if got := c.RemoteIP(); got != "192.0.2.10" {
+		t.Fatalf("RemoteIP() = %q, want bare address unchanged", got)
+	}
+}
