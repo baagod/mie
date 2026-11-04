@@ -2,11 +2,14 @@ package mux
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 func do(t *testing.T, h http.Handler, method, path string) *httptest.ResponseRecorder {
@@ -18,14 +21,20 @@ func do(t *testing.T, h http.Handler, method, path string) *httptest.ResponseRec
 
 func TestRouterResponses(t *testing.T) {
 	r := New()
-	r.Use(func(c *Ctx) error { return c.Next() })
+	r.Use(func(c *Ctx, in any) (any, error) { return c.Next(in) })
 
-	r.Get("/ok", func(c *Ctx) error { return c.String(http.StatusOK, "ok") })
-	r.Get("/bad", func(c *Ctx) error {
-		return NewError(http.StatusBadRequest, "bad request")
+	r.Get("/ok", func(c *Ctx, _ struct{}) (string, error) {
+		return "ok", nil
 	})
-	r.Get("/boom", func(c *Ctx) error { panic("boom") })
-	r.Get("/fail", func(c *Ctx) error { return errors.New("db down") })
+	r.Get("/bad", func(c *Ctx, _ struct{}) (string, error) {
+		return "", NewError(http.StatusBadRequest, "bad request")
+	})
+	r.Get("/boom", func(c *Ctx, _ struct{}) (struct{}, error) {
+		panic("boom")
+	})
+	r.Get("/fail", func(c *Ctx, _ struct{}) (struct{}, error) {
+		return struct{}{}, errors.New("db down")
+	})
 
 	cases := []struct {
 		name       string
@@ -34,12 +43,12 @@ func TestRouterResponses(t *testing.T) {
 		wantStatus int
 		wantBody   string
 	}{
-		{"ok", "GET", "/ok", http.StatusOK, "ok"},
-		{"http error", "GET", "/bad", http.StatusBadRequest, "bad request\n"},
-		{"panic", "GET", "/boom", http.StatusInternalServerError, "Internal Server Error\n"},
-		{"plain error", "GET", "/fail", http.StatusInternalServerError, "Internal Server Error\n"},
-		{"not found", "GET", "/nope", http.StatusNotFound, "404 page not found\n"},
-		{"method not allowed", "POST", "/ok", http.StatusMethodNotAllowed, ""},
+		{"ok", "GET", "/ok", http.StatusOK, "\"ok\"\n"},
+		{"http error", "GET", "/bad", http.StatusBadRequest, "{\"error\":\"bad request\"}\n"},
+		{"panic", "GET", "/boom", http.StatusInternalServerError, "{\"error\":\"Internal Server Error\"}\n"},
+		{"plain error", "GET", "/fail", http.StatusInternalServerError, "{\"error\":\"Internal Server Error\"}\n"},
+		{"not found", "GET", "/nope", http.StatusNotFound, "{\"error\":\"Not Found\"}\n"},
+		{"method not allowed", "POST", "/ok", http.StatusMethodNotAllowed, "{\"error\":\"Method Not Allowed\"}\n"},
 	}
 
 	for _, tc := range cases {
@@ -58,25 +67,132 @@ func TestRouterResponses(t *testing.T) {
 	}
 }
 
+func TestTypedInputAndOutput(t *testing.T) {
+	type createUser struct {
+		Name string `json:"name"`
+	}
+	type user struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	}
+
+	r := New()
+	r.Post("/users", func(c *Ctx, in createUser) (user, error) {
+		return user{ID: 7, Name: in.Name}, nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"ada"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var got user
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.ID != 7 || got.Name != "ada" {
+		t.Fatalf("got %+v, want {ID:7 Name:ada}", got)
+	}
+}
+
+func TestInvalidBodyIs400(t *testing.T) {
+	type in struct {
+		Name string `json:"name"`
+	}
+
+	r := New()
+	r.Post("/users", func(c *Ctx, i in) (struct{}, error) {
+		return struct{}{}, nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":`))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestStatusOverride(t *testing.T) {
+	r := New()
+	r.Get("/created", func(c *Ctx, _ struct{}) (string, error) {
+		c.Status(http.StatusCreated)
+		return "created", nil
+	})
+
+	rec := do(t, r, http.MethodGet, "/created")
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rec.Code)
+	}
+}
+
+func TestUseAfterRoutePanics(t *testing.T) {
+	r := New()
+	r.Get("/x", func(c *Ctx, _ struct{}) (struct{}, error) { return struct{}{}, nil })
+
+	defer func() {
+		if p := recover(); p == nil {
+			t.Fatal("Use after registering a route should panic")
+		}
+	}()
+	r.Use(func(c *Ctx, in any) (any, error) { return c.Next(in) })
+}
+
+func TestInvalidStatusIsCaughtByFunnel(t *testing.T) {
+	r := New()
+	r.Get("/bad-status", func(c *Ctx, _ struct{}) (struct{}, error) {
+		c.Status(99)
+		return struct{}{}, nil
+	})
+
+	rec := do(t, r, http.MethodGet, "/bad-status")
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}
+
+func TestEncodeFailureUsesFunnel(t *testing.T) {
+	r := New()
+	r.Get("/undecodable", func(c *Ctx, _ struct{}) (chan int, error) {
+		return make(chan int), nil
+	})
+
+	rec := do(t, r, http.MethodGet, "/undecodable")
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if rec.Body.String() != "{\"error\":\"Internal Server Error\"}\n" {
+		t.Fatalf("body = %q, want generic 500", rec.Body.String())
+	}
+}
+
 func TestMiddlewareOrder(t *testing.T) {
 	var got []string
 	r := New()
 
-	r.Use(func(c *Ctx) error {
+	r.Use(func(c *Ctx, in any) (any, error) {
 		got = append(got, "outer-before")
-		err := c.Next()
+		out, err := c.Next(in)
 		got = append(got, "outer-after")
-		return err
+		return out, err
 	})
-	r.Use(func(c *Ctx) error {
+	r.Use(func(c *Ctx, in any) (any, error) {
 		got = append(got, "inner-before")
-		err := c.Next()
+		out, err := c.Next(in)
 		got = append(got, "inner-after")
-		return err
+		return out, err
 	})
-	r.Get("/x", func(c *Ctx) error {
+	r.Get("/x", func(c *Ctx, _ struct{}) (string, error) {
 		got = append(got, "handler")
-		return c.String(http.StatusOK, "x")
+		return "x", nil
 	})
 
 	do(t, r, http.MethodGet, "/x")
@@ -90,12 +206,12 @@ func TestMiddlewareOrder(t *testing.T) {
 func TestMiddlewareShortCircuit(t *testing.T) {
 	called := false
 	r := New()
-	r.Use(func(c *Ctx) error {
-		return NewError(http.StatusUnauthorized, "unauthorized")
+	r.Use(func(c *Ctx, in any) (any, error) {
+		return nil, NewError(http.StatusUnauthorized, "unauthorized")
 	})
-	r.Get("/secret", func(c *Ctx) error {
+	r.Get("/secret", func(c *Ctx, _ struct{}) (struct{}, error) {
 		called = true
-		return nil
+		return struct{}{}, nil
 	})
 
 	rec := do(t, r, http.MethodGet, "/secret")
@@ -116,8 +232,12 @@ func TestCustomErrorHandler(t *testing.T) {
 		c.Writer.WriteHeader(http.StatusTeapot)
 		c.Writer.Write([]byte("custom"))
 	}})
-	r.Get("/fail", func(c *Ctx) error { return errors.New("db down") })
-	r.Get("/boom", func(c *Ctx) error { panic("boom") })
+	r.Get("/fail", func(c *Ctx, _ struct{}) (struct{}, error) {
+		return struct{}{}, errors.New("db down")
+	})
+	r.Get("/boom", func(c *Ctx, _ struct{}) (struct{}, error) {
+		panic("boom")
+	})
 
 	for _, path := range []string{"/fail", "/boom"} {
 		gotErr = nil
@@ -134,50 +254,184 @@ func TestCustomErrorHandler(t *testing.T) {
 	}
 }
 
+func TestNoContentStatus(t *testing.T) {
+	r := New()
+	r.Get("/no-content", func(c *Ctx, _ struct{}) (struct{}, error) {
+		c.Status(http.StatusNoContent)
+		return struct{}{}, nil
+	})
+	r.Get("/no-content-body", func(c *Ctx, _ struct{}) (string, error) {
+		c.Status(http.StatusNoContent)
+		return "ignored", nil
+	})
+
+	for _, path := range []string{"/no-content", "/no-content-body"} {
+		rec := do(t, r, http.MethodGet, path)
+
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("%s: status = %d, want 204", path, rec.Code)
+		}
+		if rec.Body.Len() != 0 {
+			t.Fatalf("%s: body = %q, want empty", path, rec.Body.String())
+		}
+	}
+}
+
+func TestRequestBodyTooLarge(t *testing.T) {
+	type in struct {
+		Name string `json:"name"`
+	}
+
+	r := New()
+	r.Post("/users", func(c *Ctx, i in) (struct{}, error) { return struct{}{}, nil })
+
+	body := `{"name":"` + strings.Repeat("x", maxBodyBytes) + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", rec.Code)
+	}
+	if rec.Body.String() != "{\"error\":\"request body too large\"}\n" {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+}
+
+func TestNextAfterEnd(t *testing.T) {
+	r := New()
+	r.Use(func(c *Ctx, in any) (any, error) {
+		if _, err := c.Next(in); err != nil {
+			return nil, err
+		}
+		return c.Next(in)
+	})
+	r.Get("/x", func(c *Ctx, _ struct{}) (string, error) { return "x", nil })
+
+	rec := do(t, r, http.MethodGet, "/x")
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}
+
+func TestNotFoundUsesErrorHandler(t *testing.T) {
+	var got error
+	r := New(Config{ErrorHandler: func(c *Ctx, err error) {
+		got = err
+		c.Writer.WriteHeader(http.StatusNotFound)
+		_, _ = c.Writer.Write([]byte("custom 404"))
+	}})
+
+	do(t, r, http.MethodGet, "/nope")
+
+	he, ok := got.(*Error)
+	if !ok || he.Status != http.StatusNotFound {
+		t.Fatalf("error = %v, want *Error 404", got)
+	}
+}
+
+func TestEmptyStructSentinel(t *testing.T) {
+	type empty struct{}
+
+	r := New()
+	r.Get("/named", func(c *Ctx, _ struct{}) (empty, error) { return empty{}, nil })
+	r.Get("/any", func(c *Ctx, _ struct{}) (any, error) { return struct{}{}, nil })
+	r.Post("/no-input", func(c *Ctx, _ struct{}) (struct{}, error) { return struct{}{}, nil })
+
+	if rec := do(t, r, http.MethodGet, "/named"); rec.Body.String() != "{}\n" {
+		t.Fatalf("named empty struct body = %q, want {}\\n", rec.Body.String())
+	}
+	if rec := do(t, r, http.MethodGet, "/any"); rec.Body.String() != "" {
+		t.Fatalf("any(struct{}) body = %q, want empty", rec.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/no-input", strings.NewReader(`{bad`))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("In=struct{} status = %d, want 200 (body skipped)", rec.Code)
+	}
+}
+
 func TestErrorFunnelEdgeCases(t *testing.T) {
-	t.Run("client canceled writes nothing", func(t *testing.T) {
-		r := New()
-		r.Get("/canceled", func(c *Ctx) error { return context.Canceled })
+	t.Run("canceled request skips ErrorHandler", func(t *testing.T) {
+		called := false
+		r := New(Config{ErrorHandler: func(c *Ctx, err error) { called = true }})
+		r.Get("/canceled", func(c *Ctx, _ struct{}) (struct{}, error) {
+			return struct{}{}, c.Request.Context().Err()
+		})
 
-		rec := do(t, r, http.MethodGet, "/canceled")
+		req := httptest.NewRequest(http.MethodGet, "/canceled", nil)
+		ctx, cancel := context.WithCancel(req.Context())
+		cancel()
+		req = req.WithContext(ctx)
 
-		if rec.Code != http.StatusOK || rec.Body.Len() != 0 {
-			t.Fatalf("got status %d body %q, want no response", rec.Code, rec.Body.String())
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		if called {
+			t.Fatal("ErrorHandler called for canceled request")
+		}
+		if rec.Body.Len() != 0 {
+			t.Fatalf("body = %q, want empty", rec.Body.String())
 		}
 	})
 
-	t.Run("error after direct write does not write again", func(t *testing.T) {
-		r := New()
-		r.Get("/partial", func(c *Ctx) error {
-			if _, err := c.Writer.Write([]byte("partial")); err != nil {
-				return err
-			}
-			return errors.New("boom")
+	t.Run("deadline exceeded still goes through ErrorHandler", func(t *testing.T) {
+		called := false
+		r := New(Config{ErrorHandler: func(c *Ctx, err error) { called = true; http.Error(c.Writer, "timeout", http.StatusGatewayTimeout) }})
+		r.Get("/timeout", func(c *Ctx, _ struct{}) (struct{}, error) {
+			return struct{}{}, errors.New("upstream slow")
 		})
 
-		rec := do(t, r, http.MethodGet, "/partial")
+		req := httptest.NewRequest(http.MethodGet, "/timeout", nil)
+		ctx, cancel := context.WithDeadline(req.Context(), time.Now().Add(-time.Second))
+		defer cancel()
+		req = req.WithContext(ctx)
 
-		if rec.Code != http.StatusOK || rec.Body.String() != "partial" {
-			t.Fatalf("got status %d body %q, want 200 %q", rec.Code, rec.Body.String(), "partial")
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		if !called {
+			t.Fatal("ErrorHandler skipped for DeadlineExceeded request")
+		}
+		if rec.Code != http.StatusGatewayTimeout {
+			t.Fatalf("status = %d, want 504", rec.Code)
+		}
+	})
+
+	t.Run("context.Canceled with live request is a normal error", func(t *testing.T) {
+		r := New()
+		r.Get("/canceled", func(c *Ctx, _ struct{}) (struct{}, error) {
+			return struct{}{}, context.Canceled
+		})
+
+		rec := do(t, r, http.MethodGet, "/canceled")
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500", rec.Code)
 		}
 	})
 
 	t.Run("invalid status falls back to 500", func(t *testing.T) {
 		r := New()
-		r.Get("/bad-status", func(c *Ctx) error { return NewError(0, "oops") })
+		r.Get("/bad-status", func(c *Ctx, _ struct{}) (struct{}, error) {
+			return struct{}{}, NewError(0, "oops")
+		})
 
 		rec := do(t, r, http.MethodGet, "/bad-status")
 
-		if rec.Code != http.StatusInternalServerError || rec.Body.String() != "oops\n" {
+		if rec.Code != http.StatusInternalServerError || rec.Body.String() != "{\"error\":\"oops\"}\n" {
 			t.Fatalf("got status %d body %q", rec.Code, rec.Body.String())
 		}
 	})
 
 	t.Run("typed nil error falls back to 500", func(t *testing.T) {
 		r := New()
-		r.Get("/typed-nil", func(c *Ctx) error {
+		r.Get("/typed-nil", func(c *Ctx, _ struct{}) (struct{}, error) {
 			var e *Error
-			return e
+			return struct{}{}, e
 		})
 
 		rec := do(t, r, http.MethodGet, "/typed-nil")
@@ -189,7 +443,9 @@ func TestErrorFunnelEdgeCases(t *testing.T) {
 
 	t.Run("http.ErrAbortHandler is re-panicked", func(t *testing.T) {
 		r := New()
-		r.Get("/abort", func(c *Ctx) error { panic(http.ErrAbortHandler) })
+		r.Get("/abort", func(c *Ctx, _ struct{}) (struct{}, error) {
+			panic(http.ErrAbortHandler)
+		})
 
 		panicked := false
 		func() {
