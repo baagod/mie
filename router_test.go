@@ -2,6 +2,7 @@ package mux
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -547,6 +548,9 @@ func TestRecoverHandlerReceivesPanicInfo(t *testing.T) {
 	if info.Method != http.MethodGet || info.Path != "/boom" {
 		t.Fatalf("method/path = %s %s", info.Method, info.Path)
 	}
+	if info.TraceID == "" || info.TraceID != rec.Header().Get(HeaderXRequestID) {
+		t.Fatalf("trace id = %q, response header = %q", info.TraceID, rec.Header().Get(HeaderXRequestID))
+	}
 	if len(info.Stacks) != maxPanicFrames {
 		t.Fatalf("stack frames = %d, want %d", len(info.Stacks), maxPanicFrames)
 	}
@@ -685,5 +689,148 @@ func TestStatusOutOfRangeIsRejected(t *testing.T) {
 	rec = do(t, r, http.MethodGet, "/bad-error")
 	if rec.Code != http.StatusInternalServerError || rec.Body.String() != "{\"error\":\"interim\"}\n" {
 		t.Fatalf("1xx error = %d %q, want 500 with message", rec.Code, rec.Body.String())
+	}
+}
+
+func TestTraceIDReusesRequestHeader(t *testing.T) {
+	var seen string
+	r := New()
+	r.Get("/x", func(c *Ctx, _ struct{}) (string, error) {
+		seen = c.TraceID()
+		return c.TraceID(), nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	req.Header.Set(HeaderXRequestID, "req-123")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if seen != "req-123" {
+		t.Fatalf("TraceID() = %q, want req-123", seen)
+	}
+	if rec.Header().Get(HeaderXRequestID) != "req-123" {
+		t.Fatalf("response header = %q, want req-123", rec.Header().Get(HeaderXRequestID))
+	}
+	if rec.Body.String() != "\"req-123\"\n" {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+}
+
+func TestTraceIDIsGeneratedAndEchoed(t *testing.T) {
+	r := New()
+	r.Get("/x", func(c *Ctx, _ struct{}) (string, error) { return c.TraceID(), nil })
+
+	var ids []string
+	for range 2 {
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
+
+		header := rec.Header().Get(HeaderXRequestID)
+		if header == "" {
+			t.Fatal("generated trace id missing from response header")
+		}
+		if len(header) != 32 {
+			t.Fatalf("trace id %q length = %d, want 32", header, len(header))
+		}
+		if _, err := hex.DecodeString(header); err != nil {
+			t.Fatalf("trace id %q is not hex: %v", header, err)
+		}
+		var body string
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("body: %v", err)
+		}
+		if body != header {
+			t.Fatalf("body trace id %q != header %q", body, header)
+		}
+		ids = append(ids, header)
+	}
+	if ids[0] == ids[1] {
+		t.Fatal("two requests got the same generated trace id")
+	}
+}
+
+func TestTraceIDOnNotFound(t *testing.T) {
+	r := New()
+	rec := do(t, r, http.MethodGet, "/nope")
+
+	if rec.Header().Get(HeaderXRequestID) == "" {
+		t.Fatal("404 response missing trace id header")
+	}
+}
+
+func TestHeaderAccess(t *testing.T) {
+	r := New()
+	r.Get("/x", func(c *Ctx, _ struct{}) (string, error) {
+		c.SetHeader("X-Resp", "set")
+		return c.Header("X-Req"), nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	req.Header.Set("X-Req", "req")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("X-Resp"); got != "set" {
+		t.Fatalf("response header = %q, want set", got)
+	}
+
+	var body string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	if body != "req" {
+		t.Fatalf("body = %q, want req", body)
+	}
+}
+
+func TestHeaderDefault(t *testing.T) {
+	r := New()
+	r.Get("/fallback", func(c *Ctx, _ struct{}) (string, error) {
+		return c.Header("X-Missing", "fallback"), nil
+	})
+	r.Get("/empty", func(c *Ctx, _ struct{}) (string, error) {
+		return c.Header("X-Missing"), nil
+	})
+
+	cases := []struct {
+		path string
+		want string
+	}{
+		{"/fallback", "\"fallback\"\n"},
+		{"/empty", "\"\"\n"},
+	}
+	for _, tc := range cases {
+		rec := do(t, r, http.MethodGet, tc.path)
+		if got := rec.Body.String(); got != tc.want {
+			t.Fatalf("%s body = %q, want %q", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestTraceIDTooLongIsReplaced(t *testing.T) {
+	long := strings.Repeat("a", maxTraceIDLen+1)
+
+	r := New()
+	r.Get("/x", func(c *Ctx, _ struct{}) (string, error) { return c.TraceID(), nil })
+
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	req.Header.Set(HeaderXRequestID, long)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	header := rec.Header().Get(HeaderXRequestID)
+	if header == long {
+		t.Fatal("too-long client id was reused")
+	}
+	if len(header) != 32 {
+		t.Fatalf("trace id %q length = %d, want 32", header, len(header))
+	}
+
+	var body string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	if body != header {
+		t.Fatalf("body trace id %q != header %q", body, header)
 	}
 }

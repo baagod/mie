@@ -1,9 +1,11 @@
 package mux
 
 import (
-	"errors"
-	"fmt"
-	"net/http"
+    "crypto/rand"
+    "encoding/hex"
+    "errors"
+    "fmt"
+    "net/http"
 )
 
 // Handler 是中间件与路由在运行时的统一签名：输入与输出都用 any 传输。
@@ -14,31 +16,65 @@ type Handler func(c *Ctx, in any) (any, error)
 
 // Ctx 贯穿整条请求链。
 type Ctx struct {
-	W http.ResponseWriter
-	R *http.Request
+    W http.ResponseWriter
+    R *http.Request
 
-	chain  []Handler
-	index  int
-	status int
-	wrote  bool
+    chain   []Handler
+    index   int
+    status  int
+    wrote   bool
+    traceid string
+}
+
+// TraceID 返回本次请求的关联 ID：优先用请求头 X-Request-Id，
+// 没有（或过长）时生成本次请求专属的随机 ID。
+func (c *Ctx) TraceID() string { return c.traceid }
+
+// Header 读取请求头；头不存在（或值为空）时返回 d 的第一个值，未传则返回空串。
+func (c *Ctx) Header(name string, d ...string) string {
+    v := c.R.Header.Get(name)
+    if v == "" && len(d) > 0 {
+        v = d[0]
+    }
+    return v
+}
+
+// SetHeader 设置响应头，例如 c.SetHeader("X-Request-Id", c.TraceID())。
+func (c *Ctx) SetHeader(name, value string) { c.W.Header().Set(name, value) }
+
+// NewCtx 创建请求上下文：确定 TraceID、包装 committedWriter、回写响应头。
+// TraceID 优先复用请求头 X-Request-Id；缺失或超过 maxTraceIDLen 时取 16 字节
+// 随机数，编码为 32 位小写十六进制（与 W3C trace-id 格式一致）。
+func NewCtx(w http.ResponseWriter, req *http.Request) *Ctx {
+    c := &Ctx{R: req, index: -1, traceid: req.Header.Get(HeaderXRequestID)}
+    c.W = &committedWriter{ResponseWriter: w, c: c}
+
+    if c.traceid == "" || len(c.traceid) > maxTraceIDLen {
+        var b [16]byte
+        _, _ = rand.Read(b[:])
+        c.traceid = hex.EncodeToString(b[:])
+    }
+
+    c.SetHeader(HeaderXRequestID, c.traceid)
+    return c
 }
 
 // Next 执行链上的下一个 Handler，并把输入原样传下去。
 func (c *Ctx) Next(in any) (any, error) {
-	c.index++
-	if c.index >= len(c.chain) {
-		return nil, errors.New("mux: Next called after the end of the chain")
-	}
-	return c.chain[c.index](c, in)
+    c.index++
+    if c.index >= len(c.chain) {
+        return nil, errors.New("mux: Next called after the end of the chain")
+    }
+    return c.chain[c.index](c, in)
 }
 
 // Status 覆盖默认的 200。非法状态码立即 panic，由 recoverer 转成 error，
 // 避免走到 WriteHeader 时才在链外 panic。
 func (c *Ctx) Status(code int) {
-	if code < 200 || code > 599 {
-		panic(fmt.Sprintf("mux: invalid status code %d", code))
-	}
-	c.status = code
+    if code < 200 || code > 599 {
+        panic(fmt.Sprintf("mux: invalid status code %d", code))
+    }
+    c.status = code
 }
 
 // Param 读取路径参数（Go 1.22+ 路由模式里的 {name}）。
@@ -47,24 +83,24 @@ func (c *Ctx) Param(name string) string { return c.R.PathValue(name) }
 // committedWriter 记录响应是否已经提交：处理器直接写 W 后再返回 error 时，
 // 错误漏斗据此跳过第二次写，避免状态码与 body 被拼坏。
 type committedWriter struct {
-	http.ResponseWriter
-	c *Ctx
+    http.ResponseWriter
+    c *Ctx
 }
 
 func (w *committedWriter) WriteHeader(code int) {
-	w.c.wrote = true
-	w.ResponseWriter.WriteHeader(code)
+    w.c.wrote = true
+    w.ResponseWriter.WriteHeader(code)
 }
 
 func (w *committedWriter) Write(p []byte) (int, error) {
-	w.c.wrote = true
-	return w.ResponseWriter.Write(p)
+    w.c.wrote = true
+    return w.ResponseWriter.Write(p)
 }
 
 func (w *committedWriter) Flush() {
-	if f, ok := w.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
+    if f, ok := w.ResponseWriter.(http.Flusher); ok {
+        f.Flush()
+    }
 }
 
 func (w *committedWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

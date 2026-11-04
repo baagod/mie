@@ -186,8 +186,8 @@ func (r *Router) register(method, pattern string, decode Handler, h Handler) {
 	chain := slices.Concat([]Handler{r.recoverer, decode}, r.middlewares, []Handler{h})
 
 	r.mux.Handle(method+" "+pattern, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		c := &Ctx{R: req, index: -1, chain: chain}
-		c.W = &committedWriter{ResponseWriter: w, c: c}
+		c := NewCtx(w, req)
+		c.chain = chain
 
 		// Recoverer 只覆盖链内 panic；写响应与错误处理器里的 panic 在这一层兜底。
 		defer func() {
@@ -300,7 +300,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		w.Header()[k] = vv
 	}
 
-	r.config.ErrorHandler(&Ctx{W: w, R: req, index: -1}, NewError(status, http.StatusText(status)))
+	r.config.ErrorHandler(NewCtx(w, req), NewError(status, http.StatusText(status)))
 }
 
 // Run 启动服务并在收到中断信号后优雅关停。

@@ -52,9 +52,9 @@ func newPanicInfo(c *Ctx, value any) *Panic {
 		Method:      c.R.Method,
 		Host:        c.R.Host,
 		Path:        c.R.URL.Path,
-		ContentType: c.R.Header.Get("Content-Type"),
+		ContentType: c.R.Header.Get(HeaderContentType),
 		IP:          remoteIP(c.R),
-		TraceID:     firstHeader(c.R, "X-Request-Id", "X-Trace-Id"),
+		TraceID:     c.TraceID(),
 		Error:       fmt.Sprint(value),
 		Stacks:      captureFrames(),
 	}
@@ -66,15 +66,6 @@ func remoteIP(req *http.Request) string {
 		return req.RemoteAddr
 	}
 	return host
-}
-
-func firstHeader(req *http.Request, names ...string) string {
-	for _, name := range names {
-		if v := req.Header.Get(name); v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 // captureFrames 从 recover 点向上取前几个用户帧，跳过运行时、net/http 与 mux 自身的帧。
