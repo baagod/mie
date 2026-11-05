@@ -47,6 +47,16 @@ func newCapabilityCtx() (*Ctx, *capabilityWriter) {
 
 type plainWriter struct{ http.ResponseWriter }
 
+// headerCodeSpy 只记录状态码；httptest.ResponseRecorder 在 101 之后会拒绝 body。
+type headerCodeSpy struct {
+    h     http.Header
+    codes []int
+}
+
+func (s *headerCodeSpy) Header() http.Header         { return s.h }
+func (s *headerCodeSpy) WriteHeader(code int)        { s.codes = append(s.codes, code) }
+func (s *headerCodeSpy) Write(p []byte) (int, error) { return len(p), nil }
+
 func TestWriterFlushForwards(t *testing.T) {
     c, cw := newCapabilityCtx()
     c.W.Flush()
@@ -241,6 +251,24 @@ func TestWriterStatusSwitchingProtocols(t *testing.T) {
     c.W.WriteHeader(http.StatusSwitchingProtocols)
     if got := c.W.StatusCode(); got != http.StatusSwitchingProtocols {
         t.Fatalf("StatusCode = %d, want 101", got)
+    }
+}
+
+// 101 是最终状态：之后再写 body 不能再补一个 200 头。
+func TestWriterSwitchingProtocolsIsFinal(t *testing.T) {
+    spy := &headerCodeSpy{h: http.Header{}}
+    c := NewCtx(spy, httptest.NewRequest(http.MethodGet, "/", nil))
+
+    c.W.WriteHeader(http.StatusSwitchingProtocols)
+    if _, err := c.W.Write([]byte("x")); err != nil {
+        t.Fatal(err)
+    }
+
+    if got := c.W.StatusCode(); got != http.StatusSwitchingProtocols {
+        t.Fatalf("StatusCode after 101 then Write = %d, want 101", got)
+    }
+    if len(spy.codes) != 1 || spy.codes[0] != http.StatusSwitchingProtocols {
+        t.Fatalf("wire codes = %v, want [101]", spy.codes)
     }
 }
 
