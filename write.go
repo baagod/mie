@@ -12,7 +12,8 @@ import (
 // ResponseWriter 转发底层 writer 的 HTTP 写接口与常用可选能力；底层 writer 不可达。
 type ResponseWriter struct {
     w           http.ResponseWriter
-    status      int // 最近一次写出的状态码
+    status      int   // 最近一次写出的状态码
+    size        int64 // 已写入的响应体字节数
     wroteHeader bool
     hijacked    bool
 }
@@ -27,6 +28,9 @@ func (w *ResponseWriter) StatusCode() int {
     }
     return http.StatusOK
 }
+
+// Size 返回已写入的响应体字节数，不含响应头；Hijack 后直接写连接的字节不计入。
+func (w *ResponseWriter) Size() int64 { return w.size }
 
 func (w *ResponseWriter) Header() http.Header { return w.w.Header() }
 
@@ -48,12 +52,16 @@ func (w *ResponseWriter) WriteHeader(code int) {
 
 func (w *ResponseWriter) Write(p []byte) (int, error) {
     w.commit()
-    return w.w.Write(p)
+    n, err := w.w.Write(p)
+    w.size += int64(n)
+    return n, err
 }
 
 func (w *ResponseWriter) WriteString(s string) (int, error) {
     w.commit()
-    return io.WriteString(w.w, s)
+    n, err := io.WriteString(w.w, s)
+    w.size += int64(n)
+    return n, err
 }
 
 // Flush 丢弃底层错误；需要错误时用 FlushError。
@@ -90,8 +98,11 @@ func (w *ResponseWriter) Hijack() (conn net.Conn, rw *bufio.ReadWriter, err erro
 func (w *ResponseWriter) ReadFrom(src io.Reader) (int64, error) {
     w.commit()
     if rf, ok := w.w.(io.ReaderFrom); ok {
-        return rf.ReadFrom(src)
+        n, err := rf.ReadFrom(src)
+        w.size += n
+        return n, err
     }
+    // fallback 的字节数由 Write 累加，这里不能重复加。
     return io.Copy(struct{ io.Writer }{w}, src)
 }
 

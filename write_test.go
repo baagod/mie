@@ -67,6 +67,9 @@ func TestWriterHijackForwards(t *testing.T) {
     if !cw.hijacked {
         t.Fatal("underlying Hijack was not called")
     }
+    if got := c.W.Size(); got != 0 {
+        t.Fatalf("Size after Hijack = %d, want 0", got)
+    }
 }
 
 func TestWriterReadFromForwards(t *testing.T) {
@@ -77,6 +80,9 @@ func TestWriterReadFromForwards(t *testing.T) {
     }
     if n != 5 || !cw.readFrom {
         t.Fatalf("n = %d, readFrom = %v", n, cw.readFrom)
+    }
+    if got := c.W.Size(); got != 5 {
+        t.Fatalf("Size = %d, want 5", got)
     }
     if got := cw.Body.String(); got != "hello" {
         t.Fatalf("body = %q", got)
@@ -290,5 +296,71 @@ func TestStatusRejectsInvalidCode(t *testing.T) {
             }()
             c.Status(code)
         })
+    }
+}
+
+func TestWriterSize(t *testing.T) {
+    rec := httptest.NewRecorder()
+    c := NewCtx(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+    if got := c.W.Size(); got != 0 {
+        t.Fatalf("Size before write = %d, want 0", got)
+    }
+    if _, err := c.W.Write([]byte("abc")); err != nil {
+        t.Fatal(err)
+    }
+    if _, err := c.W.WriteString("de"); err != nil {
+        t.Fatal(err)
+    }
+    if _, err := c.W.ReadFrom(strings.NewReader("fg")); err != nil {
+        t.Fatal(err)
+    }
+
+    if got := c.W.Size(); got != 7 {
+        t.Fatalf("Size = %d, want 7", got)
+    }
+    if got := c.Size(); got != 7 {
+        t.Fatalf("Ctx.Size = %d, want 7", got)
+    }
+    if got := rec.Body.String(); got != "abcdefg" {
+        t.Fatalf("body = %q, want abcdefg", got)
+    }
+}
+
+func TestWriterSizeReadFromFallback(t *testing.T) {
+    rec := httptest.NewRecorder()
+    c := NewCtx(&plainWriter{rec}, httptest.NewRequest(http.MethodGet, "/", nil))
+
+    n, err := c.W.ReadFrom(strings.NewReader("fallback"))
+    if err != nil {
+        t.Fatal(err)
+    }
+    if n != 8 || c.W.Size() != 8 {
+        t.Fatalf("n = %d, size = %d, want 8", n, c.W.Size())
+    }
+}
+
+// partialWriter 只写出前 2 个字节就返回错误，用来验证 Size 按实际 n 累加。
+type partialWriter struct{ http.ResponseWriter }
+
+func (w *partialWriter) Write(p []byte) (int, error) {
+    n := len(p)
+    if n > 2 {
+        n = 2
+    }
+    _, _ = w.ResponseWriter.Write(p[:n])
+    return n, io.ErrShortWrite
+}
+
+func TestWriterSizePartialWrite(t *testing.T) {
+    rec := httptest.NewRecorder()
+    c := NewCtx(&partialWriter{rec}, httptest.NewRequest(http.MethodGet, "/", nil))
+
+    n, err := c.W.Write([]byte("hello"))
+    if n != 2 || err != io.ErrShortWrite {
+        t.Fatalf("n = %d, err = %v, want 2, ErrShortWrite", n, err)
+    }
+    if got := c.W.Size(); got != 2 {
+        t.Fatalf("Size = %d, want 2", got)
     }
 }

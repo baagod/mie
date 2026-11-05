@@ -77,4 +77,9 @@ func (c *Ctx) StatusCode() int {
     return c.W.StatusCode()
 }
 
+// Size 返回已写入的响应体字节数，不含响应头。
+func (c *Ctx) Size() int64 {
+    return c.W.Size()
+}
+
 func (c *Ctx) Param(name string) string { return c.R.PathValue(name) }
