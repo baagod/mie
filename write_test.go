@@ -380,3 +380,68 @@ func TestWriterSizePartialWrite(t *testing.T) {
         t.Fatalf("Size = %d, want 2", got)
     }
 }
+
+func TestWriterWriteAfterHijack(t *testing.T) {
+    c, cw := newCapabilityCtx()
+    if _, _, err := c.W.Hijack(); err != nil {
+        t.Fatal(err)
+    }
+
+    tests := []struct {
+        name string
+        call func() (int64, error)
+    }{
+        {"Write", func() (int64, error) { n, err := c.W.Write([]byte("x")); return int64(n), err }},
+        {"WriteString", func() (int64, error) { n, err := c.W.WriteString("x"); return int64(n), err }},
+        {"ReadFrom", func() (int64, error) { return c.W.ReadFrom(strings.NewReader("x")) }},
+    }
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            n, err := tt.call()
+            if n != 0 || err != http.ErrHijacked {
+                t.Fatalf("n = %d, err = %v, want 0, ErrHijacked", n, err)
+            }
+        })
+    }
+
+    if cw.Body.Len() != 0 {
+        t.Fatalf("body = %q, want empty", cw.Body.String())
+    }
+    if got := c.W.Size(); got != 0 {
+        t.Fatalf("Size = %d, want 0", got)
+    }
+}
+
+func TestWriterWriteHeaderAfterHijack(t *testing.T) {
+    c, cw := newCapabilityCtx()
+    if _, _, err := c.W.Hijack(); err != nil {
+        t.Fatal(err)
+    }
+
+    c.W.WriteHeader(http.StatusCreated)
+    c.W.WriteHeader(1000) // 非法码也不 panic
+
+    if got := cw.ResponseRecorder.Code; got != http.StatusOK {
+        t.Fatalf("wire status = %d, want 200 (underlying must not be called)", got)
+    }
+    if got := c.W.StatusCode(); got != 0 {
+        t.Fatalf("StatusCode = %d, want 0", got)
+    }
+}
+
+func TestWriterFlushAfterHijackForwards(t *testing.T) {
+    c, cw := newCapabilityCtx()
+    if _, _, err := c.W.Hijack(); err != nil {
+        t.Fatal(err)
+    }
+
+    if err := c.W.FlushError(); err != nil {
+        t.Fatalf("FlushError() = %v, want nil", err)
+    }
+    if !cw.flushed {
+        t.Fatal("underlying Flush must still be called after Hijack")
+    }
+    if got := c.W.Size(); got != 0 {
+        t.Fatalf("Size = %d, want 0", got)
+    }
+}

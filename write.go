@@ -35,7 +35,7 @@ func (w *ResponseWriter) Size() int64 { return w.size }
 func (w *ResponseWriter) Header() http.Header { return w.w.Header() }
 
 // WriteHeader 写出状态码。1xx（101 除外）不算提交；101 与 200–999 是最终状态，写出后不再记录后续状态码。
-// 已提交或已 Hijack 后传入非法码时交给底层忽略，与 net/http 一致。
+// 已提交后非法码交给底层忽略；已 Hijack 后直接返回，与 net/http 一致。
 func (w *ResponseWriter) WriteHeader(code int) {
     if w.hijacked {
         return
@@ -53,20 +53,29 @@ func (w *ResponseWriter) WriteHeader(code int) {
     w.w.WriteHeader(code)
 }
 
-// trackWrite 记录一次写出的字节数，并把底层写结果原样返回。
-func (w *ResponseWriter) trackWrite[T ~int | ~int64](n T, err error) (T, error) {
-    w.size += int64(n)
-    return n, err
-}
-
 func (w *ResponseWriter) Write(p []byte) (int, error) {
-    w.commit()
-    return w.trackWrite(w.w.Write(p))
+    return w.track(func() (int, error) { return w.w.Write(p) })
 }
 
 func (w *ResponseWriter) WriteString(s string) (int, error) {
+    return w.track(func() (int, error) { return io.WriteString(w.w, s) })
+}
+
+// ReadFrom 优先走底层 ReaderFrom（sendfile 等）；否则用 io.Copy。
+// 视作一次写：即使源为空也先提交最终 200。
+func (w *ResponseWriter) ReadFrom(src io.Reader) (int64, error) {
+    if w.hijacked {
+        return 0, http.ErrHijacked
+    }
+
     w.commit()
-    return w.trackWrite(io.WriteString(w.w, s))
+    if rf, ok := w.w.(io.ReaderFrom); ok {
+        n, err := rf.ReadFrom(src)
+        w.size += n
+        return n, err
+    }
+
+    return io.Copy(struct{ io.Writer }{w}, src) // 字节由 Write 记账
 }
 
 // Flush 丢弃底层错误；需要错误时用 FlushError。
@@ -101,17 +110,7 @@ func (w *ResponseWriter) Hijack() (conn net.Conn, rw *bufio.ReadWriter, err erro
     return nil, nil, http.ErrNotSupported
 }
 
-// ReadFrom 优先走底层 ReaderFrom（sendfile 等）；否则用 io.Copy。
-func (w *ResponseWriter) ReadFrom(src io.Reader) (int64, error) {
-    w.commit()
-    if rf, ok := w.w.(io.ReaderFrom); ok {
-        return w.trackWrite(rf.ReadFrom(src))
-    }
-    // fallback 的字节数由 Write 累加，这里不能重复加。
-    return io.Copy(struct{ io.Writer }{w}, src)
-}
-
-// SetReadDeadline 转发给底层连接的读超时；底层不支持时返回 http.ErrNotSupported。
+// SetReadDeadline 转发给底层连接的读超时
 func (w *ResponseWriter) SetReadDeadline(t time.Time) error {
     if d, ok := w.w.(interface{ SetReadDeadline(time.Time) error }); ok {
         return d.SetReadDeadline(t)
@@ -119,7 +118,7 @@ func (w *ResponseWriter) SetReadDeadline(t time.Time) error {
     return http.ErrNotSupported
 }
 
-// SetWriteDeadline 转发给底层连接的写超时；底层不支持时返回 http.ErrNotSupported。
+// SetWriteDeadline 转发给底层连接的写超时
 func (w *ResponseWriter) SetWriteDeadline(t time.Time) error {
     if d, ok := w.w.(interface{ SetWriteDeadline(time.Time) error }); ok {
         return d.SetWriteDeadline(t)
@@ -127,8 +126,7 @@ func (w *ResponseWriter) SetWriteDeadline(t time.Time) error {
     return http.ErrNotSupported
 }
 
-// EnableFullDuplex 允许 HTTP/1 连接上同时读写（例如边读请求体边写响应）；
-// 底层不支持时返回 http.ErrNotSupported。
+// EnableFullDuplex 允许 HTTP/1 连接上同时读写（例如边读请求体边写响应）
 func (w *ResponseWriter) EnableFullDuplex() error {
     if d, ok := w.w.(interface{ EnableFullDuplex() error }); ok {
         return d.EnableFullDuplex()
@@ -136,9 +134,19 @@ func (w *ResponseWriter) EnableFullDuplex() error {
     return http.ErrNotSupported
 }
 
-// commit 在第一次写 body 或 Flush 前补最终 200。
+// commit 确保首次写 body/Flush 前已写出最终头；Hijack 后不再写头。
 func (w *ResponseWriter) commit() {
     if !w.hijacked && !w.wroteHeader {
         w.WriteHeader(http.StatusOK)
     }
+}
+
+func (w *ResponseWriter) track(f func() (int, error)) (n int, err error) {
+    if w.hijacked {
+        return 0, http.ErrHijacked
+    }
+    w.commit()
+    n, err = f()
+    w.size += int64(n)
+    return n, err
 }
