@@ -2,35 +2,73 @@ package mux
 
 import (
     "bufio"
+    "fmt"
     "io"
     "net"
     "net/http"
     "time"
 )
 
-// ResponseWriter 是处理器可用的响应写入器：只暴露 Header、Write、WriteHeader，
-// 底层 http.ResponseWriter 不可达。自己用它写响应，就等于由处理器负责这次响应；
-// 这种情况下处理器应返回 nil，让链尾不再写。
-// 同时转发底层常见能力：Flush、Hijack、ReadFrom、读写 deadline、全双工。
+// ResponseWriter 转发底层 writer 的 HTTP 写接口与常用可选能力；底层 writer 不可达。
 type ResponseWriter struct {
-    w http.ResponseWriter
+    w           http.ResponseWriter
+    status      int // 最近一次写出的状态码
+    wroteHeader bool
+    hijacked    bool
+}
+
+// StatusCode 返回最近一次写出的状态码；未写出时返回 200，Hijack 且未写出时返回 0。
+func (w *ResponseWriter) StatusCode() int {
+    if w.status != 0 {
+        return w.status
+    }
+    if w.hijacked {
+        return 0
+    }
+    return http.StatusOK
 }
 
 func (w *ResponseWriter) Header() http.Header { return w.w.Header() }
 
-func (w *ResponseWriter) WriteHeader(code int) { w.w.WriteHeader(code) }
+// WriteHeader 写出状态码。1xx（101 除外）不算提交；101 与 200–999 是最终状态，写出后不再记录后续状态码。
+func (w *ResponseWriter) WriteHeader(code int) {
+    if code < 100 || code > 999 {
+        panic(fmt.Sprintf("mux: invalid status code %d", code))
+    }
 
-func (w *ResponseWriter) Write(p []byte) (int, error) { return w.w.Write(p) }
+    if !w.hijacked && !w.wroteHeader {
+        w.status = code
+        if code >= 200 || code == http.StatusSwitchingProtocols {
+            w.wroteHeader = true
+        }
+    }
 
-// Flush 把缓冲的响应发给客户端；底层不支持时什么也不做。
-func (w *ResponseWriter) Flush() { _ = w.FlushError() }
+    w.w.WriteHeader(code)
+}
 
-// FlushError 是 Flush 的带错误版本，http.ResponseController 优先使用它。
+func (w *ResponseWriter) Write(p []byte) (int, error) {
+    w.commit()
+    return w.w.Write(p)
+}
+
+func (w *ResponseWriter) WriteString(s string) (int, error) {
+    w.commit()
+    return io.WriteString(w.w, s)
+}
+
+// Flush 丢弃底层错误；需要错误时用 FlushError。
+func (w *ResponseWriter) Flush() {
+    _ = w.FlushError()
+}
+
+// FlushError 供 http.ResponseController 使用；Flush 前先提交最终头。
 func (w *ResponseWriter) FlushError() error {
     switch f := w.w.(type) {
     case interface{ FlushError() error }:
+        w.commit()
         return f.FlushError()
     case http.Flusher:
+        w.commit()
         f.Flush()
         return nil
     default:
@@ -38,25 +76,25 @@ func (w *ResponseWriter) FlushError() error {
     }
 }
 
-// Hijack 接管底层连接，交给调用方自行读写（WebSocket 等）。
-func (w *ResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-    h, ok := w.w.(http.Hijacker)
-    if !ok {
-        return nil, nil, http.ErrNotSupported
+func (w *ResponseWriter) Hijack() (conn net.Conn, rw *bufio.ReadWriter, err error) {
+    if h, ok := w.w.(http.Hijacker); ok {
+        if conn, rw, err = h.Hijack(); err == nil {
+            w.hijacked = true
+        }
+        return
     }
-    return h.Hijack()
+    return nil, nil, http.ErrNotSupported
 }
 
-// ReadFrom 优先使用底层的 io.ReaderFrom（sendfile 等零拷贝路径）。
+// ReadFrom 优先走底层 ReaderFrom（sendfile 等）；否则用 io.Copy。
 func (w *ResponseWriter) ReadFrom(src io.Reader) (int64, error) {
+    w.commit()
     if rf, ok := w.w.(io.ReaderFrom); ok {
         return rf.ReadFrom(src)
     }
-    // 只暴露 Write 的包装，避免 io.Copy 再次命中 ReaderFrom 递归。
     return io.Copy(struct{ io.Writer }{w}, src)
 }
 
-// SetReadDeadline 转发给底层的连接读超时；不支持时返回 http.ErrNotSupported。
 func (w *ResponseWriter) SetReadDeadline(t time.Time) error {
     if d, ok := w.w.(interface{ SetReadDeadline(time.Time) error }); ok {
         return d.SetReadDeadline(t)
@@ -64,7 +102,6 @@ func (w *ResponseWriter) SetReadDeadline(t time.Time) error {
     return http.ErrNotSupported
 }
 
-// SetWriteDeadline 转发给底层的连接写超时；不支持时返回 http.ErrNotSupported。
 func (w *ResponseWriter) SetWriteDeadline(t time.Time) error {
     if d, ok := w.w.(interface{ SetWriteDeadline(time.Time) error }); ok {
         return d.SetWriteDeadline(t)
@@ -72,10 +109,16 @@ func (w *ResponseWriter) SetWriteDeadline(t time.Time) error {
     return http.ErrNotSupported
 }
 
-// EnableFullDuplex 允许在 HTTP/1 连接上同时读写；不支持时返回 http.ErrNotSupported。
 func (w *ResponseWriter) EnableFullDuplex() error {
     if d, ok := w.w.(interface{ EnableFullDuplex() error }); ok {
         return d.EnableFullDuplex()
     }
     return http.ErrNotSupported
+}
+
+// commit 在第一次写 body 或 Flush 前补最终 200。
+func (w *ResponseWriter) commit() {
+    if !w.hijacked && !w.wroteHeader {
+        w.WriteHeader(http.StatusOK)
+    }
 }

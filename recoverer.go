@@ -259,7 +259,7 @@ func orDash(s string) string {
 var errRecovered = errors.New("mux: recovered panic")
 
 // Recoverer 返回恢复中间件：接住 panic，构造 Panic 交给 h 处理。
-// h 为 nil 时记默认日志（Panic.Text）并补一个通用 500；h 非 nil 时由 h 自己写响应。
+// h 为 nil 时记默认日志（Panic.Text）；h 非 nil 时由 h 自己处理。
 // panic 不经过 Config.ErrorHandler。
 //
 // New 默认把 Recoverer 装在中间件链最前面。
@@ -277,7 +277,6 @@ func Recoverer(h RecoverHandler) Handler {
                     h(c, info)
                 } else {
                     slog.Error("panic recovered", "detail", info.Text())
-                    respond(c, http.StatusInternalServerError, map[string]string{"error": http.StatusText(http.StatusInternalServerError)})
                 }
 
                 out, err = nil, errRecovered
