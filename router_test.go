@@ -480,14 +480,10 @@ func TestErrorFunnelEdgeCases(t *testing.T) {
 
 func TestRecovererMiddleware(t *testing.T) {
 	rec := httptest.NewRecorder()
-	c := &Ctx{
-		W:     rec,
-		R:     httptest.NewRequest(http.MethodGet, "/panic", nil),
-		index: -1,
-		chain: []Handler{func(*Ctx, any) (any, error) {
-			panic("boom")
-		}},
-	}
+	c := NewCtx(rec, httptest.NewRequest(http.MethodGet, "/panic", nil))
+	c.chain = []Handler{func(*Ctx, any) (any, error) {
+		panic("boom")
+	}}
 
 	out, err := Recoverer(nil)(c, struct{}{})
 
@@ -506,14 +502,10 @@ func TestRecovererMiddleware(t *testing.T) {
 }
 
 func TestRecovererRepanicsErrAbortHandler(t *testing.T) {
-	c := &Ctx{
-		W:     httptest.NewRecorder(),
-		R:     httptest.NewRequest(http.MethodGet, "/abort", nil),
-		index: -1,
-		chain: []Handler{func(*Ctx, any) (any, error) {
-			panic(http.ErrAbortHandler)
-		}},
-	}
+	c := NewCtx(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/abort", nil))
+	c.chain = []Handler{func(*Ctx, any) (any, error) {
+		panic(http.ErrAbortHandler)
+	}}
 
 	defer func() {
 		if p := recover(); p != http.ErrAbortHandler {
