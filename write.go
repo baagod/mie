@@ -23,9 +23,11 @@ func (w *ResponseWriter) StatusCode() int {
     if w.status != 0 {
         return w.status
     }
+
     if w.hijacked {
         return 0
     }
+
     return http.StatusOK
 }
 
@@ -50,18 +52,20 @@ func (w *ResponseWriter) WriteHeader(code int) {
     w.w.WriteHeader(code)
 }
 
-func (w *ResponseWriter) Write(p []byte) (int, error) {
-    w.commit()
-    n, err := w.w.Write(p)
+// trackWrite 记录一次写出的字节数，并把底层写结果原样返回。
+func (w *ResponseWriter) trackWrite[T ~int | ~int64](n T, err error) (T, error) {
     w.size += int64(n)
     return n, err
 }
 
+func (w *ResponseWriter) Write(p []byte) (int, error) {
+    w.commit()
+    return w.trackWrite(w.w.Write(p))
+}
+
 func (w *ResponseWriter) WriteString(s string) (int, error) {
     w.commit()
-    n, err := io.WriteString(w.w, s)
-    w.size += int64(n)
-    return n, err
+    return w.trackWrite(io.WriteString(w.w, s))
 }
 
 // Flush 丢弃底层错误；需要错误时用 FlushError。
@@ -98,9 +102,7 @@ func (w *ResponseWriter) Hijack() (conn net.Conn, rw *bufio.ReadWriter, err erro
 func (w *ResponseWriter) ReadFrom(src io.Reader) (int64, error) {
     w.commit()
     if rf, ok := w.w.(io.ReaderFrom); ok {
-        n, err := rf.ReadFrom(src)
-        w.size += n
-        return n, err
+        return w.trackWrite(rf.ReadFrom(src))
     }
     // fallback 的字节数由 Write 累加，这里不能重复加。
     return io.Copy(struct{ io.Writer }{w}, src)
