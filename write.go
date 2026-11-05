@@ -37,7 +37,11 @@ func (w *ResponseWriter) Header() http.Header { return w.w.Header() }
 // WriteHeader 写出状态码。1xx（101 除外）不算提交；101 与 200–999 是最终状态，写出后不再记录后续状态码。
 // 已提交或已 Hijack 后传入非法码时交给底层忽略，与 net/http 一致。
 func (w *ResponseWriter) WriteHeader(code int) {
-    if !w.hijacked && !w.wroteHeader {
+    if w.hijacked {
+        return
+    }
+
+    if !w.wroteHeader {
         if code < 100 || code > 999 {
             panic(fmt.Sprintf("mux: invalid status code %d", code))
         }
@@ -45,6 +49,7 @@ func (w *ResponseWriter) WriteHeader(code int) {
             w.wroteHeader = true
         }
     }
+
     w.w.WriteHeader(code)
 }
 
