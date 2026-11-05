@@ -140,13 +140,16 @@ func (r *Router) register(method, pattern string, h Handler) {
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-    h, pattern := r.mux.Handler(req)
-    if pattern == "" {
-        // 暂不区分 404/405，也不发送响应体。
-        r.config.ErrorHandler(NewCtx(w, req), NewError(http.StatusNotFound, http.StatusText(http.StatusNotFound)))
-        return
-    }
-    h.ServeHTTP(w, req)
+	_, pattern := r.mux.Handler(req)
+	if pattern == "" {
+		// 暂不区分 404/405，也不发送响应体。
+		r.config.ErrorHandler(NewCtx(w, req), NewError(http.StatusNotFound, http.StatusText(http.StatusNotFound)))
+		return
+	}
+	// Handler 只用于判断是否命中，它不会填充路径通配符（Go 文档明确
+	// r.PathValue 会返回空串）。命中后交给 ServeMux.ServeHTTP，由它设置
+	// 匹配结果，这样 Ctx.Param 才能拿到值；代价是命中路径会匹配两次。
+	r.mux.ServeHTTP(w, req)
 }
 
 // Run 启动服务并在收到中断信号后优雅关停。
