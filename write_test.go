@@ -299,6 +299,22 @@ func TestStatusRejectsInvalidCode(t *testing.T) {
     }
 }
 
+func TestWriteHeaderInvalidCodeAfterCommitDoesNotPanic(t *testing.T) {
+    c := NewCtx(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+    c.W.WriteHeader(http.StatusCreated)
+
+    defer func() {
+        if r := recover(); r != nil {
+            t.Fatalf("WriteHeader(1000) after commit panicked: %v", r)
+        }
+    }()
+    c.W.WriteHeader(1000)
+
+    if got := c.W.StatusCode(); got != http.StatusCreated {
+        t.Fatalf("StatusCode = %d, want %d", got, http.StatusCreated)
+    }
+}
+
 func TestWriterSize(t *testing.T) {
     rec := httptest.NewRecorder()
     c := NewCtx(rec, httptest.NewRequest(http.MethodGet, "/", nil))

@@ -23,11 +23,9 @@ func (w *ResponseWriter) StatusCode() int {
     if w.status != 0 {
         return w.status
     }
-
     if w.hijacked {
         return 0
     }
-
     return http.StatusOK
 }
 
@@ -37,18 +35,16 @@ func (w *ResponseWriter) Size() int64 { return w.size }
 func (w *ResponseWriter) Header() http.Header { return w.w.Header() }
 
 // WriteHeader 写出状态码。1xx（101 除外）不算提交；101 与 200–999 是最终状态，写出后不再记录后续状态码。
+// 已提交或已 Hijack 后传入非法码时交给底层忽略，与 net/http 一致。
 func (w *ResponseWriter) WriteHeader(code int) {
-    if code < 100 || code > 999 {
-        panic(fmt.Sprintf("mux: invalid status code %d", code))
-    }
-
     if !w.hijacked && !w.wroteHeader {
-        w.status = code
-        if code >= 200 || code == http.StatusSwitchingProtocols {
+        if code < 100 || code > 999 {
+            panic(fmt.Sprintf("mux: invalid status code %d", code))
+        }
+        if w.status = code; code >= 200 || code == 101 {
             w.wroteHeader = true
         }
     }
-
     w.w.WriteHeader(code)
 }
 
@@ -88,6 +84,8 @@ func (w *ResponseWriter) FlushError() error {
     }
 }
 
+// Hijack 把底层连接交给调用方（WebSocket、CONNECT 隧道等）。
+// 成功后不再有 HTTP 语义：之后直接写连接的字节不计入 Size，StatusCode 也停在 Hijack 前的值。
 func (w *ResponseWriter) Hijack() (conn net.Conn, rw *bufio.ReadWriter, err error) {
     if h, ok := w.w.(http.Hijacker); ok {
         if conn, rw, err = h.Hijack(); err == nil {
@@ -108,6 +106,7 @@ func (w *ResponseWriter) ReadFrom(src io.Reader) (int64, error) {
     return io.Copy(struct{ io.Writer }{w}, src)
 }
 
+// SetReadDeadline 转发给底层连接的读超时；底层不支持时返回 http.ErrNotSupported。
 func (w *ResponseWriter) SetReadDeadline(t time.Time) error {
     if d, ok := w.w.(interface{ SetReadDeadline(time.Time) error }); ok {
         return d.SetReadDeadline(t)
@@ -115,6 +114,7 @@ func (w *ResponseWriter) SetReadDeadline(t time.Time) error {
     return http.ErrNotSupported
 }
 
+// SetWriteDeadline 转发给底层连接的写超时；底层不支持时返回 http.ErrNotSupported。
 func (w *ResponseWriter) SetWriteDeadline(t time.Time) error {
     if d, ok := w.w.(interface{ SetWriteDeadline(time.Time) error }); ok {
         return d.SetWriteDeadline(t)
@@ -122,6 +122,8 @@ func (w *ResponseWriter) SetWriteDeadline(t time.Time) error {
     return http.ErrNotSupported
 }
 
+// EnableFullDuplex 允许 HTTP/1 连接上同时读写（例如边读请求体边写响应）；
+// 底层不支持时返回 http.ErrNotSupported。
 func (w *ResponseWriter) EnableFullDuplex() error {
     if d, ok := w.w.(interface{ EnableFullDuplex() error }); ok {
         return d.EnableFullDuplex()
