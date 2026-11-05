@@ -72,9 +72,16 @@ func defaultErrorHandler(c *Ctx, err error) {
 // 先编码到内存，编码成功后才提交状态码与响应体：编码失败时响应尚未写出，
 // 可以安全降级为通用 500；204/304 按 HTTP 语义不写响应体。
 func respond(c *Ctx, status int, v any) {
+	// 没有显式状态、也没有可写内容：不写。让 net/http 在收尾时补隐式 200，
+	// 这样「处理器自己写完响应、返回 nil」不会被再补一次。
+	if status == 0 && isNoOutput(v) {
+		return
+	}
+
 	if status == 0 {
 		status = http.StatusOK
 	}
+
 	if status == http.StatusNoContent || status == http.StatusNotModified || isNoOutput(v) {
 		c.W.WriteHeader(status)
 		return
@@ -203,9 +210,7 @@ func (r *Router) register(method, pattern string, decode Handler, h Handler) {
 					"panic", p,
 					"stack", string(debug.Stack()),
 				)
-				if !c.wrote {
-					respond(c, http.StatusInternalServerError, map[string]string{"error": http.StatusText(http.StatusInternalServerError)})
-				}
+				respond(c, http.StatusInternalServerError, map[string]string{"error": http.StatusText(http.StatusInternalServerError)})
 			}
 		}()
 
@@ -215,10 +220,6 @@ func (r *Router) register(method, pattern string, decode Handler, h Handler) {
 			return
 		}
 		if err != nil {
-			if c.wrote {
-				slog.Error("handler wrote response before returning an error", "method", req.Method, "path", req.URL.Path, "err", err)
-				return
-			}
 			// 客户端已断开：响应没人收，不进入错误处理。
 			// 只认 context.Canceled；服务端超时（DeadlineExceeded）仍交给 ErrorHandler。
 			if !errors.Is(c.R.Context().Err(), context.Canceled) {
@@ -227,10 +228,6 @@ func (r *Router) register(method, pattern string, decode Handler, h Handler) {
 			return
 		}
 
-		if c.wrote {
-			slog.Error("handler wrote response and also returned a value", "method", req.Method, "path", req.URL.Path)
-			return
-		}
 		respond(c, c.status, out)
 	}))
 }

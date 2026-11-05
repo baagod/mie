@@ -587,7 +587,7 @@ func TestRecoverHandlerReceivesPanicInfo(t *testing.T) {
 	}
 }
 
-func TestRecoverHandlerFallsBackTo500(t *testing.T) {
+func TestRecoverHandlerOwnsResponse(t *testing.T) {
 	r := New(Config{RecoverHandler: func(c *Ctx, p *Panic) {}})
 	r.Get("/boom", func(c *Ctx, _ struct{}) (struct{}, error) {
 		panic("boom")
@@ -595,11 +595,12 @@ func TestRecoverHandlerFallsBackTo500(t *testing.T) {
 
 	rec := do(t, r, http.MethodGet, "/boom")
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rec.Code)
+	// 自定义 RecoverHandler 自己负责响应：它不写，框架也不补 500。
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if rec.Body.String() != "{\"error\":\"Internal Server Error\"}\n" {
-		t.Fatalf("body = %q, want generic 500", rec.Body.String())
+	if rec.Body.Len() != 0 {
+		t.Fatalf("body = %q, want empty", rec.Body.String())
 	}
 }
 
@@ -644,7 +645,7 @@ func TestWritePanicIsRecovered(t *testing.T) {
 	}
 }
 
-func TestCommittedResponseSkipsErrorHandler(t *testing.T) {
+func TestCommittedResponseStillCallsErrorHandler(t *testing.T) {
 	called := false
 	r := New(Config{ErrorHandler: func(c *Ctx, err error) { called = true }})
 	r.Use(func(c *Ctx, in any) (any, error) {
@@ -655,8 +656,9 @@ func TestCommittedResponseSkipsErrorHandler(t *testing.T) {
 
 	rec := do(t, r, http.MethodGet, "/x")
 
-	if called {
-		t.Fatal("ErrorHandler must not run after the response is committed")
+	// 框架不记录响应是否已提交：错误处理器照常执行，混用由调用方负责。
+	if !called {
+		t.Fatal("ErrorHandler must run even after the response is committed")
 	}
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202", rec.Code)
