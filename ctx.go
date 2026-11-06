@@ -50,7 +50,7 @@ func NewCtx(w http.ResponseWriter, req *http.Request) *Ctx {
     c := &Ctx{R: req, index: -1, traceid: req.Header.Get(HeaderXRequestID)}
     c.W = &ResponseWriter{w: w}
 
-    if c.traceid == "" || len(c.traceid) > maxTraceIDLen {
+    if c.traceid == "" || len(c.traceid) > 128 {
         var b [16]byte
         _, _ = rand.Read(b[:])
         c.traceid = hex.EncodeToString(b[:])

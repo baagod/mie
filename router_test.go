@@ -1,6 +1,7 @@
 package mux
 
 import (
+    "errors"
     "net/http"
     "net/http/httptest"
     "testing"
@@ -68,5 +69,58 @@ func TestNoMatchHandler(t *testing.T) {
     }
     if len(statuses) != 2 || statuses[1] != http.StatusNotFound {
         t.Fatalf("fallback statuses=%v, want [405 404]", statuses)
+    }
+}
+
+func TestDefaultErrorHandlerWritesResponse(t *testing.T) {
+    r := New()
+    r.Get("/teapot", func(*Ctx, any) (any, error) {
+        return nil, NewError(http.StatusTeapot, "short and stout")
+    })
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/teapot", nil))
+
+    if rec.Code != http.StatusTeapot {
+        t.Fatalf("status = %d, want %d", rec.Code, http.StatusTeapot)
+    }
+    if got := rec.Body.String(); got != "short and stout" {
+        t.Fatalf("body = %q, want %q", got, "short and stout")
+    }
+}
+
+func TestDefaultErrorHandlerUnknownError(t *testing.T) {
+    r := New()
+    r.Get("/boom", func(*Ctx, any) (any, error) {
+        return nil, errors.New("db down")
+    })
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/boom", nil))
+
+    if rec.Code != http.StatusInternalServerError {
+        t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+    }
+    if got := rec.Body.String(); got != http.StatusText(http.StatusInternalServerError) {
+        t.Fatalf("body = %q, want %q", got, http.StatusText(http.StatusInternalServerError))
+    }
+}
+
+func TestDefaultErrorHandlerKeepsWrittenResponse(t *testing.T) {
+    r := New()
+    r.Get("/partial", func(c *Ctx, _ any) (any, error) {
+        c.W.WriteHeader(http.StatusCreated)
+        _, _ = c.W.WriteString("created")
+        return nil, errors.New("late failure")
+    })
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/partial", nil))
+
+    if rec.Code != http.StatusCreated {
+        t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+    }
+    if got := rec.Body.String(); got != "created" {
+        t.Fatalf("body = %q, want %q", got, "created")
     }
 }
