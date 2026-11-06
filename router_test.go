@@ -124,3 +124,18 @@ func TestDefaultErrorHandlerAppendsAfterWrittenResponse(t *testing.T) {
         t.Fatalf("body = %q, want %q", got, "createdlate failure")
     }
 }
+
+func TestRouteCommitsPresetStatus(t *testing.T) {
+    r := New()
+    r.Get("/no-content", func(c *Ctx, _ any) (any, error) {
+        c.Status(http.StatusNoContent)
+        return nil, nil
+    })
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/no-content", nil))
+
+    if rec.Code != http.StatusNoContent {
+        t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+    }
+}
