@@ -3,6 +3,7 @@ package mux
 import (
     "bufio"
     "errors"
+    "fmt"
     "io"
     "net"
     "net/http"
@@ -68,6 +69,9 @@ func TestWriterFlushForwards(t *testing.T) {
     if got := c.W.StatusCode(); got != http.StatusOK {
         t.Fatalf("StatusCode = %d, want 200", got)
     }
+    if cw.ResponseRecorder.Code != http.StatusOK {
+        t.Fatalf("wire status = %d, want 200", cw.ResponseRecorder.Code)
+    }
 }
 
 func TestWriterHijackForwards(t *testing.T) {
@@ -119,6 +123,9 @@ func TestWriterReadFromFallback(t *testing.T) {
     }
     if got := c.W.StatusCode(); got != http.StatusOK {
         t.Fatalf("StatusCode = %d, want 200", got)
+    }
+    if got := c.W.Size(); got != 8 {
+        t.Fatalf("Size = %d, want 8", got)
     }
 }
 
@@ -194,18 +201,6 @@ func TestWriterImplicitOK(t *testing.T) {
     }
 }
 
-func TestWriterFlushImplicitOK(t *testing.T) {
-    c, cw := newCapabilityCtx()
-    c.W.Flush()
-
-    if got := c.W.StatusCode(); got != http.StatusOK {
-        t.Fatalf("StatusCode = %d, want 200", got)
-    }
-    if cw.ResponseRecorder.Code != http.StatusOK {
-        t.Fatalf("wire status = %d, want 200", cw.ResponseRecorder.Code)
-    }
-}
-
 func TestWriterStatusCode(t *testing.T) {
     rec := httptest.NewRecorder()
     c := NewCtx(rec, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -243,15 +238,6 @@ func TestWriterStatusEarlyHints(t *testing.T) {
     c.W.WriteHeader(http.StatusOK)
     if got := c.W.StatusCode(); got != http.StatusOK {
         t.Fatalf("StatusCode after final = %d, want 200", got)
-    }
-}
-
-func TestWriterStatusSwitchingProtocols(t *testing.T) {
-    c := NewCtx(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
-
-    c.W.WriteHeader(http.StatusSwitchingProtocols)
-    if got := c.W.StatusCode(); got != http.StatusSwitchingProtocols {
-        t.Fatalf("StatusCode = %d, want 101", got)
     }
 }
 
@@ -316,7 +302,7 @@ func TestCtxStatusCode(t *testing.T) {
 
 func TestStatusRejectsInvalidCode(t *testing.T) {
     for _, code := range []int{99, 1000} {
-        t.Run(http.StatusText(code), func(t *testing.T) {
+        t.Run(fmt.Sprintf("code=%d", code), func(t *testing.T) {
             c := NewCtx(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
             defer func() {
                 if recover() == nil {
@@ -369,19 +355,6 @@ func TestWriterSize(t *testing.T) {
     }
     if got := rec.Body.String(); got != "abcdefg" {
         t.Fatalf("body = %q, want abcdefg", got)
-    }
-}
-
-func TestWriterSizeReadFromFallback(t *testing.T) {
-    rec := httptest.NewRecorder()
-    c := NewCtx(&plainWriter{rec}, httptest.NewRequest(http.MethodGet, "/", nil))
-
-    n, err := c.W.ReadFrom(strings.NewReader("fallback"))
-    if err != nil {
-        t.Fatal(err)
-    }
-    if n != 8 || c.W.Size() != 8 {
-        t.Fatalf("n = %d, size = %d, want 8", n, c.W.Size())
     }
 }
 

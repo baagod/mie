@@ -25,7 +25,7 @@ func TestRouteParam(t *testing.T) {
     }
 }
 
-func TestUnmatchedPathUsesFallback(t *testing.T) {
+func TestUnmatchedPathSkipsErrorHandler(t *testing.T) {
     called := false
     r := New(Config{ErrorHandler: func(*Ctx, error) { called = true }})
     r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
@@ -34,7 +34,7 @@ func TestUnmatchedPathUsesFallback(t *testing.T) {
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nope", nil))
 
     if called {
-        t.Fatal("ErrorHandler called for unmatched path; want native fallback")
+        t.Fatal("ErrorHandler called for unmatched path; want native 404")
     }
     if rec.Code != http.StatusNotFound {
         t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
