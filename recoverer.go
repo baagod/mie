@@ -2,7 +2,7 @@ package mux
 
 import (
     "cmp"
-    "encoding/json"
+    "encoding/json/v2"
     "fmt"
     "log/slog"
     "net/http"
@@ -14,10 +14,9 @@ import (
 )
 
 const (
-    panicTimeLayout = "2006-01-02 15:04:05"
-    maxPanicFrames  = 3
-    sourceRadius    = 3
-    maxSourceFile   = 1 << 20
+    maxPanicFrames = 3
+    sourceRadius   = 3
+    maxSourceFile  = 1 << 20
 )
 
 // Panic 是一次 panic 的事件快照，只用于日志与自定义响应，不会自动发给客户端。
@@ -60,7 +59,7 @@ func (p *Panic) Text() string {
     var b strings.Builder
     b.WriteString("PANIC RECOVERED\n")
 
-    label(&b, "Time", p.Time.Format(panicTimeLayout))
+    label(&b, "Time", p.Time.Format(time.DateTime))
     label(&b, "Request", p.Method+" "+p.Path)
     label(&b, "Host", p.Host)
     label(&b, "ContentType", cmp.Or(p.ContentType, "-"))
@@ -76,9 +75,13 @@ func (p *Panic) Text() string {
     return b.String()
 }
 
-// JSON 返回单行 JSON 日志；字段全部可序列化，不存在失败路径。
+// JSON 返回单行 JSON 日志。
+// v2 默认拒绝非法 UTF-8；此时返回空串，而不是半截 JSON。
 func (p *Panic) JSON() string {
-    b, _ := json.Marshal(p)
+    b, err := json.Marshal(p)
+    if err != nil {
+        return ""
+    }
     return string(b)
 }
 
@@ -165,18 +168,18 @@ func displayFile(file string) string {
         return file
     }
     rel, err := filepath.Rel(wd, file)
-    if err != nil || strings.HasPrefix(rel, "..") {
+    if err != nil || !filepath.IsLocal(rel) {
         return file
     }
     return rel
 }
 
 func shortFunc(fn string) string {
-    if i := strings.LastIndex(fn, "/"); i >= 0 {
-        fn = fn[i+1:]
+    if _, after, ok := strings.CutLast(fn, "/"); ok {
+        fn = after
     }
-    if i := strings.Index(fn, "."); i >= 0 {
-        fn = fn[i+1:]
+    if _, after, ok := strings.Cut(fn, "."); ok {
+        fn = after
     }
     return fn
 }
@@ -189,10 +192,12 @@ func readSource(file string, line int) []string {
     if file == "" || line <= 0 {
         return nil
     }
+
     info, err := os.Stat(file)
     if err != nil || info.Size() > maxSourceFile {
         return nil
     }
+
     data, err := os.ReadFile(file)
     if err != nil {
         return nil
@@ -208,6 +213,7 @@ func readSource(file string, line int) []string {
     for i := start - 1; i < end; i++ {
         lines[i] = strings.TrimRight(lines[i], "\r")
     }
+
     return lines[start-1 : end]
 }
 
