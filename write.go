@@ -39,11 +39,7 @@ func (w *ResponseWriter) SetStatus(code int) {
         return
     }
 
-    if code < 100 || code > 999 {
-        panic(fmt.Sprintf("mux: invalid status code %d", code))
-    }
-
-    if code < 200 {
+    if checkStatusCode(code); code < 200 {
         w.WriteHeader(code)
         return
     }
@@ -64,9 +60,7 @@ func (w *ResponseWriter) WriteHeader(code int) {
     }
 
     if !w.wroteHeader {
-        if code < 100 || code > 999 {
-            panic(fmt.Sprintf("mux: invalid status code %d", code))
-        }
+        checkStatusCode(code)
         if w.status = code; code >= 200 || code == 101 {
             w.wroteHeader = true
         }
@@ -180,4 +174,11 @@ func (w *ResponseWriter) track(f func() (int, error)) (n int, err error) {
     n, err = f()
     w.size += int64(n)
     return n, err
+}
+
+// checkStatusCode 校验状态码范围；越界立即 panic。
+func checkStatusCode(code int) {
+    if code < 100 || code > 999 {
+        panic(fmt.Sprintf("mux: invalid status code %d", code))
+    }
 }
