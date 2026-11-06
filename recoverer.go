@@ -2,7 +2,6 @@ package mux
 
 import (
     "encoding/json"
-    "errors"
     "fmt"
     "log/slog"
     "net/http"
@@ -19,10 +18,6 @@ const (
     sourceRadius    = 3
     maxSourceFile   = 1 << 20
 )
-
-// RecoverError 表示 panic 已经被 Recoverer 处理。register 收到它后直接结束请求，
-// 不进入 Config.ErrorHandler：panic 与响应错误是两类不同的事件。
-var RecoverError = errors.New("mux: recovered panic")
 
 // Panic 是一次 panic 的事件快照，只用于日志与自定义响应，不会自动发给客户端。
 type Panic struct {
@@ -113,10 +108,7 @@ func (p *Panic) JSON() string {
         v.Stack = append(v.Stack, jsonFrame{File: f.File, Line: f.Line, Func: f.Func, Source: f.Source})
     }
 
-    b, err := json.Marshal(v)
-    if err != nil {
-        return `{"error":"panic info marshal failed"}`
-    }
+    b, _ := json.Marshal(v)
     return string(b)
 }
 
@@ -124,7 +116,8 @@ func (p *Panic) JSON() string {
 // h 为 nil 时记默认日志（Panic.Text）；h 非 nil 时由 h 自己负责响应。
 // panic 不经过 Config.ErrorHandler。
 //
-// New 默认把 Recoverer 装在中间件链最前面。
+// register 把 Recoverer 固定为每个路由链的首个处理器；
+// Config.RecoverHandler 只定制捕获后的行为。
 func Recoverer(h func(c *Ctx, p *Panic)) Handler {
     return func(c *Ctx, in any) (out any, err error) {
         defer func() {
@@ -141,7 +134,7 @@ func Recoverer(h func(c *Ctx, p *Panic)) Handler {
                     slog.Error("panic recovered", "detail", info.Text())
                 }
 
-                out, err = nil, RecoverError
+                err = RecoverError
             }
         }()
 
@@ -184,14 +177,8 @@ func skipPanicFrame(fn, file, muxDir string) bool {
             return true
         }
     }
-    if filepath.Dir(file) != muxDir {
-        return false
-    }
-    switch filepath.Base(file) {
-    case "recoverer.go", "ctx.go", "router.go":
-        return true
-    }
-    return false
+    // 框架帧由包边界决定：同目录的非测试文件都算 mux 自身。
+    return filepath.Dir(file) == muxDir && !strings.HasSuffix(file, "_test.go")
 }
 
 func packageDir() string {
@@ -224,6 +211,10 @@ func shortFunc(fn string) string {
     return fn
 }
 
+func sourceStart(line int) int {
+    return max(line-sourceRadius, 1)
+}
+
 func readSource(file string, line int) []string {
     if file == "" || line <= 0 {
         return nil
@@ -238,7 +229,7 @@ func readSource(file string, line int) []string {
     }
 
     lines := strings.Split(string(data), "\n")
-    start := max(line-sourceRadius, 1)
+    start := sourceStart(line)
     end := min(line+sourceRadius, len(lines))
 
     out := make([]string, 0, end-start+1)
@@ -249,11 +240,11 @@ func readSource(file string, line int) []string {
 }
 
 func writeSource(b *strings.Builder, f Frame) {
-    start := max(f.Line-sourceRadius, 1)
+    start := sourceStart(f.Line)
 
     for i, line := range f.Source {
         n := start + i
-        line = expandTabs(line)
+        line = strings.ReplaceAll(line, "\t", "    ")
         marker := " "
         if n == f.Line {
             marker = ">"
@@ -261,10 +252,6 @@ func writeSource(b *strings.Builder, f Frame) {
         // Go 的栈只有 file:line，没有列号；用行号前的 > 标记整行，长行也不会破坏对齐。
         _, _ = fmt.Fprintf(b, "%s%4d  %s\n", marker, n, line)
     }
-}
-
-func expandTabs(s string) string {
-    return strings.ReplaceAll(s, "\t", "    ")
 }
 
 func orDash(s string) string {
