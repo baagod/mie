@@ -91,12 +91,13 @@ func (p *Panic) JSON() string {
 // defaultRecoverHandler 是未配置 Config.RecoverHandler 时的兜底：
 // 记录 Panic；响应未提交则写 500，已提交则断连。
 func defaultRecoverHandler(c *Ctx, info *Panic) {
-    slog.Error("panic recovered", "detail", info.Text())
+    slog.Error("PANIC RECOVERED", "detail", info.Text())
 
     if c.W.wroteHeader {
-        // 响应已开始，写不了 500；断连，避免客户端把半截响应当成完整响应。
+        // 响应已开始，不写 500，避免客户端把半截响应当成完整响应。
         panic(http.ErrAbortHandler)
     }
+
     c.W.WriteHeader(http.StatusInternalServerError)
     _, _ = c.W.WriteString(http.StatusText(http.StatusInternalServerError))
 }

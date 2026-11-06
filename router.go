@@ -126,9 +126,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
     }()
 
     r.mux.ServeHTTP(c.W, req)
-
-    code := c.W.StatusCode()
-    if code == http.StatusNotFound || code == http.StatusMethodNotAllowed {
+    if code := c.W.StatusCode(); code == 404 || code == 405 {
         r.config.NoMatchHandler(c, code)
     }
 }
@@ -167,7 +165,7 @@ func (r *Router) Run(addr string) error {
 // 必须由 defer 直接调用 recover 后转入；recover 在嵌套调用中不生效。
 func (r *Router) handlePanic(c *Ctx, p any) {
     // net/http 约定：ErrAbortHandler 静默中止响应，不记日志、不再写响应。
-    if p == http.ErrAbortHandler {
+    if c.index = len(c.chain); p == http.ErrAbortHandler {
         panic(p)
     }
 
