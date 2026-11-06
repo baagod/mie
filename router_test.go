@@ -101,12 +101,12 @@ func TestDefaultErrorHandlerUnknownError(t *testing.T) {
     if rec.Code != http.StatusInternalServerError {
         t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
     }
-    if got := rec.Body.String(); got != http.StatusText(http.StatusInternalServerError) {
-        t.Fatalf("body = %q, want %q", got, http.StatusText(http.StatusInternalServerError))
+    if got := rec.Body.String(); got != "db down" {
+        t.Fatalf("body = %q, want %q", got, "db down")
     }
 }
 
-func TestDefaultErrorHandlerKeepsWrittenResponse(t *testing.T) {
+func TestDefaultErrorHandlerAppendsAfterWrittenResponse(t *testing.T) {
     r := New()
     r.Get("/partial", func(c *Ctx, _ any) (any, error) {
         c.W.WriteHeader(http.StatusCreated)
@@ -120,7 +120,7 @@ func TestDefaultErrorHandlerKeepsWrittenResponse(t *testing.T) {
     if rec.Code != http.StatusCreated {
         t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
     }
-    if got := rec.Body.String(); got != "created" {
-        t.Fatalf("body = %q, want %q", got, "created")
+    if got := rec.Body.String(); got != "createdlate failure" {
+        t.Fatalf("body = %q, want %q", got, "createdlate failure")
     }
 }
