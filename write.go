@@ -12,22 +12,43 @@ import (
 // ResponseWriter 转发底层 writer 的 HTTP 写接口与常用可选能力；底层 writer 不可达。
 type ResponseWriter struct {
     w           http.ResponseWriter
-    status      int   // 已记录写入的状态码，写入最终状态后不再更新。
+    status      int   // 最近设置的状态码；0 表示未设置（默认 200）。最终状态码写出后不再更新。
     size        int64 // 已写入的响应体字节数
     wroteHeader bool
     hijacked    bool
 }
 
-// StatusCode 返回已记录的状态码：1xx 会被后续状态覆盖，最终状态码写出后不再更新。
-// 尚未写出状态码时：未 Hijack 返回 200，已 Hijack 返回 0。
+// StatusCode 返回最近设置的状态码：1xx 也会反映。未设置时：未 Hijack 返回 200，已 Hijack 返回 0。
 func (w *ResponseWriter) StatusCode() int {
     if w.status != 0 {
         return w.status
     }
+
     if w.hijacked {
         return 0
     }
+
     return http.StatusOK
+}
+
+// SetStatus 设置响应状态码：1xx 立即写出（101 由 WriteHeader 锁为最终状态），
+// 其余最终码预设，等首次写 body、Flush 或 ReadFrom 前由 commit 提交。
+// 已写出最终状态或已 Hijack 后忽略。
+func (w *ResponseWriter) SetStatus(code int) {
+    if w.hijacked || w.wroteHeader {
+        return
+    }
+
+    if code < 100 || code > 999 {
+        panic(fmt.Sprintf("mux: invalid status code %d", code))
+    }
+
+    if code < 200 {
+        w.WriteHeader(code)
+        return
+    }
+
+    w.status = code
 }
 
 // Size 返回已写入的响应体字节数，不含响应头；Hijack 后直接写连接的字节不计入。
@@ -63,7 +84,7 @@ func (w *ResponseWriter) WriteString(s string) (int, error) {
 }
 
 // ReadFrom 优先走底层 ReaderFrom（sendfile 等）；否则用 io.Copy。
-// 视作一次写：即使源为空也先提交最终 200。
+// 视作一次写：即使源为空也先提交最终状态（未预设时 200）。
 func (w *ResponseWriter) ReadFrom(src io.Reader) (int64, error) {
     if w.hijacked {
         return 0, http.ErrHijacked
@@ -100,7 +121,8 @@ func (w *ResponseWriter) FlushError() error {
 }
 
 // Hijack 把底层连接交给调用方（WebSocket、CONNECT 隧道等）。
-// 成功后不再有 HTTP 语义：之后直接写连接的字节不计入 Size，StatusCode 也停在 Hijack 前的值。
+// 成功后不再有 HTTP 语义：之后直接写连接的字节不计入 Size；未写出状态时 StatusCode 返回 0，
+// 已记录的状态码保持原值。
 func (w *ResponseWriter) Hijack() (conn net.Conn, rw *bufio.ReadWriter, err error) {
     if h, ok := w.w.(http.Hijacker); ok {
         if conn, rw, err = h.Hijack(); err == nil {
@@ -136,10 +158,18 @@ func (w *ResponseWriter) EnableFullDuplex() error {
 }
 
 // commit 确保首次写 body/Flush 前已写出最终头；Hijack 后不再写头。
+// status 为 0 或 1xx 时补 200；101 已由 WriteHeader 锁为最终状态，不会走到这里。
 func (w *ResponseWriter) commit() {
-    if !w.hijacked && !w.wroteHeader {
-        w.WriteHeader(http.StatusOK)
+    if w.hijacked || w.wroteHeader {
+        return
     }
+
+    code := w.status
+    if code < 200 {
+        code = http.StatusOK
+    }
+
+    w.WriteHeader(code)
 }
 
 func (w *ResponseWriter) track(f func() (int, error)) (n int, err error) {

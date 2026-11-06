@@ -97,9 +97,15 @@ func (r *Router) handler(method, pattern string, h Handler) {
         }()
 
         _, err := c.Next(nil)
-        if err != nil && !errors.Is(c.R.Context().Err(), context.Canceled) {
-            r.config.ErrorHandler(c, err)
+        if err != nil {
+            if !errors.Is(c.R.Context().Err(), context.Canceled) {
+                r.config.ErrorHandler(c, err)
+            }
+            return
         }
+
+        // 路由边界统一收口：commit 内部已判断是否写过/是否 Hijack。
+        c.W.commit()
     }))
 }
 
@@ -164,8 +170,11 @@ func (r *Router) Run(addr string) error {
 // handlePanic 是路由边界的恢复点：接住链、ErrorHandler 与框架自身逃出的 panic。
 // 必须由 defer 直接调用 recover 后转入；recover 在嵌套调用中不生效。
 func (r *Router) handlePanic(c *Ctx, p any) {
+    // 判定前先把游标推到链尾：panic 已终止链，恢复回调再调 Next 也不会续跑。
+    c.index = len(c.chain)
+
     // net/http 约定：ErrAbortHandler 静默中止响应，不记日志、不再写响应。
-    if c.index = len(c.chain); p == http.ErrAbortHandler {
+    if p == http.ErrAbortHandler {
         panic(p)
     }
 

@@ -68,9 +68,11 @@ func (c *Ctx) Next(in any) (any, error) {
     return c.chain[c.index](c, in)
 }
 
-// Status 立即写出状态码，等价于 c.W.WriteHeader(code)。
-func (c *Ctx) Status(code int) {
-    c.W.WriteHeader(code)
+// Status 设置响应状态码，返回 Ctx 以便链式调用。
+// 1xx 由 SetStatus 立即写出；其余状态码预设，等首次写 body 或链尾提交。
+func (c *Ctx) Status(code int) *Ctx {
+    c.W.SetStatus(code)
+    return c
 }
 
 func (c *Ctx) StatusCode() int {

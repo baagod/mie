@@ -286,17 +286,61 @@ func TestCtxStatusCode(t *testing.T) {
         t.Fatalf("StatusCode = %d, want 200", got)
     }
 
-    c.Status(http.StatusNoContent)
+    if got := c.Status(http.StatusNoContent); got != c {
+        t.Fatalf("Status should return the same Ctx for chaining")
+    }
     if got := c.StatusCode(); got != http.StatusNoContent {
         t.Fatalf("StatusCode = %d, want 204", got)
     }
-    if rec.Code != http.StatusNoContent {
-        t.Fatalf("wire status = %d, want 204", rec.Code)
+    if rec.Code != http.StatusOK {
+        t.Fatalf("preset must not be written before commit: wire = %d, want 200", rec.Code)
     }
 
     c.Status(http.StatusInternalServerError)
-    if got := c.StatusCode(); got != http.StatusNoContent {
-        t.Fatalf("StatusCode after ignored write = %d, want 204", got)
+    if got := c.StatusCode(); got != http.StatusInternalServerError {
+        t.Fatalf("StatusCode after overwrite = %d, want 500", got)
+    }
+
+    c.W.commit()
+    if rec.Code != http.StatusInternalServerError {
+        t.Fatalf("wire status after commit = %d, want 500", rec.Code)
+    }
+}
+
+func TestCtxStatusInformationalIsImmediate(t *testing.T) {
+    spy := &headerCodeSpy{h: http.Header{}}
+    c := NewCtx(spy, httptest.NewRequest(http.MethodGet, "/", nil))
+
+    if got := c.Status(http.StatusEarlyHints); got != c {
+        t.Fatalf("Status should return the same Ctx for chaining")
+    }
+    if len(spy.codes) != 1 || spy.codes[0] != http.StatusEarlyHints {
+        t.Fatalf("wire codes = %v, want [103]", spy.codes)
+    }
+    if got := c.StatusCode(); got != http.StatusEarlyHints {
+        t.Fatalf("StatusCode = %d, want 103", got)
+    }
+    if c.W.wroteHeader {
+        t.Fatal("1xx must not commit the final header")
+    }
+
+    c.Status(http.StatusNoContent)
+    c.W.commit()
+    if len(spy.codes) != 2 || spy.codes[1] != http.StatusNoContent {
+        t.Fatalf("wire codes = %v, want [103 204]", spy.codes)
+    }
+}
+
+func TestSetStatusForwardsInformational(t *testing.T) {
+    spy := &headerCodeSpy{h: http.Header{}}
+    c := NewCtx(spy, httptest.NewRequest(http.MethodGet, "/", nil))
+
+    c.W.SetStatus(http.StatusEarlyHints)
+    if len(spy.codes) != 1 || spy.codes[0] != http.StatusEarlyHints {
+        t.Fatalf("wire codes = %v, want [103]", spy.codes)
+    }
+    if got := c.W.StatusCode(); got != http.StatusEarlyHints {
+        t.Fatalf("StatusCode = %d, want 103", got)
     }
 }
 
