@@ -1,7 +1,6 @@
 package mux
 
 import (
-    "errors"
     "net/http"
     "net/http/httptest"
     "testing"
@@ -25,19 +24,49 @@ func TestRouteParam(t *testing.T) {
     }
 }
 
-func TestUnmatchedPathUsesErrorHandler(t *testing.T) {
-    var got error
-    r := New(Config{ErrorHandler: func(_ *Ctx, err error) { got = err }})
+func TestUnmatchedPathUsesFallback(t *testing.T) {
+    called := false
+    r := New(Config{ErrorHandler: func(*Ctx, error) { called = true }})
     r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
 
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nope", nil))
 
-    var target *Error
-    if !errors.As(got, &target) || target.Status != http.StatusNotFound {
-        t.Fatalf("ErrorHandler got %v, want *Error with status 404", got)
+    if called {
+        t.Fatal("ErrorHandler called for unmatched path; want native fallback")
     }
-    if rec.Body.Len() != 0 {
-        t.Fatalf("body = %q, want empty", rec.Body.String())
+    if rec.Code != http.StatusNotFound {
+        t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+    }
+    if got := rec.Body.String(); got != "404 page not found\n" {
+        t.Fatalf("body = %q, want native 404 body", got)
+    }
+}
+
+func TestNoMatchHandler(t *testing.T) {
+    var statuses []int
+    var allow string
+    r := New(Config{NoMatchHandler: func(c *Ctx, status int) {
+        statuses = append(statuses, status)
+        allow = c.W.Header().Get("Allow")
+    }})
+    r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
+    if rec.Code != http.StatusMethodNotAllowed || rec.Body.String() != "Method Not Allowed\n" {
+        t.Fatalf("405 response status=%d body=%q, want native 405", rec.Code, rec.Body.String())
+    }
+    if len(statuses) != 1 || statuses[0] != http.StatusMethodNotAllowed || allow != "GET, HEAD" {
+        t.Fatalf("fallback got statuses=%v allow=%q, want [405] with GET, HEAD", statuses, allow)
+    }
+
+    rec = httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nope", nil))
+    if rec.Code != http.StatusNotFound || rec.Body.String() != "404 page not found\n" {
+        t.Fatalf("404 response status=%d body=%q, want native 404", rec.Code, rec.Body.String())
+    }
+    if len(statuses) != 2 || statuses[1] != http.StatusNotFound {
+        t.Fatalf("fallback statuses=%v, want [405 404]", statuses)
     }
 }

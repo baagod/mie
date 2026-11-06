@@ -29,6 +29,7 @@ type Panic struct {
     IP          string    `json:"ip"`
     TraceID     string    `json:"traceid"`
     Error       string    `json:"error"`
+    Value       any       `json:"-"` // Error 的原始值
     Stacks      []Frame   `json:"stack"`
 }
 
@@ -40,7 +41,8 @@ type Frame struct {
     Source []string `json:"source,omitempty"`
 }
 
-func newPanic(c *Ctx, value any) *Panic {
+// NewPanic 在 c 上构造 panic 快照；err 是 recover 得到的原始值。
+func NewPanic(c *Ctx, err any) *Panic {
     return &Panic{
         Time:        time.Now(),
         Method:      c.R.Method,
@@ -49,7 +51,8 @@ func newPanic(c *Ctx, value any) *Panic {
         ContentType: c.R.Header.Get(HeaderContentType),
         IP:          c.RemoteIP(),
         TraceID:     c.TraceID(),
-        Error:       fmt.Sprint(value),
+        Error:       fmt.Sprint(err),
+        Value:       err,
         Stacks:      captureFrames(),
     }
 }
@@ -85,34 +88,17 @@ func (p *Panic) JSON() string {
     return string(b)
 }
 
-// Recoverer 返回恢复中间件：接住 panic，构造 Panic 交给 h 处理。
-// h 为 nil 时记默认日志（Panic.Text）；h 非 nil 时由 h 自己负责响应。
-// panic 不经过 Config.ErrorHandler。
-//
-// register 把 Recoverer 固定为每个路由链的首个处理器；
-// Config.RecoverHandler 只定制捕获后的行为。
-func Recoverer(h func(c *Ctx, p *Panic)) Handler {
-    return func(c *Ctx, in any) (_ any, err error) {
-        defer func() {
-            if p := recover(); p != nil {
-                // net/http 约定：panic(http.ErrAbortHandler) 用于静默中止响应，
-                // 既不该记日志也不该写响应。继续抛回给 net/http 处理。
-                if p == http.ErrAbortHandler {
-                    panic(p)
-                }
+// defaultRecoverHandler 是未配置 Config.RecoverHandler 时的兜底：
+// 记录 Panic；响应未提交则写 500，已提交则断连。
+func defaultRecoverHandler(c *Ctx, info *Panic) {
+    slog.Error("panic recovered", "detail", info.Text())
 
-                if info := newPanic(c, p); h != nil {
-                    h(c, info)
-                } else {
-                    slog.Error("panic recovered", "detail", info.Text())
-                }
-
-                err = RecoverError
-            }
-        }()
-
-        return c.Next(in)
+    if c.W.wroteHeader {
+        // 响应已开始，写不了 500；断连，避免客户端把半截响应当成完整响应。
+        panic(http.ErrAbortHandler)
     }
+    c.W.WriteHeader(http.StatusInternalServerError)
+    _, _ = c.W.WriteString(http.StatusText(http.StatusInternalServerError))
 }
 
 // captureFrames 从 recover 点向上取前几个用户帧，跳过运行时、net/http 与 mux 自身的帧。
