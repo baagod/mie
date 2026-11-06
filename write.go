@@ -12,13 +12,14 @@ import (
 // ResponseWriter 转发底层 writer 的 HTTP 写接口与常用可选能力；底层 writer 不可达。
 type ResponseWriter struct {
     w           http.ResponseWriter
-    status      int   // 最近一次写出的状态码
+    status      int   // 已记录写入的状态码，写入最终状态后不再更新。
     size        int64 // 已写入的响应体字节数
     wroteHeader bool
     hijacked    bool
 }
 
-// StatusCode 返回最近一次写出的状态码；未写出时返回 200，Hijack 且未写出时返回 0。
+// StatusCode 返回已记录的状态码：1xx 会被后续状态覆盖，最终状态码写出后不再更新。
+// 尚未写出状态码时：未 Hijack 返回 200，已 Hijack 返回 0。
 func (w *ResponseWriter) StatusCode() int {
     if w.status != 0 {
         return w.status
