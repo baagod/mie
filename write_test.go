@@ -488,3 +488,54 @@ func TestWriterFlushAfterHijackForwards(t *testing.T) {
         t.Fatalf("Size = %d, want 0", got)
     }
 }
+
+func TestPresetStatusCommitsOnWrite(t *testing.T) {
+    tests := []struct {
+        name  string
+        write func(*Ctx) error
+    }{
+        {"WriteString", func(c *Ctx) error {
+            _, err := c.W.WriteString("ok")
+            return err
+        }},
+        {"Flush", func(c *Ctx) error {
+            c.W.Flush()
+            return nil
+        }},
+        {"ReadFrom", func(c *Ctx) error {
+            _, err := c.W.ReadFrom(strings.NewReader("ok"))
+            return err
+        }},
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            c, cw := newCapabilityCtx()
+            c.Status(http.StatusCreated)
+
+            if err := tt.write(c); err != nil {
+                t.Fatal(err)
+            }
+            if got := cw.ResponseRecorder.Code; got != http.StatusCreated {
+                t.Fatalf("wire status = %d, want %d", got, http.StatusCreated)
+            }
+        })
+    }
+}
+
+func TestCommitPromotesInformationalStatus(t *testing.T) {
+    spy := &headerCodeSpy{h: make(http.Header)}
+    c := NewCtx(spy, httptest.NewRequest(http.MethodGet, "/", nil))
+
+    c.Status(http.StatusEarlyHints)
+    if _, err := c.W.WriteString("ok"); err != nil {
+        t.Fatal(err)
+    }
+
+    if len(spy.codes) != 2 || spy.codes[0] != http.StatusEarlyHints || spy.codes[1] != http.StatusOK {
+        t.Fatalf("wire codes = %v, want [%d %d]", spy.codes, http.StatusEarlyHints, http.StatusOK)
+    }
+    if got := c.W.StatusCode(); got != http.StatusOK {
+        t.Fatalf("StatusCode = %d, want %d", got, http.StatusOK)
+    }
+}
