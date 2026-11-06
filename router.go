@@ -104,7 +104,7 @@ func (r *Router) handler(method, pattern string, h Handler) {
             return
         }
 
-        // 路由边界统一收口：commit 内部已判断是否写过/是否 Hijack。
+        // 路由边界统一收口：commit 内部已判断是否写过和 hijacked
         c.W.commit()
     }))
 }

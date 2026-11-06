@@ -100,6 +100,7 @@ func (w *ResponseWriter) Flush() {
 }
 
 // FlushError 供 http.ResponseController 使用；Flush 前先提交最终头。
+// Hijack 后仍转发给底层，与 net/http 一致；连接已交给调用方，是否 Flush 由其决定。
 func (w *ResponseWriter) FlushError() error {
     switch f := w.w.(type) {
     case interface{ FlushError() error }:
