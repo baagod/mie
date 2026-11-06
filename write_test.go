@@ -2,6 +2,7 @@ package mux
 
 import (
     "bufio"
+    "errors"
     "io"
     "net"
     "net/http"
@@ -388,10 +389,7 @@ func TestWriterSizeReadFromFallback(t *testing.T) {
 type partialWriter struct{ http.ResponseWriter }
 
 func (w *partialWriter) Write(p []byte) (int, error) {
-    n := len(p)
-    if n > 2 {
-        n = 2
-    }
+    n := min(len(p), 2)
     _, _ = w.ResponseWriter.Write(p[:n])
     return n, io.ErrShortWrite
 }
@@ -401,7 +399,7 @@ func TestWriterSizePartialWrite(t *testing.T) {
     c := NewCtx(&partialWriter{rec}, httptest.NewRequest(http.MethodGet, "/", nil))
 
     n, err := c.W.Write([]byte("hello"))
-    if n != 2 || err != io.ErrShortWrite {
+    if n != 2 || !errors.Is(err, io.ErrShortWrite) {
         t.Fatalf("n = %d, err = %v, want 2, ErrShortWrite", n, err)
     }
     if got := c.W.Size(); got != 2 {
