@@ -1,6 +1,7 @@
 package mux
 
 import (
+    "cmp"
     "encoding/json"
     "fmt"
     "log/slog"
@@ -21,23 +22,23 @@ const (
 
 // Panic 是一次 panic 的事件快照，只用于日志与自定义响应，不会自动发给客户端。
 type Panic struct {
-    Time        time.Time
-    Method      string
-    Host        string
-    Path        string
-    ContentType string
-    IP          string
-    TraceID     string
-    Error       string
-    Stacks      []Frame
+    Time        time.Time `json:"time"`
+    Method      string    `json:"method"`
+    Host        string    `json:"host"`
+    Path        string    `json:"path"`
+    ContentType string    `json:"content_type"`
+    IP          string    `json:"ip"`
+    TraceID     string    `json:"traceid"`
+    Error       string    `json:"error"`
+    Stacks      []Frame   `json:"stack"`
 }
 
 // Frame 是调用栈中的一帧。Source 是 panic 行附近的源码（读不到时为空）。
 type Frame struct {
-    File   string
-    Line   int
-    Func   string
-    Source []string
+    File   string   `json:"file"`
+    Line   int      `json:"line"`
+    Func   string   `json:"func"`
+    Source []string `json:"source,omitempty"`
 }
 
 func newPanic(c *Ctx, value any) *Panic {
@@ -62,9 +63,9 @@ func (p *Panic) Text() string {
     label(&b, "Time", p.Time.Format(panicTimeLayout))
     label(&b, "Request", p.Method+" "+p.Path)
     label(&b, "Host", p.Host)
-    label(&b, "ContentType", orDash(p.ContentType))
+    label(&b, "ContentType", cmp.Or(p.ContentType, "-"))
     label(&b, "IP", p.IP)
-    label(&b, "TraceID", orDash(p.TraceID))
+    label(&b, "TraceID", cmp.Or(p.TraceID, "-"))
     label(&b, "Error", p.Error)
 
     for _, f := range p.Stacks {
@@ -77,38 +78,7 @@ func (p *Panic) Text() string {
 
 // JSON 返回单行 JSON 日志；字段全部可序列化，不存在失败路径。
 func (p *Panic) JSON() string {
-    type jsonFrame struct {
-        File   string   `json:"file"`
-        Line   int      `json:"line"`
-        Func   string   `json:"func"`
-        Source []string `json:"source,omitempty"`
-    }
-    type payload struct {
-        Time    string      `json:"time"`
-        Method  string      `json:"method"`
-        Host    string      `json:"host"`
-        Path    string      `json:"path"`
-        IP      string      `json:"ip"`
-        TraceID string      `json:"traceid"`
-        Error   string      `json:"error"`
-        Stack   []jsonFrame `json:"stack"`
-    }
-
-    v := payload{
-        Time:    p.Time.Format(panicTimeLayout),
-        Method:  p.Method,
-        Host:    p.Host,
-        Path:    p.Path,
-        IP:      p.IP,
-        TraceID: p.TraceID,
-        Error:   p.Error,
-    }
-
-    for _, f := range p.Stacks {
-        v.Stack = append(v.Stack, jsonFrame{File: f.File, Line: f.Line, Func: f.Func, Source: f.Source})
-    }
-
-    b, _ := json.Marshal(v)
+    b, _ := json.Marshal(p)
     return string(b)
 }
 
@@ -119,7 +89,7 @@ func (p *Panic) JSON() string {
 // register 把 Recoverer 固定为每个路由链的首个处理器；
 // Config.RecoverHandler 只定制捕获后的行为。
 func Recoverer(h func(c *Ctx, p *Panic)) Handler {
-    return func(c *Ctx, in any) (out any, err error) {
+    return func(c *Ctx, in any) (_ any, err error) {
         defer func() {
             if p := recover(); p != nil {
                 // net/http 约定：panic(http.ErrAbortHandler) 用于静默中止响应，
@@ -231,12 +201,14 @@ func readSource(file string, line int) []string {
     lines := strings.Split(string(data), "\n")
     start := sourceStart(line)
     end := min(line+sourceRadius, len(lines))
-
-    out := make([]string, 0, end-start+1)
-    for i := start; i <= end; i++ {
-        out = append(out, strings.TrimRight(lines[i-1], "\r"))
+    if start > len(lines) {
+        return nil
     }
-    return out
+
+    for i := start - 1; i < end; i++ {
+        lines[i] = strings.TrimRight(lines[i], "\r")
+    }
+    return lines[start-1 : end]
 }
 
 func writeSource(b *strings.Builder, f Frame) {
@@ -252,13 +224,6 @@ func writeSource(b *strings.Builder, f Frame) {
         // Go 的栈只有 file:line，没有列号；用行号前的 > 标记整行，长行也不会破坏对齐。
         _, _ = fmt.Fprintf(b, "%s%4d  %s\n", marker, n, line)
     }
-}
-
-func orDash(s string) string {
-    if s == "" {
-        return "-"
-    }
-    return s
 }
 
 func label(b *strings.Builder, k, v string) {
