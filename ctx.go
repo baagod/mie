@@ -94,9 +94,8 @@ func (c *Ctx) writeError(err error) {
         return
     }
 
-    c.index = len(c.chain)
-    if c.W.wroteHeader || c.W.hijacked {
-        // 状态码已经发出，再写只会得到非法响应；保持已有响应。
+    if c.index = len(c.chain); c.W.hijacked {
+        slog.Warn("mux: error after hijack", "err", err)
         return
     }
 
@@ -106,13 +105,11 @@ func (c *Ctx) writeError(err error) {
     }
 
     h := c.W.Header()
-    ct := h.Get(HeaderContentType)
-
-    if ct == "" {
+    if ct := h.Get(HeaderContentType); ct == "" {
         // 框架自己选类型：text/plain，配套 nosniff
         h.Set(HeaderContentType, MIMETextPlainCharsetUTF8)
         h.Set(HeaderXContentTypeOptions, ContentTypeOptionsNosniff)
-    } else if mt, _, err := mime.ParseMediaType(ct); err == nil && mt == "text/plain" {
+    } else if t, _, e := mime.ParseMediaType(ct); e == nil && t == "text/plain" {
         // 用户声明了 text/plain：这是唯一会被嗅探成 HTML 的类型，补 nosniff
         if h.Get(HeaderXContentTypeOptions) == "" {
             h.Set(HeaderXContentTypeOptions, ContentTypeOptionsNosniff)

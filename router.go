@@ -13,11 +13,12 @@ import (
 
 // Config 零值可用：未配置的字段走默认行为。
 type Config struct {
-    // ErrorHandler 处理 handler 链返回的 error；nil 时写默认错误响应。
-    // panic 与 404/405 不经过这里。
+    // ErrorHandler 处理 handler 链返回的 error，返回值交给 writeError 写响应；
+    // nil 时原样放行。panic 与 404/405 不经过这里。
     ErrorHandler func(c *Ctx, err error) error
 
-    // RecoverHandler 定制路由边界捕获的 panic；nil 时记日志，响应未提交则写 500，已提交则断连。
+    // RecoverHandler 定制路由边界捕获的 panic，返回值交给 writeError 写响应；
+    // 未配置时记日志并写 500。响应已提交时框架中止连接，不再进入写出口。
     RecoverHandler func(c *Ctx, p *Panic) error
 
     // NoMatchHandler 在 net/http 写完 404/405 后被调用，status 只会是这两个值。
@@ -31,9 +32,8 @@ type Router struct {
     config      Config
 }
 
-// defaultErrorHandler 是未配置 Config.ErrorHandler 时的兜底：
-// 把 handler 返回的错误写成状态码与文本。
-func defaultErrorHandler(c *Ctx, err error) error {
+// defaultErrorHandler 原样放行错误；响应头与 body 由 writeError 统一写出。
+func defaultErrorHandler(_ *Ctx, err error) error {
     return err
 }
 

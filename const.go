@@ -7,7 +7,6 @@ const (
 )
 
 const (
-    MIMEApplicationJSON       = "application/json"
     MIMETextPlainCharsetUTF8  = "text/plain; charset=utf-8"
     ContentTypeOptionsNosniff = "nosniff"
 )

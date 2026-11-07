@@ -53,17 +53,22 @@ func (w *ResponseWriter) Size() int64 { return w.size }
 func (w *ResponseWriter) Header() http.Header { return w.w.Header() }
 
 // WriteHeader 写出状态码。1xx（101 除外）不算提交；101 与 200–999 是最终状态，写出后不再记录后续状态码。
-// 已提交后非法码交给底层忽略；已 Hijack 后直接返回，与 net/http 一致。
+// 最终状态已写出后忽略后续 WriteHeader：连接上只有第一个最终状态有效，重复写只会给底层留下噪音日志。
+// 已 Hijack 后直接返回，与 net/http 一致。
 func (w *ResponseWriter) WriteHeader(code int) {
     if w.hijacked {
         return
     }
 
-    if !w.wroteHeader {
-        checkStatusCode(code)
-        if w.status = code; code >= 200 || code == 101 {
-            w.wroteHeader = true
-        }
+    if w.wroteHeader {
+        // TODO: 记录日志：最终状态已写出，后续 WriteHeader 被忽略
+        return
+    }
+
+    checkStatusCode(code)
+    w.status = code
+    if code >= 200 || code == 101 {
+        w.wroteHeader = true
     }
 
     w.w.WriteHeader(code)
