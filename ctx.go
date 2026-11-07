@@ -4,6 +4,8 @@ import (
     "crypto/rand"
     "encoding/hex"
     "errors"
+    "log/slog"
+    "mime"
     "net"
     "net/http"
 )
@@ -85,3 +87,40 @@ func (c *Ctx) Size() int64 {
 }
 
 func (c *Ctx) Param(name string) string { return c.R.PathValue(name) }
+
+// writeError 是所有错误响应的唯一出口。
+func (c *Ctx) writeError(err error) {
+    if err == nil {
+        return
+    }
+
+    c.index = len(c.chain)
+    if c.W.wroteHeader || c.W.hijacked {
+        // 状态码已经发出，再写只会得到非法响应；保持已有响应。
+        return
+    }
+
+    status := http.StatusInternalServerError
+    if e, ok := errors.AsType[*Error](err); ok && e != nil {
+        status = e.Status
+    }
+
+    h := c.W.Header()
+    ct := h.Get(HeaderContentType)
+
+    if ct == "" {
+        // 框架自己选类型：text/plain，配套 nosniff
+        h.Set(HeaderContentType, MIMETextPlainCharsetUTF8)
+        h.Set(HeaderXContentTypeOptions, ContentTypeOptionsNosniff)
+    } else if mt, _, err := mime.ParseMediaType(ct); err == nil && mt == "text/plain" {
+        // 用户声明了 text/plain：这是唯一会被嗅探成 HTML 的类型，补 nosniff
+        if h.Get(HeaderXContentTypeOptions) == "" {
+            h.Set(HeaderXContentTypeOptions, ContentTypeOptionsNosniff)
+        }
+    }
+
+    c.W.WriteHeader(status)
+    if _, e := c.W.WriteString(err.Error()); e != nil {
+        slog.Warn("mux: write error response", "err", e)
+    }
+}

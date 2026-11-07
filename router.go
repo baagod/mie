@@ -15,10 +15,10 @@ import (
 type Config struct {
     // ErrorHandler 处理 handler 链返回的 error；nil 时写默认错误响应。
     // panic 与 404/405 不经过这里。
-    ErrorHandler func(c *Ctx, err error)
+    ErrorHandler func(c *Ctx, err error) error
 
     // RecoverHandler 定制路由边界捕获的 panic；nil 时记日志，响应未提交则写 500，已提交则断连。
-    RecoverHandler func(c *Ctx, p *Panic)
+    RecoverHandler func(c *Ctx, p *Panic) error
 
     // NoMatchHandler 在 net/http 写完 404/405 后被调用，status 只会是这两个值。
     // 此时响应已提交，只能记录；为 nil 时不做任何额外工作。
@@ -33,18 +33,8 @@ type Router struct {
 
 // defaultErrorHandler 是未配置 Config.ErrorHandler 时的兜底：
 // 把 handler 返回的错误写成状态码与文本。
-func defaultErrorHandler(c *Ctx, err error) {
-    status := http.StatusInternalServerError
-    if e, ok := errors.AsType[*Error](err); ok && e != nil {
-        status = e.Status
-    }
-
-    header := c.W.Header()
-    header.Set(HeaderContentType, MIMETextPlainCharsetUTF8)
-    header.Set(HeaderXContentTypeOptions, ContentTypeOptionsNosniff)
-
-    c.W.WriteHeader(status)
-    _, _ = c.W.WriteString(err.Error())
+func defaultErrorHandler(c *Ctx, err error) error {
+    return err
 }
 
 // New 创建 Router。panic 由路由闭包中的 defer 恢复，见 handlePanic。
@@ -61,6 +51,10 @@ func New(cfg ...Config) *Router {
 
     if c.ErrorHandler == nil {
         c.ErrorHandler = defaultErrorHandler
+    }
+
+    if c.RecoverHandler == nil {
+        c.RecoverHandler = defaultRecoverHandler
     }
 
     return &Router{
@@ -96,10 +90,9 @@ func (r *Router) handler(method, pattern string, h Handler) {
             }
         }()
 
-        _, err := c.Next(nil)
-        if err != nil {
+        if _, err := c.Next(nil); err != nil {
             if !errors.Is(c.R.Context().Err(), context.Canceled) {
-                r.config.ErrorHandler(c, err)
+                c.writeError(r.config.ErrorHandler(c, err))
             }
             return
         }
@@ -178,11 +171,10 @@ func (r *Router) handlePanic(c *Ctx, p any) {
         panic(p)
     }
 
-    info := NewPanic(c, p)
-    if f := r.config.RecoverHandler; f != nil {
-        f(c, info)
-        return
+    err := r.config.RecoverHandler(c, NewPanic(c, p))
+    if c.W.wroteHeader || c.W.hijacked {
+        panic(http.ErrAbortHandler)
     }
 
-    defaultRecoverHandler(c, info)
+    c.writeError(err)
 }

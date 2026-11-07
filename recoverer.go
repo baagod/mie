@@ -5,7 +5,6 @@ import (
     "encoding/json/v2"
     "fmt"
     "log/slog"
-    "net/http"
     "os"
     "path/filepath"
     "runtime"
@@ -90,16 +89,9 @@ func (p *Panic) JSON() string {
 
 // defaultRecoverHandler 是未配置 Config.RecoverHandler 时的兜底：
 // 记录 Panic；响应未提交则写 500，已提交则断连。
-func defaultRecoverHandler(c *Ctx, info *Panic) {
+func defaultRecoverHandler(c *Ctx, info *Panic) error {
     slog.Error("PANIC RECOVERED", "detail", info.Text())
-
-    if c.W.wroteHeader {
-        // 响应已开始，不写 500，避免客户端把半截响应当成完整响应。
-        panic(http.ErrAbortHandler)
-    }
-
-    c.W.WriteHeader(http.StatusInternalServerError)
-    _, _ = c.W.WriteString(http.StatusText(http.StatusInternalServerError))
+    return Status500InternalServerError()
 }
 
 // captureFrames 从 recover 点向上取前几个用户帧，跳过运行时、net/http 与 mux 自身的帧。
