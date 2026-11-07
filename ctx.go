@@ -89,12 +89,14 @@ func (c *Ctx) Size() int64 {
 func (c *Ctx) Param(name string) string { return c.R.PathValue(name) }
 
 // writeError 是所有错误响应的唯一出口。
+// 错误文本会原样写给客户端：内部细节放日志，不要放进 error 文本。
 func (c *Ctx) writeError(err error) {
     if err == nil {
         return
     }
 
-    if c.index = len(c.chain); c.W.hijacked {
+    c.index = len(c.chain)
+    if c.W.hijacked {
         slog.Warn("mux: error after hijack", "err", err)
         return
     }
