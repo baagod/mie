@@ -3,6 +3,7 @@ package mux
 import (
     "errors"
     "io"
+    "net"
     "net/http"
     "net/http/httptest"
     "testing"
@@ -147,6 +148,40 @@ func TestRouteCommitsPresetStatus(t *testing.T) {
     }
 }
 
+// 用户声明 text/plain 但没设 nosniff 时，框架补上。
+func TestWriteErrorAddsNosniffToUserTextPlain(t *testing.T) {
+    r := New()
+    r.Get("/plain", func(c *Ctx, _ any) (any, error) {
+        c.SetHeader(HeaderContentType, "text/plain; charset=utf-8")
+        return nil, NewError(http.StatusBadRequest, "bad input")
+    })
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/plain", nil))
+
+    if got := rec.Header().Get(HeaderXContentTypeOptions); got != ContentTypeOptionsNosniff {
+        t.Fatalf("X-Content-Type-Options = %q, want %q", got, ContentTypeOptionsNosniff)
+    }
+}
+
+// 锁定契约：ErrorHandler 返回 nil 表示已自行处理，框架不再写任何响应。
+func TestErrorHandlerNilLeavesResponseUntouched(t *testing.T) {
+    r := New(Config{ErrorHandler: func(*Ctx, error) error { return nil }})
+    r.Get("/handled", func(*Ctx, any) (any, error) {
+        return nil, errors.New("handled elsewhere")
+    })
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/handled", nil))
+
+    if rec.Code != http.StatusOK {
+        t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+    }
+    if rec.Body.Len() != 0 {
+        t.Fatalf("body = %q, want empty", rec.Body.String())
+    }
+}
+
 func TestWriteErrorKeepsCustomContentType(t *testing.T) {
     r := New()
     r.Get("/json", func(c *Ctx, _ any) (any, error) {
@@ -203,5 +238,44 @@ func TestPanicAfterWriteAbortsResponse(t *testing.T) {
     defer resp.Body.Close()
     if _, rerr := io.ReadAll(resp.Body); rerr == nil {
         t.Fatal("response completed; want aborted connection")
+    }
+}
+
+// 锁定：连接被 Hijack 后框架不再写连接，handler 写的字节原样到达客户端。
+func TestWriteErrorAfterHijackLeavesConnectionAlone(t *testing.T) {
+    r := New()
+    r.Get("/hijack", func(c *Ctx, _ any) (any, error) {
+        conn, _, err := c.W.Hijack()
+        if err != nil {
+            t.Errorf("Hijack: %v", err)
+            return nil, err
+        }
+        defer conn.Close()
+
+        if _, err := conn.Write([]byte("hijacked\n")); err != nil {
+            t.Errorf("write hijacked connection: %v", err)
+        }
+        return nil, NewError(http.StatusBadRequest, "late")
+    })
+
+    s := httptest.NewServer(r)
+    defer s.Close()
+
+    conn, err := net.Dial("tcp", s.Listener.Addr().String())
+    if err != nil {
+        t.Fatalf("dial: %v", err)
+    }
+    defer conn.Close()
+
+    if _, err := io.WriteString(conn, "GET /hijack HTTP/1.1\r\nHost: test\r\n\r\n"); err != nil {
+        t.Fatalf("write request: %v", err)
+    }
+
+    got, err := io.ReadAll(conn)
+    if err != nil {
+        t.Fatalf("read: %v", err)
+    }
+    if string(got) != "hijacked\n" {
+        t.Fatalf("connection = %q, want %q", got, "hijacked\n")
     }
 }
