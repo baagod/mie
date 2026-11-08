@@ -24,6 +24,7 @@ func TestAccessLogWritesRecord(t *testing.T) {
         path    string
         handler Handler
         want    []string
+        notWant []string
     }{
         {
             name:    "handler error",
@@ -32,19 +33,25 @@ func TestAccessLogWritesRecord(t *testing.T) {
             handler: func(*Ctx, any) (any, error) {
                 return nil, NewError(http.StatusTeapot, "short and stout")
             },
-            want: []string{"level=WARN", "msg=access", "status=418", "path=/teapot", "pattern=/teapot", `error="short and stout"`},
+            want: []string{
+                "level=WARN", "msg=access", "status=418", "path=/teapot", "pattern=/teapot",
+                `error="short and stout"`, "latency=", "traceid=trace-1", "ip=192.0.2.1",
+            },
+            notWant: []string{"latency=2562047h"},
         },
         {
             name: "unmatched",
             path: "/missing",
-            want: []string{"level=WARN", "msg=access", "status=404", "path=/missing"},
+            want: []string{"level=INFO", "msg=access", "status=404", "path=/missing", "latency=", "traceid=trace-1", "ip=192.0.2.1"},
         },
         {
             name:    "panic",
             pattern: "/panic",
             path:    "/panic",
             handler: func(*Ctx, any) (any, error) { panic("boom") },
-            want:    []string{"level=ERROR", "msg=access", "status=500"},
+            want: []string{
+                "level=ERROR", "msg=access", "status=500", "latency=", "traceid=trace-1", "ip=192.0.2.1",
+            },
         },
     }
 
@@ -56,12 +63,19 @@ func TestAccessLogWritesRecord(t *testing.T) {
                 r.Get(tc.pattern, tc.handler)
             }
 
-            r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, tc.path, nil))
+            req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+            req.Header.Set(HeaderXRequestID, "trace-1")
+            r.ServeHTTP(httptest.NewRecorder(), req)
 
             out := buf.String()
             for _, want := range tc.want {
                 if !strings.Contains(out, want) {
                     t.Fatalf("日志 = %q，缺少 %q", out, want)
+                }
+            }
+            for _, notWant := range tc.notWant {
+                if strings.Contains(out, notWant) {
+                    t.Fatalf("日志 = %q，不应包含 %q", out, notWant)
                 }
             }
         })
@@ -126,6 +140,51 @@ func TestLoggerOverridesDefault(t *testing.T) {
         if !strings.Contains(out, want) {
             t.Fatalf("日志 = %q，缺少 %q", out, want)
         }
+    }
+}
+
+// 锁定：ServeMux 的规范化重定向不经过路由闭包，但访问日志仍要记一条。
+func TestAccessLogCoversCanonicalRedirect(t *testing.T) {
+    l, buf := testLogger()
+    r := New(Config{Logger: l})
+    r.Get("/x/", func(*Ctx, any) (any, error) { return nil, nil })
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
+
+    if rec.Code != http.StatusTemporaryRedirect {
+        t.Fatalf("status = %d, want %d", rec.Code, http.StatusTemporaryRedirect)
+    }
+    if n := strings.Count(buf.String(), "msg=access"); n != 1 {
+        t.Fatalf("access 日志条数 = %d, want 1（buf=%q）", n, buf.String())
+    }
+}
+
+// 锁定：Ctx 由用户手工构造（无 Router）时，Log 不 panic，退回框架自己的 logger。
+func TestLogWithoutRouterFallsBackToDefault(t *testing.T) {
+    var buf bytes.Buffer
+    prev := logger
+    logger = slog.New(slog.NewTextHandler(&buf, nil))
+    t.Cleanup(func() { logger = prev })
+
+    c := &Ctx{R: httptest.NewRequest(http.MethodGet, "/orphan", nil)}
+    c.LogInfo("orphan log")
+
+    if !strings.Contains(buf.String(), "orphan log") {
+        t.Fatalf("日志 = %q，缺少 orphan log", buf.String())
+    }
+}
+
+// 锁定：命中路由的请求只记一条访问日志（闭包记一次，ServeHTTP 不再补）。
+func TestAccessLogWrittenOnceForHandledRoute(t *testing.T) {
+    l, buf := testLogger()
+    r := New(Config{Logger: l})
+    r.Get("/ok", func(*Ctx, any) (any, error) { return nil, nil })
+
+    r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/ok", nil))
+
+    if n := strings.Count(buf.String(), "msg=access"); n != 1 {
+        t.Fatalf("access 日志条数 = %d, want 1（buf=%q）", n, buf.String())
     }
 }
 

@@ -1,12 +1,16 @@
 package mux
 
 import (
+    "context"
     "errors"
     "io"
+    "log/slog"
     "net"
     "net/http"
     "net/http/httptest"
+    "strings"
     "testing"
+    "time"
 )
 
 func TestRouteParam(t *testing.T) {
@@ -222,7 +226,8 @@ func TestPanicWritesDefault500(t *testing.T) {
 }
 
 func TestPanicAfterWriteAbortsResponse(t *testing.T) {
-    r := New()
+    l, buf := testLogger()
+    r := New(Config{Logger: l})
     r.Get("/half", func(c *Ctx, _ any) (any, error) {
         _, _ = c.W.WriteString("half")
         panic("boom")
@@ -232,18 +237,42 @@ func TestPanicAfterWriteAbortsResponse(t *testing.T) {
     defer s.Close()
 
     resp, err := http.Get(s.URL + "/half")
-    if err != nil {
-        return
+    if err == nil {
+        defer resp.Body.Close()
+        if _, rerr := io.ReadAll(resp.Body); rerr == nil {
+            t.Fatal("response completed; want aborted connection")
+        }
     }
-    defer resp.Body.Close()
-    if _, rerr := io.ReadAll(resp.Body); rerr == nil {
-        t.Fatal("response completed; want aborted connection")
+
+    if !strings.Contains(buf.String(), "msg=access") {
+        t.Fatalf("日志 = %q，缺少响应已提交后 panic 的访问日志", buf.String())
     }
 }
 
+// accessRecordHandler 在收到 msg=access 时把记录送到 channel，供异步路径断言。
+type accessRecordHandler struct {
+    access chan slog.Record
+}
+
+func (h *accessRecordHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *accessRecordHandler) Handle(_ context.Context, r slog.Record) error {
+    if r.Message == "access" {
+        select {
+        case h.access <- r:
+        default:
+        }
+    }
+    return nil
+}
+
+func (h *accessRecordHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *accessRecordHandler) WithGroup(string) slog.Handler     { return h }
+
 // 锁定：连接被 Hijack 后框架不再写连接，handler 写的字节原样到达客户端。
 func TestWriteErrorAfterHijackLeavesConnectionAlone(t *testing.T) {
-    r := New()
+    h := &accessRecordHandler{access: make(chan slog.Record, 1)}
+    r := New(Config{Logger: slog.New(h)})
     r.Get("/hijack", func(c *Ctx, _ any) (any, error) {
         conn, _, err := c.W.Hijack()
         if err != nil {
@@ -277,5 +306,46 @@ func TestWriteErrorAfterHijackLeavesConnectionAlone(t *testing.T) {
     }
     if string(got) != "hijacked\n" {
         t.Fatalf("connection = %q, want %q", got, "hijacked\n")
+    }
+
+    select {
+    case rec := <-h.access:
+        status := int64(-1)
+        rec.Attrs(func(a slog.Attr) bool {
+            if a.Key == "status" {
+                status = a.Value.Int64()
+            }
+            return true
+        })
+        if status != 0 {
+            t.Fatalf("access status = %d, want 0（Hijack 后未写状态码）", status)
+        }
+    case <-time.After(2 * time.Second):
+        t.Fatal("没有记录 Hijack 请求的 access 日志")
+    }
+}
+
+func TestNoMatchHandlerPanicLogsOnce(t *testing.T) {
+    logger, buf := testLogger()
+    r := New(Config{
+        Logger: logger,
+        NoMatchHandler: func(*Ctx, int) {
+            panic("boom")
+        },
+    })
+
+    func() {
+        defer func() { _ = recover() }()
+        r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/missing", nil))
+    }()
+
+    var n int
+    for _, line := range strings.Split(buf.String(), "\n") {
+        if strings.Contains(line, "msg=access") {
+            n++
+        }
+    }
+    if n != 1 {
+        t.Fatalf("access 日志条数 = %d, want 1\n%s", n, buf.String())
     }
 }

@@ -11,6 +11,9 @@ import (
     "time"
 )
 
+// ctxKey 把 Ctx 挂到请求 context 上，供路由闭包取回。
+type ctxKey struct{}
+
 // Handler 是链上的统一签名；路由的泛型参数在注册时转成 any。
 type Handler func(c *Ctx, in any) (any, error)
 
@@ -23,6 +26,7 @@ type Ctx struct {
     index   int
     traceid string
     start   time.Time
+    handled bool // 表示请求已进入路由闭包；ServeHTTP 据此决定是否补访问日志。
 }
 
 func (c *Ctx) TraceID() string { return c.traceid }

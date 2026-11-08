@@ -31,9 +31,6 @@ type Config struct {
     Logger *slog.Logger
 }
 
-// ctxKey 把 Ctx 挂到请求 context 上，供路由闭包取回。
-type ctxKey struct{}
-
 type Router struct {
     mux         *http.ServeMux
     middlewares []Handler
@@ -66,7 +63,7 @@ func New(cfg ...Config) *Router {
     }
 
     if c.Logger == nil {
-        c.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+        c.Logger = logger
     }
 
     return &Router{
@@ -94,22 +91,22 @@ func (r *Router) handler(method, pattern string, h Handler) {
 
     r.mux.Handle(method+" "+pattern, http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
         // Ctx 由 ServeHTTP 创建并挂在 context 上，这里只负责跑链；
-        // recover 与访问日志统一在 ServeHTTP 的 defer 里处理。
+        // panic 的恢复与补记在 ServeHTTP 的 defer 里处理。
         c := req.Context().Value(ctxKey{}).(*Ctx)
         c.chain = chain
+        c.handled = true
 
         _, err := c.Next(nil)
         if err != nil {
             if !errors.Is(c.R.Context().Err(), context.Canceled) {
                 c.writeError(r.config.ErrorHandler(c, err))
             }
-            c.logAccess(err)
-            return
+        } else {
+            // 路由边界统一收口：commit 内部已判断是否写过和 hijacked
+            c.W.commit()
         }
 
-        // 路由边界统一收口：commit 内部已判断是否写过和 hijacked
-        c.W.commit()
-        c.logAccess(nil)
+        c.logAccess(err)
     }))
 }
 
@@ -119,20 +116,22 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
     defer func() {
         if p := recover(); p != nil {
             r.handlePanic(c, p)
-            c.logAccess(nil)
         }
     }()
 
     r.mux.ServeHTTP(c.W, c.R)
 
-    // Pattern 为空说明响应由 ServeMux 自己写出（404/405），没有经过路由闭包。
-    if c.R.Pattern == "" {
-        c.logAccess(nil)
+    // handled 为 false 说明响应由 ServeMux 自己写出（404/405/规范化重定向），
+    // 没有经过路由闭包，访问日志要在这里补一条。
+    if !c.handled {
         if r.config.NoMatchHandler != nil {
             if code := c.StatusCode(); code == http.StatusNotFound || code == http.StatusMethodNotAllowed {
                 r.config.NoMatchHandler(c, code)
             }
         }
+        // 放在 hook 之后：hook 写的响应也计入 status/size；
+        // hook panic 时这条不执行，由 handlePanic 补记。
+        c.logAccess(nil)
     }
 }
 
@@ -171,6 +170,9 @@ func (r *Router) Run(addr string) error {
 func (r *Router) handlePanic(c *Ctx, p any) {
     // 判定前先把游标推到链尾：panic 已终止链，恢复回调再调 Next 也不会续跑。
     c.index = len(c.chain)
+
+    // 三条出口（中止信号、已提交断连、正常写 500）都恰好记一条访问日志。
+    defer c.logAccess(nil)
 
     // net/http 约定：ErrAbortHandler 静默中止响应，不记日志、不再写响应。
     if p == http.ErrAbortHandler {
