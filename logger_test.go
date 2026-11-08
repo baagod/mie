@@ -3,6 +3,7 @@ package mux
 import (
     "bytes"
     "context"
+    "errors"
     "log/slog"
     "net/http"
     "net/http/httptest"
@@ -10,24 +11,10 @@ import (
     "testing"
 )
 
-func captureLogs(t *testing.T) *bytes.Buffer {
-    t.Helper()
-    return captureLogsWith(t, nil)
-}
-
-// captureLogsWith 把框架 logger 换成写入内存的 TextHandler（可包一层自定义 Handler），
-// 测试结束后恢复。
-func captureLogsWith(t *testing.T, wrap func(slog.Handler) slog.Handler) *bytes.Buffer {
-    t.Helper()
+// testLogger 返回写入内存的 Logger 及其缓冲区，便于断言日志内容。
+func testLogger() (*slog.Logger, *bytes.Buffer) {
     var buf bytes.Buffer
-    var h slog.Handler = slog.NewTextHandler(&buf, nil)
-    if wrap != nil {
-        h = wrap(h)
-    }
-    prev := logger
-    logger = slog.New(h)
-    t.Cleanup(func() { logger = prev })
-    return &buf
+    return slog.New(slog.NewTextHandler(&buf, nil)), &buf
 }
 
 func TestAccessLogWritesRecord(t *testing.T) {
@@ -63,8 +50,8 @@ func TestAccessLogWritesRecord(t *testing.T) {
 
     for _, tc := range cases {
         t.Run(tc.name, func(t *testing.T) {
-            buf := captureLogs(t)
-            r := New()
+            l, buf := testLogger()
+            r := New(Config{Logger: l})
             if tc.pattern != "" {
                 r.Get(tc.pattern, tc.handler)
             }
@@ -100,8 +87,8 @@ func (h enrichHandler) WithGroup(name string) slog.Handler {
 }
 
 func TestHandlerCanReadCtx(t *testing.T) {
-    buf := captureLogsWith(t, func(h slog.Handler) slog.Handler { return enrichHandler{h} })
-    r := New()
+    var buf bytes.Buffer
+    r := New(Config{Logger: slog.New(enrichHandler{slog.NewTextHandler(&buf, nil)})})
     r.Get("/users/{id}", func(*Ctx, any) (any, error) { return nil, nil })
 
     r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/users/42", nil))
@@ -111,43 +98,55 @@ func TestHandlerCanReadCtx(t *testing.T) {
     }
 }
 
-func TestLogHandlerOverridesDefault(t *testing.T) {
-    buf := captureLogs(t)
-    userLogger := slog.New(slog.NewTextHandler(buf, nil))
-    var calls int
+func TestNewDefaultsLogger(t *testing.T) {
+    r := New()
+    if r.config.Logger == nil {
+        t.Fatal("New 应填入默认 Logger")
+    }
 
-    r := New(Config{
-        LogHandler: func(c *Ctx, level slog.Level, msg string, attrs []slog.Attr) {
-            calls++
-            if c.R.URL.Path == "/health" {
-                return
-            }
-            attrs = append(attrs, slog.String("tenant", "acme"))
-            userLogger.LogAttrs(c, level, msg, attrs...)
-        },
-    })
-    r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
+    l, _ := testLogger()
+    r = New(Config{Logger: l})
+    if r.config.Logger != l {
+        t.Fatal("New 不应覆盖用户传入的 Logger")
+    }
+}
+
+func TestLoggerOverridesDefault(t *testing.T) {
+    l, buf := testLogger()
+
+    r := New(Config{Logger: l})
     r.Get("/teapot", func(*Ctx, any) (any, error) {
         return nil, NewError(http.StatusTeapot, "short and stout")
     })
 
-    r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/health", nil))
     r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/teapot", nil))
 
-    if calls != 2 {
-        t.Fatalf("LogHandler 调用次数 = %d，期望 2", calls)
-    }
-
     out := buf.String()
-    if strings.Contains(out, "path=/health") {
-        t.Fatalf("LogHandler 跳过的请求不应写出日志: %q", out)
-    }
-    for _, want := range []string{"msg=access", "level=WARN", "status=418", "tenant=acme"} {
+    for _, want := range []string{"level=WARN", "msg=access", "status=418", `error="short and stout"`} {
         if !strings.Contains(out, want) {
             t.Fatalf("日志 = %q，缺少 %q", out, want)
         }
     }
-    if n := strings.Count(out, "msg=access"); n != 1 {
-        t.Fatalf("access 记录应只由 LogHandler 写出一次，实际 %d 条: %q", n, out)
+}
+
+func TestLoggerReceivesFrameworkLogs(t *testing.T) {
+    l, buf := testLogger()
+
+    r := New(Config{Logger: l})
+    r.Get("/panic", func(*Ctx, any) (any, error) { panic("boom") })
+    r.Get("/late", func(c *Ctx, _ any) (any, error) {
+        c.W.WriteHeader(http.StatusCreated)
+        _, _ = c.W.WriteString("created")
+        return nil, errors.New("late failure")
+    })
+
+    r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/panic", nil))
+    r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/late", nil))
+
+    out := buf.String()
+    for _, want := range []string{"PANIC RECOVERED", "mux: error after response committed", "msg=access"} {
+        if !strings.Contains(out, want) {
+            t.Fatalf("日志 = %q，缺少 %q", out, want)
+        }
     }
 }

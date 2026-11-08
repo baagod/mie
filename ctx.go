@@ -1,6 +1,7 @@
 package mux
 
 import (
+    "context"
     "crypto/rand"
     "encoding/hex"
     "errors"
@@ -48,16 +49,19 @@ func (c *Ctx) SetHeader(name, value string) {
     c.W.Header().Set(name, value)
 }
 
-// NewCtx 包装 ResponseWriter，确定 TraceID 并回写响应头。
+// newCtx 包装 ResponseWriter，确定 TraceID 并回写响应头。
 // TraceID 复用 X-Request-Id；缺失或超过 maxTraceIDLen 时生成 32 位十六进制随机值。
-func NewCtx(w http.ResponseWriter, req *http.Request) *Ctx {
+func newCtx(w http.ResponseWriter, req *http.Request, r *Router) *Ctx {
     c := &Ctx{
-        R:       req,
         index:   -1,
         traceid: req.Header.Get(HeaderXRequestID),
         start:   time.Now(),
+        router:  r,
     }
 
+    // 把 Ctx 塞回请求：路由闭包从 context 取回同一个实例。
+    // Pattern 与 PathValue 由 ServeMux 写在这个副本上，未命中时 Pattern 为空。
+    c.R = req.WithContext(context.WithValue(req.Context(), ctxKey{}, c))
     c.W = &ResponseWriter{w: w}
 
     if c.traceid == "" || len(c.traceid) > 128 {
@@ -110,7 +114,7 @@ func (c *Ctx) writeError(err error) {
 
     c.index = len(c.chain)
     if c.W.hijacked {
-        logger.Warn("mux: error after hijack", "err", err)
+        c.LogWarn("mux: error after hijack", "error", err)
         return
     }
 
@@ -131,8 +135,13 @@ func (c *Ctx) writeError(err error) {
         }
     }
 
-    c.W.WriteHeader(status)
+    if c.W.wroteHeader {
+        c.LogWarn("mux: error after response committed", "error", err)
+    } else {
+        c.W.WriteHeader(status)
+    }
+
     if _, e := c.W.WriteString(err.Error()); e != nil {
-        logger.Warn("mux: write error response", "err", e)
+        c.LogWarn("mux: write error response", "error", e)
     }
 }

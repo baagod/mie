@@ -42,9 +42,16 @@ func (w *capabilityWriter) SetReadDeadline(time.Time) error  { w.readDeadline = 
 func (w *capabilityWriter) SetWriteDeadline(time.Time) error { w.writeDeadline = true; return nil }
 func (w *capabilityWriter) EnableFullDuplex() error          { w.fullDuplex = true; return nil }
 
+// testRouter 只给写层测试提供 Logger 与 context 注入，不参与路由。
+var testRouter = New()
+
+func newTestCtx(w http.ResponseWriter, req *http.Request) *Ctx {
+    return newCtx(w, req, testRouter)
+}
+
 func newCapabilityCtx() (*Ctx, *capabilityWriter) {
     cw := &capabilityWriter{ResponseRecorder: httptest.NewRecorder()}
-    return NewCtx(cw, httptest.NewRequest(http.MethodGet, "/", nil)), cw
+    return newTestCtx(cw, httptest.NewRequest(http.MethodGet, "/", nil)), cw
 }
 
 type plainWriter struct{ http.ResponseWriter }
@@ -109,7 +116,7 @@ func TestWriterReadFromForwards(t *testing.T) {
 
 func TestWriterReadFromFallback(t *testing.T) {
     rec := httptest.NewRecorder()
-    c := NewCtx(&plainWriter{rec}, httptest.NewRequest(http.MethodGet, "/", nil))
+    c := newTestCtx(&plainWriter{rec}, httptest.NewRequest(http.MethodGet, "/", nil))
 
     n, err := c.W.ReadFrom(strings.NewReader("fallback"))
     if err != nil {
@@ -152,7 +159,7 @@ func TestResponseControllerCapabilities(t *testing.T) {
 }
 
 func TestWriterUnsupportedCapabilities(t *testing.T) {
-    c := NewCtx(&plainWriter{httptest.NewRecorder()}, httptest.NewRequest(http.MethodGet, "/", nil))
+    c := newTestCtx(&plainWriter{httptest.NewRecorder()}, httptest.NewRequest(http.MethodGet, "/", nil))
 
     if _, _, err := c.W.Hijack(); err != http.ErrNotSupported {
         t.Fatalf("Hijack error = %v, want ErrNotSupported", err)
@@ -184,7 +191,7 @@ func TestWriterImplicitOK(t *testing.T) {
     for _, tt := range tests {
         t.Run(tt.name, func(t *testing.T) {
             rec := httptest.NewRecorder()
-            c := NewCtx(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+            c := newTestCtx(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
             tt.write(c)
 
@@ -203,7 +210,7 @@ func TestWriterImplicitOK(t *testing.T) {
 
 func TestWriterStatusCode(t *testing.T) {
     rec := httptest.NewRecorder()
-    c := NewCtx(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+    c := newTestCtx(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
     if got := c.W.StatusCode(); got != http.StatusOK {
         t.Fatalf("StatusCode before write = %d, want 200", got)
@@ -228,7 +235,7 @@ func TestWriterStatusCode(t *testing.T) {
 
 func TestWriterStatusEarlyHints(t *testing.T) {
     rec := httptest.NewRecorder()
-    c := NewCtx(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+    c := newTestCtx(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
     c.W.WriteHeader(http.StatusEarlyHints)
     if got := c.W.StatusCode(); got != http.StatusEarlyHints {
@@ -244,7 +251,7 @@ func TestWriterStatusEarlyHints(t *testing.T) {
 // 101 是最终状态：之后再写 body 不能再补一个 200 头。
 func TestWriterSwitchingProtocolsIsFinal(t *testing.T) {
     spy := &headerCodeSpy{h: http.Header{}}
-    c := NewCtx(spy, httptest.NewRequest(http.MethodGet, "/", nil))
+    c := newTestCtx(spy, httptest.NewRequest(http.MethodGet, "/", nil))
 
     c.W.WriteHeader(http.StatusSwitchingProtocols)
     if _, err := c.W.Write([]byte("x")); err != nil {
@@ -280,7 +287,7 @@ func TestWriterHijackStatus(t *testing.T) {
 
 func TestCtxStatusCode(t *testing.T) {
     rec := httptest.NewRecorder()
-    c := NewCtx(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+    c := newTestCtx(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
     if got := c.StatusCode(); got != http.StatusOK {
         t.Fatalf("StatusCode = %d, want 200", got)
@@ -309,7 +316,7 @@ func TestCtxStatusCode(t *testing.T) {
 
 func TestCtxStatusInformationalIsImmediate(t *testing.T) {
     spy := &headerCodeSpy{h: http.Header{}}
-    c := NewCtx(spy, httptest.NewRequest(http.MethodGet, "/", nil))
+    c := newTestCtx(spy, httptest.NewRequest(http.MethodGet, "/", nil))
 
     if got := c.Status(http.StatusEarlyHints); got != c {
         t.Fatalf("Status should return the same Ctx for chaining")
@@ -333,7 +340,7 @@ func TestCtxStatusInformationalIsImmediate(t *testing.T) {
 
 func TestSetStatusForwardsInformational(t *testing.T) {
     spy := &headerCodeSpy{h: http.Header{}}
-    c := NewCtx(spy, httptest.NewRequest(http.MethodGet, "/", nil))
+    c := newTestCtx(spy, httptest.NewRequest(http.MethodGet, "/", nil))
 
     c.W.SetStatus(http.StatusEarlyHints)
     if len(spy.codes) != 1 || spy.codes[0] != http.StatusEarlyHints {
@@ -347,7 +354,7 @@ func TestSetStatusForwardsInformational(t *testing.T) {
 func TestStatusRejectsInvalidCode(t *testing.T) {
     for _, code := range []int{99, 1000} {
         t.Run(fmt.Sprintf("code=%d", code), func(t *testing.T) {
-            c := NewCtx(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+            c := newTestCtx(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
             defer func() {
                 if recover() == nil {
                     t.Fatalf("Status(%d) did not panic", code)
@@ -359,7 +366,7 @@ func TestStatusRejectsInvalidCode(t *testing.T) {
 }
 
 func TestWriteHeaderInvalidCodeAfterCommitDoesNotPanic(t *testing.T) {
-    c := NewCtx(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+    c := newTestCtx(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
     c.W.WriteHeader(http.StatusCreated)
 
     defer func() {
@@ -376,7 +383,7 @@ func TestWriteHeaderInvalidCodeAfterCommitDoesNotPanic(t *testing.T) {
 
 func TestWriterSize(t *testing.T) {
     rec := httptest.NewRecorder()
-    c := NewCtx(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+    c := newTestCtx(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
     if got := c.W.Size(); got != 0 {
         t.Fatalf("Size before write = %d, want 0", got)
@@ -413,7 +420,7 @@ func (w *partialWriter) Write(p []byte) (int, error) {
 
 func TestWriterSizePartialWrite(t *testing.T) {
     rec := httptest.NewRecorder()
-    c := NewCtx(&partialWriter{rec}, httptest.NewRequest(http.MethodGet, "/", nil))
+    c := newTestCtx(&partialWriter{rec}, httptest.NewRequest(http.MethodGet, "/", nil))
 
     n, err := c.W.Write([]byte("hello"))
     if n != 2 || !errors.Is(err, io.ErrShortWrite) {
@@ -525,7 +532,7 @@ func TestPresetStatusCommitsOnWrite(t *testing.T) {
 
 func TestCommitPromotesInformationalStatus(t *testing.T) {
     spy := &headerCodeSpy{h: make(http.Header)}
-    c := NewCtx(spy, httptest.NewRequest(http.MethodGet, "/", nil))
+    c := newTestCtx(spy, httptest.NewRequest(http.MethodGet, "/", nil))
 
     c.Status(http.StatusEarlyHints)
     if _, err := c.W.WriteString("ok"); err != nil {

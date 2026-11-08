@@ -26,10 +26,9 @@ type Config struct {
     // 此时响应已提交，只能记录；为 nil 时不做任何额外工作。
     NoMatchHandler func(c *Ctx, status int)
 
-    // LogHandler 接管访问日志：配置后框架不再打印，由回调决定记什么、记到哪；
-    // nil 时框架用自己的 logger 输出一条 access 记录（stderr 文本）。
-    // level 由状态码换算：5xx 为 Error、4xx 为 Warn、其余 Info。
-    LogHandler func(c *Ctx, level slog.Level, msg string, attrs []slog.Attr)
+    // Logger 是框架日志的落地位置：访问日志与框架自身的诊断日志都写到这里；
+    // nil 时 New 填入写 stderr 的默认 Logger。按请求过滤或加字段，请包一层 slog.Handler。
+    Logger *slog.Logger
 }
 
 // ctxKey 把 Ctx 挂到请求 context 上，供路由闭包取回。
@@ -64,6 +63,10 @@ func New(cfg ...Config) *Router {
 
     if c.RecoverHandler == nil {
         c.RecoverHandler = defaultRecoverHandler
+    }
+
+    if c.Logger == nil {
+        c.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
     }
 
     return &Router{
@@ -111,11 +114,7 @@ func (r *Router) handler(method, pattern string, h Handler) {
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-    c := NewCtx(w, req)
-    c.router = r
-    // 把 Ctx 塞回请求：路由闭包从 context 取回同一个实例。
-    // Pattern 与 PathValue 由 ServeMux 写在这个副本上，未命中时 Pattern 为空。
-    c.R = req.WithContext(context.WithValue(req.Context(), ctxKey{}, c))
+    c := newCtx(w, req, r)
 
     defer func() {
         if p := recover(); p != nil {

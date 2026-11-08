@@ -87,8 +87,8 @@ func (p *Panic) JSON() string {
 }
 
 // defaultRecoverHandler 是未配置 Config.RecoverHandler 时的兜底：记录 Panic 并返回 500。
-func defaultRecoverHandler(_ *Ctx, info *Panic) error {
-    logger.Error("PANIC RECOVERED", "detail", info.Text())
+func defaultRecoverHandler(c *Ctx, info *Panic) error {
+    c.LogError("PANIC RECOVERED", "detail", info.Text())
     return Status500InternalServerError()
 }
 

@@ -1,16 +1,11 @@
 package mux
 
 import (
+    "fmt"
     "log/slog"
-    "os"
     "strings"
     "time"
 )
-
-// logger 是框架自己的日志器，不跟随应用对 slog.Default() 的修改。
-// 直接构造而非取 slog.Default()：后者取决于 init 顺序，若应用在 init 里
-// SetDefault，框架就会拿到应用的 logger。
-var logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 
 // logAccess 在响应结束后调用一次，此时状态码与已写字节数都已定稿。
 // Hijack 后连接已交给 handler，StatusCode 为 0。
@@ -25,24 +20,40 @@ func (c *Ctx) logAccess(err error) {
         level = slog.LevelWarn
     }
 
-    attrs := []slog.Attr{
-        slog.String("method", c.R.Method),
-        slog.Int("status", status),
-        slog.String("path", c.R.URL.Path),
-        slog.String("pattern", strings.TrimPrefix(c.R.Pattern, c.R.Method+" ")),
-        slog.Duration("latency", time.Since(c.start)),
-        slog.String("traceid", c.TraceID()),
-        slog.String("ip", c.RemoteIP()),
+    args := []any{
+        "method", c.R.Method,
+        "status", status,
+        "path", c.R.URL.Path,
+        "pattern", strings.TrimPrefix(c.R.Pattern, c.R.Method+" "),
+        "latency", time.Since(c.start),
+        "traceid", c.TraceID(),
+        "ip", c.RemoteIP(),
     }
 
     if err != nil {
-        attrs = append(attrs, slog.Any("error", err))
+        args = append(args, "error", err)
     }
 
-    if c.router.config.LogHandler != nil {
-        c.router.config.LogHandler(c, level, "access", attrs)
-        return
-    }
+    c.Log(level, "access", args...)
+}
 
-    logger.LogAttrs(c, level, "access", attrs...)
+// Log 是框架所有日志的统一出口，落到 Router 配置的 Logger。
+func (c *Ctx) Log(level slog.Level, msg string, args ...any) {
+    c.router.config.Logger.Log(c, level, msg, args...)
+}
+
+func (c *Ctx) LogWarn(msg string, args ...any)  { c.Log(slog.LevelWarn, msg, args...) }
+func (c *Ctx) LogError(msg string, args ...any) { c.Log(slog.LevelError, msg, args...) }
+func (c *Ctx) LogInfo(msg string, args ...any)  { c.Log(slog.LevelInfo, msg, args...) }
+
+func (c *Ctx) LogWarnf(format string, args ...any) {
+    c.Log(slog.LevelWarn, fmt.Sprintf(format, args...))
+}
+
+func (c *Ctx) LogErrorf(format string, args ...any) {
+    c.Log(slog.LevelError, fmt.Sprintf(format, args...))
+}
+
+func (c *Ctx) LogInfof(format string, args ...any) {
+    c.Log(slog.LevelInfo, fmt.Sprintf(format, args...))
 }
