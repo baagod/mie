@@ -4,10 +4,10 @@ import (
     "crypto/rand"
     "encoding/hex"
     "errors"
-    "log/slog"
     "mime"
     "net"
     "net/http"
+    "time"
 )
 
 // Handler 是链上的统一签名；路由的泛型参数在注册时转成 any。
@@ -17,9 +17,11 @@ type Ctx struct {
     W *ResponseWriter
     R *http.Request
 
+    router  *Router
     chain   []Handler
     index   int
     traceid string
+    start   time.Time
 }
 
 func (c *Ctx) TraceID() string { return c.traceid }
@@ -49,7 +51,13 @@ func (c *Ctx) SetHeader(name, value string) {
 // NewCtx 包装 ResponseWriter，确定 TraceID 并回写响应头。
 // TraceID 复用 X-Request-Id；缺失或超过 maxTraceIDLen 时生成 32 位十六进制随机值。
 func NewCtx(w http.ResponseWriter, req *http.Request) *Ctx {
-    c := &Ctx{R: req, index: -1, traceid: req.Header.Get(HeaderXRequestID)}
+    c := &Ctx{
+        R:       req,
+        index:   -1,
+        traceid: req.Header.Get(HeaderXRequestID),
+        start:   time.Now(),
+    }
+
     c.W = &ResponseWriter{w: w}
 
     if c.traceid == "" || len(c.traceid) > 128 {
@@ -88,6 +96,11 @@ func (c *Ctx) Size() int64 {
 
 func (c *Ctx) Param(name string) string { return c.R.PathValue(name) }
 
+func (c *Ctx) Deadline() (time.Time, bool) { return c.R.Context().Deadline() }
+func (c *Ctx) Done() <-chan struct{}       { return c.R.Context().Done() }
+func (c *Ctx) Err() error                  { return c.R.Context().Err() }
+func (c *Ctx) Value(key any) any           { return c.R.Context().Value(key) }
+
 // writeError 是所有错误响应的唯一出口。
 // 错误文本会原样写给客户端：内部细节放日志，不要放进 error 文本。
 func (c *Ctx) writeError(err error) {
@@ -97,7 +110,7 @@ func (c *Ctx) writeError(err error) {
 
     c.index = len(c.chain)
     if c.W.hijacked {
-        slog.Warn("mux: error after hijack", "err", err)
+        logger.Warn("mux: error after hijack", "err", err)
         return
     }
 
@@ -120,6 +133,6 @@ func (c *Ctx) writeError(err error) {
 
     c.W.WriteHeader(status)
     if _, e := c.W.WriteString(err.Error()); e != nil {
-        slog.Warn("mux: write error response", "err", e)
+        logger.Warn("mux: write error response", "err", e)
     }
 }

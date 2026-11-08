@@ -3,6 +3,7 @@ package mux
 import (
     "context"
     "errors"
+    "log/slog"
     "net/http"
     "os"
     "os/signal"
@@ -24,7 +25,15 @@ type Config struct {
     // NoMatchHandler 在 net/http 写完 404/405 后被调用，status 只会是这两个值。
     // 此时响应已提交，只能记录；为 nil 时不做任何额外工作。
     NoMatchHandler func(c *Ctx, status int)
+
+    // LogHandler 接管访问日志：配置后框架不再打印，由回调决定记什么、记到哪；
+    // nil 时框架用自己的 logger 输出一条 access 记录（stderr 文本）。
+    // level 由状态码换算：5xx 为 Error、4xx 为 Warn、其余 Info。
+    LogHandler func(c *Ctx, level slog.Level, msg string, attrs []slog.Attr)
 }
+
+// ctxKey 把 Ctx 挂到请求 context 上，供路由闭包取回。
+type ctxKey struct{}
 
 type Router struct {
     mux         *http.ServeMux
@@ -80,53 +89,51 @@ func (r *Router) Post(pattern string, h Handler) {
 func (r *Router) handler(method, pattern string, h Handler) {
     chain := slices.Concat(r.middlewares, []Handler{h})
 
-    r.mux.Handle(method+" "+pattern, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-        c := NewCtx(w, req)
+    r.mux.Handle(method+" "+pattern, http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
+        // Ctx 由 ServeHTTP 创建并挂在 context 上，这里只负责跑链；
+        // recover 与访问日志统一在 ServeHTTP 的 defer 里处理。
+        c := req.Context().Value(ctxKey{}).(*Ctx)
         c.chain = chain
 
-        defer func() {
-            if p := recover(); p != nil {
-                r.handlePanic(c, p)
-            }
-        }()
-
-        if _, err := c.Next(nil); err != nil {
+        _, err := c.Next(nil)
+        if err != nil {
             if !errors.Is(c.R.Context().Err(), context.Canceled) {
                 c.writeError(r.config.ErrorHandler(c, err))
             }
+            c.logAccess(err)
             return
         }
 
         // 路由边界统一收口：commit 内部已判断是否写过和 hijacked
         c.W.commit()
+        c.logAccess(nil)
     }))
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-    if r.config.NoMatchHandler == nil {
-        // 无 hook：完全交给 net/http，404/405/307 保持原生。
-        r.mux.ServeHTTP(w, req)
-        return
-    }
-
-    if _, pattern := r.mux.Handler(req); pattern != "" {
-        // 命中也要走 ServeMux.ServeHTTP：PathValue 由它填充，Ctx.Param 才有值；
-        // 代价是命中路径匹配两次。
-        r.mux.ServeHTTP(w, req)
-        return
-    }
-
-    // 未命中且配了 hook：让 net/http 正常写 404/405，c.W 只负责记账。
     c := NewCtx(w, req)
+    c.router = r
+    // 把 Ctx 塞回请求：路由闭包从 context 取回同一个实例。
+    // Pattern 与 PathValue 由 ServeMux 写在这个副本上，未命中时 Pattern 为空。
+    c.R = req.WithContext(context.WithValue(req.Context(), ctxKey{}, c))
+
     defer func() {
         if p := recover(); p != nil {
             r.handlePanic(c, p)
+            c.logAccess(nil)
         }
     }()
 
-    r.mux.ServeHTTP(c.W, req)
-    if code := c.W.StatusCode(); code == 404 || code == 405 {
-        r.config.NoMatchHandler(c, code)
+    r.mux.ServeHTTP(c.W, c.R)
+
+    // Pattern 为空说明响应由 ServeMux 自己写出（404/405），没有经过路由闭包。
+    if c.R.Pattern == "" {
+        c.logAccess(nil)
+        if r.config.NoMatchHandler != nil {
+            if code := c.StatusCode(); code == http.StatusNotFound || code == http.StatusMethodNotAllowed {
+                r.config.NoMatchHandler(c, code)
+            }
+        }
     }
 }
 

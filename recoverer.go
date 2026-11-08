@@ -4,7 +4,6 @@ import (
     "cmp"
     "encoding/json/v2"
     "fmt"
-    "log/slog"
     "os"
     "path/filepath"
     "runtime"
@@ -89,7 +88,7 @@ func (p *Panic) JSON() string {
 
 // defaultRecoverHandler 是未配置 Config.RecoverHandler 时的兜底：记录 Panic 并返回 500。
 func defaultRecoverHandler(_ *Ctx, info *Panic) error {
-    slog.Error("PANIC RECOVERED", "detail", info.Text())
+    logger.Error("PANIC RECOVERED", "detail", info.Text())
     return Status500InternalServerError()
 }
 
