@@ -51,30 +51,58 @@ func TestUnmatchedPathSkipsErrorHandler(t *testing.T) {
 }
 
 func TestNoMatchHandler(t *testing.T) {
-    var statuses []int
-    var allow string
-    r := New(Config{NoMatchHandler: func(c *Ctx, status int) {
-        statuses = append(statuses, status)
-        allow = c.W.Header().Get("Allow")
+    calls := 0
+    served := 0
+    r := New(Config{NoMatchHandler: func(c *Ctx) error {
+        calls++
+        c.W.WriteHeader(http.StatusNotFound)
+        _, _ = c.W.WriteString("hooked")
+        return nil
     }})
-    r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
+    r.Get("/health", func(*Ctx, any) (any, error) { served++; return nil, nil })
+
+    for _, target := range []struct{ method, path string }{
+        {http.MethodPost, "/health"},
+        {http.MethodGet, "/nope"},
+    } {
+        rec := httptest.NewRecorder()
+        r.ServeHTTP(rec, httptest.NewRequest(target.method, target.path, nil))
+        if rec.Code != http.StatusNotFound || rec.Body.String() != "hooked" {
+            t.Fatalf("%s %s response status=%d body=%q, want hook-written 404",
+                target.method, target.path, rec.Code, rec.Body.String())
+        }
+    }
+    if calls != 2 {
+        t.Fatalf("hook calls = %d, want 2", calls)
+    }
+
+    // 配了 hook 时，命中路由仍应正常派发，不经过 hook。
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+    if rec.Code != http.StatusOK {
+        t.Fatalf("GET /health status = %d, want %d", rec.Code, http.StatusOK)
+    }
+    if calls != 2 {
+        t.Fatalf("hook calls after matched route = %d, want 2", calls)
+    }
+    if served != 1 {
+        t.Fatalf("handler served %d times, want 1", served)
+    }
+}
+
+func TestNoMatchHandlerReturnsError(t *testing.T) {
+    r := New(Config{NoMatchHandler: func(*Ctx) error {
+        return NewError(http.StatusNotFound, "gone")
+    }})
 
     rec := httptest.NewRecorder()
-    r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
-    if rec.Code != http.StatusMethodNotAllowed || rec.Body.String() != "Method Not Allowed\n" {
-        t.Fatalf("405 response status=%d body=%q, want native 405", rec.Code, rec.Body.String())
-    }
-    if len(statuses) != 1 || statuses[0] != http.StatusMethodNotAllowed || allow != "GET, HEAD" {
-        t.Fatalf("fallback got statuses=%v allow=%q, want [405] with GET, HEAD", statuses, allow)
-    }
-
-    rec = httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nope", nil))
-    if rec.Code != http.StatusNotFound || rec.Body.String() != "404 page not found\n" {
-        t.Fatalf("404 response status=%d body=%q, want native 404", rec.Code, rec.Body.String())
+
+    if rec.Code != http.StatusNotFound {
+        t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
     }
-    if len(statuses) != 2 || statuses[1] != http.StatusNotFound {
-        t.Fatalf("fallback statuses=%v, want [405 404]", statuses)
+    if got := rec.Body.String(); got != "gone" {
+        t.Fatalf("body = %q, want %q", got, "gone")
     }
 }
 
@@ -329,7 +357,7 @@ func TestNoMatchHandlerPanicLogsOnce(t *testing.T) {
     logger, buf := testLogger()
     r := New(Config{
         Logger: logger,
-        NoMatchHandler: func(*Ctx, int) {
+        NoMatchHandler: func(*Ctx) error {
             panic("boom")
         },
     })

@@ -22,9 +22,10 @@ type Config struct {
     // 未配置时记日志并写 500。响应已提交时框架中止连接，不再进入写出口。
     RecoverHandler func(c *Ctx, p *Panic) error
 
-    // NoMatchHandler 在 net/http 写完 404/405 后被调用，status 只会是这两个值。
-    // 此时响应已提交，只能记录；为 nil 时不做任何额外工作。
-    NoMatchHandler func(c *Ctx, status int)
+    // NoMatchHandler 接管未命中响应：在 net/http 写 404/405 之前调用。
+    // 返回 nil 表示响应已自行写出（框架只负责提交）；返回 error 交给 writeError 写出。
+    // 为 nil 时保留 net/http 的默认 404/405。
+    NoMatchHandler func(c *Ctx) error
 
     // Logger 是框架日志的落地位置：访问日志与框架自身的诊断日志都写到这里；
     // nil 时 New 填入写 stderr 的默认 Logger。按请求过滤或加字段，请包一层 slog.Handler。
@@ -119,18 +120,25 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
         }
     }()
 
+    // 配了 NoMatchHandler 时先预匹配一次，才能在 net/http 写 404/405 之前接管响应。
+    if r.config.NoMatchHandler != nil {
+        if _, pattern := r.mux.Handler(c.R); pattern == "" {
+            err := r.config.NoMatchHandler(c)
+            if err != nil {
+                c.writeError(err)
+            } else {
+                c.W.commit()
+            }
+            c.logAccess(err)
+            return
+        }
+    }
+
     r.mux.ServeHTTP(c.W, c.R)
 
     // handled 为 false 说明响应由 ServeMux 自己写出（404/405/规范化重定向），
     // 没有经过路由闭包，访问日志要在这里补一条。
     if !c.handled {
-        if r.config.NoMatchHandler != nil {
-            if code := c.StatusCode(); code == http.StatusNotFound || code == http.StatusMethodNotAllowed {
-                r.config.NoMatchHandler(c, code)
-            }
-        }
-        // 放在 hook 之后：hook 写的响应也计入 status/size；
-        // hook panic 时这条不执行，由 handlePanic 补记。
         c.logAccess(nil)
     }
 }

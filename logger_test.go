@@ -9,6 +9,7 @@ import (
     "net/http/httptest"
     "strings"
     "testing"
+    "time"
 )
 
 // testLogger 返回写入内存的 Logger 及其缓冲区，便于断言日志内容。
@@ -79,6 +80,36 @@ func TestAccessLogWritesRecord(t *testing.T) {
                 }
             }
         })
+    }
+}
+
+// 锁定：latency 记录的是真实耗时，不是常量。
+func TestAccessLogMeasuresLatency(t *testing.T) {
+    l, buf := testLogger()
+    r := New(Config{Logger: l})
+    r.Get("/slow", func(*Ctx, any) (any, error) {
+        time.Sleep(2 * time.Millisecond)
+        return nil, nil
+    })
+
+    r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/slow", nil))
+
+    out := buf.String()
+    const marker = "latency="
+    i := strings.Index(out, marker)
+    if i < 0 {
+        t.Fatalf("日志 = %q，缺少 latency", out)
+    }
+    field := out[i+len(marker):]
+    if j := strings.IndexByte(field, ' '); j >= 0 {
+        field = field[:j]
+    }
+    d, err := time.ParseDuration(field)
+    if err != nil {
+        t.Fatalf("latency = %q，无法解析: %v（buf=%q）", field, err, out)
+    }
+    if d < time.Millisecond {
+        t.Fatalf("latency = %v，sleep 2ms 后应 ≥ 1ms（buf=%q）", d, out)
     }
 }
 
@@ -158,6 +189,9 @@ func TestAccessLogCoversCanonicalRedirect(t *testing.T) {
     if n := strings.Count(buf.String(), "msg=access"); n != 1 {
         t.Fatalf("access 日志条数 = %d, want 1（buf=%q）", n, buf.String())
     }
+    if out := buf.String(); !strings.Contains(out, "level=INFO") {
+        t.Fatalf("日志 = %q，want level=INFO", out)
+    }
 }
 
 // 锁定：Ctx 由用户手工构造（无 Router）时，Log 不 panic，退回框架自己的 logger。
@@ -185,6 +219,9 @@ func TestAccessLogWrittenOnceForHandledRoute(t *testing.T) {
 
     if n := strings.Count(buf.String(), "msg=access"); n != 1 {
         t.Fatalf("access 日志条数 = %d, want 1（buf=%q）", n, buf.String())
+    }
+    if out := buf.String(); !strings.Contains(out, "level=INFO") || !strings.Contains(out, "status=200") {
+        t.Fatalf("日志 = %q，want level=INFO、status=200", out)
     }
 }
 
