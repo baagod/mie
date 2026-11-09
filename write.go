@@ -16,6 +16,15 @@ type ResponseWriter struct {
     size        int64 // 已写入的响应体字节数
     wroteHeader bool
     hijacked    bool
+
+    // noMatch 由 Router 在配置了 NoMatchHandler 时挂上：ServeMux 自己写 404/405 时
+    // 先交给它写响应，默认错误体不再发给客户端。
+    // 状态码通过 w.status/StatusCode() 读取，回调不需要参数。
+    noMatch func()
+
+    // discard 在 noMatch 接管后置位，用来吞掉 ServeMux 随后写出的默认错误体。
+    discard      bool
+    noMatchAllow string // 拦截 404/405 时 mux 设的 Allow（通常只有 405 有）
 }
 
 // StatusCode 返回最近设置的状态码：1xx 也会反映。未设置时：未 Hijack 返回 200，已 Hijack 返回 0。
@@ -39,7 +48,7 @@ func (w *ResponseWriter) SetStatus(code int) {
         return
     }
 
-    if checkStatusCode(code); code < 200 {
+    if checkStatus(code); code < 200 {
         w.WriteHeader(code)
         return
     }
@@ -61,8 +70,31 @@ func (w *ResponseWriter) WriteHeader(code int) {
         return
     }
 
+    // ServeMux 自己写的 404/405：交给钩子写响应，默认错误体丢弃。
+    // 先摘掉钩子再调用：钩子里可能用 writeError 再写一次 404/405，
+    // 否则会重新进入本分支并无限递归。
+    // 注意 http.Error 在调 WriteHeader 之前已设置 Content-Type
+    // "text/plain; charset=utf-8" 与 X-Content-Type-Options "nosniff"，
+    // 这里保留它们：钩子自己写 body 时需要自行设置 Content-Type。
+    if f := w.noMatch; f != nil && (code == http.StatusNotFound || code == http.StatusMethodNotAllowed) {
+        w.noMatch = nil
+        w.status = code
+        w.noMatchAllow = w.Header().Get("Allow")
+        f()
+
+        w.discard = true
+        // 静默返回时由 commit 提交拦截到的 404/405（头保持 http.Error 设好的那些）；钩子写过响应则 no-op。
+        w.commit()
+        return
+    }
+
     if !w.wroteHeader {
-        checkStatusCode(code)
+        checkStatus(code)
+        if code != http.StatusMethodNotAllowed && w.noMatchAllow != "" {
+            if h := w.Header(); h.Get("Allow") == w.noMatchAllow {
+                h.Del("Allow")
+            }
+        }
         if w.status = code; code >= 200 || code == 101 {
             w.wroteHeader = true
         }
@@ -72,6 +104,10 @@ func (w *ResponseWriter) WriteHeader(code int) {
 }
 
 func (w *ResponseWriter) Write(p []byte) (int, error) {
+    if w.discard {
+        // http.Error 在 WriteHeader 之后还会 Fprintln 一次默认文本，吞掉它。
+        return len(p), nil
+    }
     return w.track(func() (int, error) { return w.w.Write(p) })
 }
 
@@ -179,8 +215,8 @@ func (w *ResponseWriter) track(f func() (int, error)) (n int, err error) {
     return n, err
 }
 
-// checkStatusCode 校验状态码范围；越界立即 panic。
-func checkStatusCode(code int) {
+// checkStatus 校验状态码范围；越界立即 panic。
+func checkStatus(code int) {
     if code < 100 || code > 999 {
         panic(fmt.Sprintf("mux: invalid status code %d", code))
     }

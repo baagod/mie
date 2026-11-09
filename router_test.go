@@ -71,6 +71,10 @@ func TestNoMatchHandler(t *testing.T) {
             t.Fatalf("%s %s response status=%d body=%q, want hook-written 404",
                 target.method, target.path, rec.Code, rec.Body.String())
         }
+        // 钩子把 405 改写成 404 后，Allow 不能残留（看快照头，实时 map 会掩盖"发得太晚"）。
+        if allow := rec.Result().Header.Get("Allow"); allow != "" {
+            t.Fatalf("%s %s Allow = %q, want empty", target.method, target.path, allow)
+        }
     }
     if calls != 2 {
         t.Fatalf("hook calls = %d, want 2", calls)
@@ -103,6 +107,282 @@ func TestNoMatchHandlerReturnsError(t *testing.T) {
     }
     if got := rec.Body.String(); got != "gone" {
         t.Fatalf("body = %q, want %q", got, "gone")
+    }
+}
+
+func TestNoMatchHandlerDropsAllowAfterStatusChange(t *testing.T) {
+    r := New(Config{NoMatchHandler: func(*Ctx) error {
+        return NewError(http.StatusNotFound, "gone")
+    }})
+    r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
+
+    if rec.Code != http.StatusNotFound || rec.Body.String() != "gone" {
+        t.Fatalf("status=%d body=%q, want 404 gone", rec.Code, rec.Body.String())
+    }
+    if allow := rec.Result().Header.Get("Allow"); allow != "" {
+        t.Fatalf("Allow = %q, want empty（钩子已把状态改成 404）", allow)
+    }
+}
+
+func TestNoMatchHandlerWritesNothing(t *testing.T) {
+    r := New(Config{NoMatchHandler: func(*Ctx) error { return nil }})
+    r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
+
+    // 405：保留 Allow，body 为空。
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
+    if rec.Code != http.StatusMethodNotAllowed {
+        t.Fatalf("status = %d, want 405", rec.Code)
+    }
+    if got := rec.Body.String(); got != "" {
+        t.Fatalf("body = %q, want empty（默认 405 文本已被丢弃）", got)
+    }
+    if got := rec.Result().Header.Get("Allow"); got != "GET, HEAD" {
+        t.Fatalf("Allow = %q, want %q", got, "GET, HEAD")
+    }
+    if got := rec.Result().Header.Get("Content-Type"); got != "text/plain; charset=utf-8" {
+        t.Fatalf("Content-Type = %q, want %q", got, "text/plain; charset=utf-8")
+    }
+    if got := rec.Result().Header.Get("X-Content-Type-Options"); got != "nosniff" {
+        t.Fatalf("X-Content-Type-Options = %q, want %q", got, "nosniff")
+    }
+
+    // 404：body 为空，无 Allow。
+    rec = httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nope", nil))
+    if rec.Code != http.StatusNotFound {
+        t.Fatalf("status = %d, want 404", rec.Code)
+    }
+    if got := rec.Body.String(); got != "" {
+        t.Fatalf("body = %q, want empty", got)
+    }
+    if got := rec.Result().Header.Get("Allow"); got != "" {
+        t.Fatalf("Allow = %q, want empty", got)
+    }
+}
+
+// 钩子只设置状态、不写 body：按设置的状态提交。
+func TestNoMatchHandlerStatusOnly(t *testing.T) {
+	r := New(Config{NoMatchHandler: func(c *Ctx) error {
+		c.Status(http.StatusNoContent)
+		return nil
+	}})
+	r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if got := rec.Body.String(); got != "" {
+		t.Fatalf("body = %q, want empty", got)
+	}
+}
+
+// 钩子自己设置的响应头要保留，不能被框架清理 Allow 的逻辑误删。
+func TestNoMatchHandlerKeepsOwnAllow(t *testing.T) {
+	r := New(Config{NoMatchHandler: func(c *Ctx) error {
+		c.SetHeader("Allow", "GET, POST")
+		c.Status(http.StatusOK)
+		return nil
+	}})
+	r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Result().Header.Get("Allow"); got != "GET, POST" {
+		t.Fatalf("Allow = %q, want %q", got, "GET, POST")
+	}
+}
+
+func TestNoMatchHandlerAccessLog(t *testing.T) {
+    lg, buf := testLogger()
+    r := New(Config{
+        NoMatchHandler: func(*Ctx) error { return nil },
+        Logger:         lg,
+    })
+    r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
+
+    for _, tc := range []struct{ method, path string }{
+        {http.MethodPost, "/health"},
+        {http.MethodGet, "/nope"},
+    } {
+        rec := httptest.NewRecorder()
+        r.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+    }
+
+    logs := buf.String()
+    if n := strings.Count(logs, "msg=access"); n != 2 {
+        t.Fatalf("access logs = %d, want 2\n%s", n, logs)
+    }
+    for _, want := range []string{"level=INFO", "status=405", "status=404"} {
+        if !strings.Contains(logs, want) {
+            t.Fatalf("logs missing %q:\n%s", want, logs)
+        }
+    }
+}
+
+func TestNoMatchHandlerPanicDropsAllow(t *testing.T) {
+    lg, _ := testLogger()
+    r := New(Config{
+        NoMatchHandler: func(*Ctx) error { panic("hook boom") },
+        Logger:         lg,
+    })
+    r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
+
+    if rec.Code != http.StatusInternalServerError {
+        t.Fatalf("status = %d, want 500", rec.Code)
+    }
+    if allow := rec.Result().Header.Get("Allow"); allow != "" {
+        t.Fatalf("Allow = %q, want empty（panic 后写的是 500）", allow)
+    }
+    if body := rec.Body.String(); body != http.StatusText(http.StatusInternalServerError) {
+        t.Fatalf("body = %q, want %q", body, http.StatusText(http.StatusInternalServerError))
+    }
+}
+
+func TestNoMatchHandlerMayRewriteStatus(t *testing.T) {
+    r := New(Config{NoMatchHandler: func(c *Ctx) error {
+        c.W.WriteHeader(http.StatusOK)
+        _, _ = c.W.WriteString("ok")
+        return nil
+    }})
+    r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
+
+    if rec.Code != http.StatusOK || rec.Body.String() != "ok" {
+        t.Fatalf("status=%d body=%q, want 200 ok", rec.Code, rec.Body.String())
+    }
+    if allow := rec.Result().Header.Get("Allow"); allow != "" {
+        t.Fatalf("Allow = %q, want empty（钩子已改写成 200）", allow)
+    }
+}
+
+func TestNoMatchHandlerErrorIsNotInterceptedTwice(t *testing.T) {
+    calls := 0
+    r := New(Config{NoMatchHandler: func(*Ctx) error {
+        calls++
+        return NewError(http.StatusNotFound, "gone")
+    }})
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nope", nil))
+
+    if rec.Code != http.StatusNotFound {
+        t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+    }
+    if got := rec.Body.String(); got != "gone" {
+        t.Fatalf("body = %q, want %q", got, "gone")
+    }
+    if calls != 1 {
+        t.Fatalf("NoMatchHandler calls = %d, want 1", calls)
+    }
+}
+
+func TestNoMatchHandlerSeesStatus(t *testing.T) {
+    var statuses []int
+    r := New(Config{NoMatchHandler: func(c *Ctx) error {
+        statuses = append(statuses, c.StatusCode())
+        _, _ = c.W.WriteString("hooked")
+        return nil
+    }})
+    r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
+
+    // 路径存在、方法不对：405，Allow 头保留。
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
+    if got := rec.Result().Header.Get("Allow"); got != "GET, HEAD" {
+        t.Fatalf("Allow = %q, want %q", got, "GET, HEAD")
+    }
+    if got := rec.Result().Header.Get("Content-Type"); got != "text/plain; charset=utf-8" {
+        t.Fatalf("Content-Type = %q, want %q", got, "text/plain; charset=utf-8")
+    }
+    if got := rec.Result().Header.Get("X-Content-Type-Options"); got != "nosniff" {
+        t.Fatalf("X-Content-Type-Options = %q, want %q", got, "nosniff")
+    }
+    if got := rec.Body.String(); got != "hooked" {
+        t.Fatalf("body = %q, want hook-written body without native 405 text", got)
+    }
+
+    // 路径不存在：404。
+    rec = httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nope", nil))
+    if got := rec.Body.String(); got != "hooked" {
+        t.Fatalf("body = %q, want hook-written body without native 404 text", got)
+    }
+
+    if len(statuses) != 2 || statuses[0] != http.StatusMethodNotAllowed || statuses[1] != http.StatusNotFound {
+        t.Fatalf("hook statuses = %v, want [405 404]", statuses)
+    }
+}
+
+func TestNoMatchHandlerIgnoresBusiness404(t *testing.T) {
+    calls := 0
+    r := New(Config{NoMatchHandler: func(*Ctx) error {
+        calls++
+        return nil
+    }})
+    r.Get("/missing", func(*Ctx, any) (any, error) {
+        return nil, NewError(http.StatusNotFound, "account gone")
+    })
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/missing", nil))
+
+    if calls != 0 {
+        t.Fatalf("hook calls = %d, want 0（业务 404 不是未命中）", calls)
+    }
+    if rec.Code != http.StatusNotFound || rec.Body.String() != "account gone" {
+        t.Fatalf("status=%d body=%q, want business 404", rec.Code, rec.Body.String())
+    }
+}
+
+func TestNoMatchHandlerIgnoresManual404(t *testing.T) {
+    calls := 0
+    r := New(Config{NoMatchHandler: func(*Ctx) error {
+        calls++
+        return nil
+    }})
+    r.Get("/manual", func(c *Ctx, _ any) (any, error) {
+        c.W.WriteHeader(http.StatusNotFound)
+        _, _ = c.W.WriteString("manual 404")
+        return nil, nil
+    })
+    r.Get("/teapot", func(c *Ctx, _ any) (any, error) {
+        http.Error(c.W, "nope", http.StatusMethodNotAllowed)
+        return nil, nil
+    })
+
+    for _, tc := range []struct {
+        path   string
+        status int
+        body   string
+    }{
+        {"/manual", http.StatusNotFound, "manual 404"},
+        {"/teapot", http.StatusMethodNotAllowed, "nope\n"},
+    } {
+        rec := httptest.NewRecorder()
+        r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.path, nil))
+        if rec.Code != tc.status || rec.Body.String() != tc.body {
+            t.Fatalf("%s status=%d body=%q, want %d %q", tc.path, rec.Code, rec.Body.String(), tc.status, tc.body)
+        }
+    }
+
+    if calls != 0 {
+        t.Fatalf("hook calls = %d, want 0（业务自己写的 404/405 不应被接管）", calls)
     }
 }
 

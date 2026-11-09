@@ -23,7 +23,12 @@ type Config struct {
     RecoverHandler func(c *Ctx, p *Panic) error
 
     // NoMatchHandler 接管未命中响应：在 net/http 写 404/405 之前调用。
-    // 返回 nil 表示响应已自行写出（框架只负责提交）；返回 error 交给 writeError 写出。
+    // 此时 c.StatusCode() 已是 404（路径不存在）或 405（方法不允许），405 的 Allow 头也已写好。
+    // 返回 nil 表示接管完成：写过响应就按写的发；没写则提交拦截到的 404/405（空 body）。
+    // 返回 error 交给 writeError 写出。
+    // 自行写 body 时请自行设置 Content-Type：标准库已预置的
+    // "text/plain; charset=utf-8" 与 nosniff 会被原样保留；改写 Allow 请用 SetHeader——
+    // 用 Add 追加的值在非 405 响应里会随 mux 预置值一起被清掉。
     // 为 nil 时保留 net/http 的默认 404/405。
     NoMatchHandler func(c *Ctx) error
 
@@ -96,6 +101,8 @@ func (r *Router) handler(method, pattern string, h Handler) {
         c := req.Context().Value(ctxKey{}).(*Ctx)
         c.chain = chain
         c.handled = true
+        // 已进入路由闭包：此后的 404/405 都是业务响应，不再算"未命中"。
+        c.W.noMatch = nil
 
         _, err := c.Next(nil)
         if err != nil {
@@ -120,23 +127,22 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
         }
     }()
 
-    // 配了 NoMatchHandler 时先预匹配一次，才能在 net/http 写 404/405 之前接管响应。
+    // 配了 NoMatchHandler 时把它挂到 writer 上：ServeMux 自己写 404/405 时
+    // 由 writer 就地交给钩子，默认错误体不再发出去。
     if r.config.NoMatchHandler != nil {
-        if _, pattern := r.mux.Handler(c.R); pattern == "" {
+        c.W.noMatch = func() {
+            c.handled = true
             err := r.config.NoMatchHandler(c)
             if err != nil {
                 c.writeError(err)
-            } else {
-                c.W.commit()
             }
             c.logAccess(err)
-            return
         }
     }
 
     r.mux.ServeHTTP(c.W, c.R)
 
-    // handled 为 false 说明响应由 ServeMux 自己写出（404/405/规范化重定向），
+    // handled 为 false 说明响应由 ServeMux 自己写出（规范化重定向等），
     // 没有经过路由闭包，访问日志要在这里补一条。
     if !c.handled {
         c.logAccess(nil)
