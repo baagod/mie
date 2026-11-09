@@ -72,14 +72,16 @@ func (c *Ctx) GetHeader(name string, or ...string) string {
     return h
 }
 
-// Header 设置响应头。
-func (c *Ctx) Header(name, value string) {
+// Header 设置响应头，返回 Ctx 便于链式调用
+func (c *Ctx) Header(name, value string) *Ctx {
     c.W.Header().Set(name, value)
+    return c
 }
 
-// Type 设置响应头的内容类型。
-func (c *Ctx) Type(value string) {
+// Type 设置响应头的内容类型，返回 Ctx 便于链式调用
+func (c *Ctx) Type(value string) *Ctx {
     c.W.Header().Set(HeaderContentType, value)
+    return c
 }
 
 func (c *Ctx) Next(in any) (any, error) {
