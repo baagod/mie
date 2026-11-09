@@ -83,8 +83,8 @@ func (w *ResponseWriter) WriteHeader(code int) {
         f()
 
         w.discard = true
-        // 静默返回时由 commit 提交拦截到的 404/405（头保持 http.Error 设好的那些）；钩子写过响应则 no-op。
-        w.commit()
+        // 不在这里提交：静默时由 ServeHTTP 的 finish 提交拦截到的 404/405
+        // （头保持 http.Error 设好的那些）；钩子写过响应时 commit 是 no-op。
         return
     }
 

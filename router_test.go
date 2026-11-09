@@ -166,41 +166,41 @@ func TestNoMatchHandlerWritesNothing(t *testing.T) {
 
 // 钩子只设置状态、不写 body：按设置的状态提交。
 func TestNoMatchHandlerStatusOnly(t *testing.T) {
-	r := New(Config{NoMatchHandler: func(c *Ctx) error {
-		c.Status(http.StatusNoContent)
-		return nil
-	}})
-	r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
+    r := New(Config{NoMatchHandler: func(c *Ctx) error {
+        c.Status(http.StatusNoContent)
+        return nil
+    }})
+    r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
 
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
-	}
-	if got := rec.Body.String(); got != "" {
-		t.Fatalf("body = %q, want empty", got)
-	}
+    if rec.Code != http.StatusNoContent {
+        t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+    }
+    if got := rec.Body.String(); got != "" {
+        t.Fatalf("body = %q, want empty", got)
+    }
 }
 
 // 钩子自己设置的响应头要保留，不能被框架清理 Allow 的逻辑误删。
 func TestNoMatchHandlerKeepsOwnAllow(t *testing.T) {
-	r := New(Config{NoMatchHandler: func(c *Ctx) error {
-		c.SetHeader("Allow", "GET, POST")
-		c.Status(http.StatusOK)
-		return nil
-	}})
-	r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
+    r := New(Config{NoMatchHandler: func(c *Ctx) error {
+        c.Header("Allow", "GET, POST")
+        c.Status(http.StatusOK)
+        return nil
+    }})
+    r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
 
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
-	if got := rec.Result().Header.Get("Allow"); got != "GET, POST" {
-		t.Fatalf("Allow = %q, want %q", got, "GET, POST")
-	}
+    if rec.Code != http.StatusOK {
+        t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+    }
+    if got := rec.Result().Header.Get("Allow"); got != "GET, POST" {
+        t.Fatalf("Allow = %q, want %q", got, "GET, POST")
+    }
 }
 
 func TestNoMatchHandlerAccessLog(t *testing.T) {
@@ -464,7 +464,7 @@ func TestRouteCommitsPresetStatus(t *testing.T) {
 func TestWriteErrorAddsNosniffToUserTextPlain(t *testing.T) {
     r := New()
     r.Get("/plain", func(c *Ctx, _ any) (any, error) {
-        c.SetHeader(HeaderContentType, "text/plain; charset=utf-8")
+        c.Header(HeaderContentType, "text/plain; charset=utf-8")
         return nil, NewError(http.StatusBadRequest, "bad input")
     })
 
@@ -497,7 +497,7 @@ func TestErrorHandlerNilLeavesResponseUntouched(t *testing.T) {
 func TestWriteErrorKeepsCustomContentType(t *testing.T) {
     r := New()
     r.Get("/json", func(c *Ctx, _ any) (any, error) {
-        c.SetHeader(HeaderContentType, "application/json")
+        c.Header(HeaderContentType, "application/json")
         return nil, NewError(http.StatusBadRequest, "bad input")
     })
 
@@ -575,7 +575,7 @@ func (h *accessRecordHandler) Handle(_ context.Context, r slog.Record) error {
 }
 
 func (h *accessRecordHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h *accessRecordHandler) WithGroup(string) slog.Handler     { return h }
+func (h *accessRecordHandler) WithGroup(string) slog.Handler      { return h }
 
 // 锁定：连接被 Hijack 后框架不再写连接，handler 写的字节原样到达客户端。
 func TestWriteErrorAfterHijackLeavesConnectionAlone(t *testing.T) {

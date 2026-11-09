@@ -86,12 +86,6 @@ func (p *Panic) JSON() string {
     return string(b)
 }
 
-// defaultRecoverHandler 是未配置 Config.RecoverHandler 时的兜底：记录 Panic 并返回 500。
-func defaultRecoverHandler(c *Ctx, info *Panic) error {
-    c.LogError("PANIC RECOVERED", "detail", info.Text())
-    return Status500InternalServerError()
-}
-
 // captureFrames 从 recover 点向上取前几个用户帧，跳过运行时、net/http 与 mux 自身的帧。
 func captureFrames() []Frame {
     pcs := make([]uintptr, 64)

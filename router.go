@@ -48,6 +48,12 @@ func defaultErrorHandler(_ *Ctx, err error) error {
     return err
 }
 
+// defaultRecoverHandler 是未配置 Config.RecoverHandler 时的兜底：记录 Panic 并返回 500。
+func defaultRecoverHandler(c *Ctx, info *Panic) error {
+    c.LogError("PANIC RECOVERED", "detail", info.Text())
+    return Status500InternalServerError()
+}
+
 // New 创建 Router。panic 由路由闭包中的 defer 恢复，见 handlePanic。
 // 最多接受一个 Config；多传 panic，避免误以为多个配置会合并。
 func New(cfg ...Config) *Router {
@@ -100,21 +106,14 @@ func (r *Router) handler(method, pattern string, h Handler) {
         // panic 的恢复与补记在 ServeHTTP 的 defer 里处理。
         c := req.Context().Value(ctxKey{}).(*Ctx)
         c.chain = chain
-        c.handled = true
-        // 已进入路由闭包：此后的 404/405 都是业务响应，不再算"未命中"。
-        c.W.noMatch = nil
+        c.W.noMatch = nil // 已进入路由闭包，此后的 404/405 都不算未命中。
 
         _, err := c.Next(nil)
-        if err != nil {
-            if !errors.Is(c.R.Context().Err(), context.Canceled) {
-                c.writeError(r.config.ErrorHandler(c, err))
-            }
-        } else {
-            // 路由边界统一收口：commit 内部已判断是否写过和 hijacked
-            c.W.commit()
+        if err != nil && !c.IsCanceled() {
+            err = r.config.ErrorHandler(c, err)
         }
 
-        c.logAccess(err)
+        c.finish(err)
     }))
 }
 
@@ -129,23 +128,19 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
     // 配了 NoMatchHandler 时把它挂到 writer 上：ServeMux 自己写 404/405 时
     // 由 writer 就地交给钩子，默认错误体不再发出去。
+    var err error
     if r.config.NoMatchHandler != nil {
         c.W.noMatch = func() {
-            c.handled = true
-            err := r.config.NoMatchHandler(c)
-            if err != nil {
-                c.writeError(err)
-            }
-            c.logAccess(err)
+            err = r.config.NoMatchHandler(c)
         }
     }
 
     r.mux.ServeHTTP(c.W, c.R)
 
-    // handled 为 false 说明响应由 ServeMux 自己写出（规范化重定向等），
-    // 没有经过路由闭包，访问日志要在这里补一条。
-    if !c.handled {
-        c.logAccess(nil)
+    // c.chain 只在命中路由的闭包入口赋值；仍为 nil 说明请求没进用户链
+    // （404/405/规范化重定向），访问日志在这里补一条。
+    if c.chain == nil {
+        c.finish(err)
     }
 }
 
@@ -185,18 +180,18 @@ func (r *Router) handlePanic(c *Ctx, p any) {
     // 判定前先把游标推到链尾：panic 已终止链，恢复回调再调 Next 也不会续跑。
     c.index = len(c.chain)
 
-    // 三条出口（中止信号、已提交断连、正常写 500）都恰好记一条访问日志。
-    defer c.logAccess(nil)
-
-    // net/http 约定：ErrAbortHandler 静默中止响应，不记日志、不再写响应。
-    if p == http.ErrAbortHandler {
-        panic(p)
+    var err error
+    abort := p == http.ErrAbortHandler
+    if !abort {
+        err = r.config.RecoverHandler(c, NewPanic(c, p))
+        abort = c.W.wroteHeader || c.W.hijacked
     }
 
-    err := r.config.RecoverHandler(c, NewPanic(c, p))
-    if c.W.wroteHeader || c.W.hijacked {
+    // 中止信号 / 已提交断连：都不再写响应，只记一条访问日志。
+    if abort {
+        c.logAccess(nil)
         panic(http.ErrAbortHandler)
     }
 
-    c.writeError(err)
+    c.finish(err) // 正常恢复：写 500、commit、记日志
 }

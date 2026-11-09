@@ -1,6 +1,6 @@
-# 响应出口：Send / Renderer
+# 响应出口：Send / finish
 
-状态：草案，未实现。记录时间 2026-11-07，代码基线 `1df1b14`。
+状态：已实现（2026-11-09，工作区，基线 `56fca2e`）。记录时间 2026-11-07。
 
 ## 目标
 
@@ -10,66 +10,46 @@
 c.Status(http.StatusCreated).Send(mux.JSON(v))
 ```
 
-## 已确定的约束
+## 职责划分
 
-- `Ctx.Status(code int)` 只**预设**最终状态码，返回 `*Ctx`，本身不写响应。
-- 1xx（101 除外）立即交给 `WriteHeader`，不进入预设；101 是最终状态。
-- 预设状态由 `commit()` 提交：首次写 body、Flush、ReadFrom，或路由成功返回时。
-- 非法状态码（<100 或 >999）立即 panic。
-- 错误出口保持单一漏斗：handler 返回 `error` → `Config.ErrorHandler`；不新增 `SendError`。
-- 不使用 `(data, format enum)` 之外的第二种“全家桶” API。
+- **Send 只负责写**：选格式、设 `Content-Type`、写 body；不记录日志、不碰错误漏斗。
+- **finish 只负责收尾**：提交预设状态、记一条访问日志。
+- **writeError 仍是唯一错误写出口**：错误策略由各出口先决定（路由过 `ErrorHandler`、NoMatch 直接写、panic 走中止语义），finish 只做与出口无关的收尾。
 
-## 待定方案
+日志不能放进 Send：NoMatch、规范化重定向、panic 这三条出口不经过 Send；一次请求也可能写多次；日志要的是最终状态码、字节数与耗时。收尾也不塞进 `handlePanic`：中止语义要求不写头，commit 会破坏它。
 
-### A. Renderer 接口
+## 已定方案：A（Renderer，去掉 ContentType()）
 
 ```go
 type Renderer interface {
-    ContentType() string
+    // Render 先设置 Content-Type 再写 body；失败时不得修改响应头。
     Render(c *Ctx) error
 }
 
-func (c *Ctx) Send(r Renderer) error
-// 或显式带状态：func (c *Ctx) Send(status int, r Renderer) error
+func (c *Ctx) Send(r Renderer) error // Render 后提交预设状态
+func JSON(v any) Renderer            // marshal 成功后才设 Content-Type
 ```
 
-格式构造器放包级函数，例如 `mux.JSON`、`mux.String`、`mux.Bytes`。
+选 A 不选 B：B 每加一种格式都要改 `Send` 的 switch；A 的调用形态正是目标，且用户可自定义 Renderer（模板、XML）。接口只有一个方法，复杂度是挣来的。起步只提供 `JSON`，其他格式出现真实调用再加（YAGNI）。
 
-- 优点：格式可扩展；Content-Type 与 body 分离，符合“先设头、再写 body”的时序。
-- 缺点：多一个接口；用户目前不接受 `ContentType()`。
+## 原未决问题的结论
 
-### B. 单入口枚举
-
-```go
-c.Send(data, mux.FmtJSON)
-```
-
-- 优点：调用短。
-- 缺点：格式固定，新增格式要改枚举；Content-Type 仍需在写头前确定。
-
-## 未决问题
-
-1. Send 是否带 `status` 参数，还是完全依赖 `c.Status(...)` 链式。
-2. `ContentType()` 是否保留；若不保留，采用 `Send(contentType, renderer)`、renderer 自写 header，还是预渲染成 `[]byte`。
-3. `c.Status(...)` 之后直接 `c.W.WriteString(...)` 的语义：底层会按 200 写头。是文档写死“Status 只对 Send 生效”，还是检测到直写就 panic。
-4. 错误出口是否也统一走 `c.SendXX`（当前倾向：不统一，保留 `ErrorHandler`）。
-5. Flush / Hijack 与预设状态的交互边界。
-6. 相关测试的重写：`Status` 预设后由 Send/链尾提交的行为断言。
-
-## 参考库
-
-- gin：`c.Render(code, render.Render)`，格式是 `render` 包里的独立类型。
-- fiber：`c.Format(body)` 按 `Accept` 协商；fasthttp 的 Response 是内存对象，可延迟发送。
-- go-restful：`WriteHeaderAndEntity(status, value)`，按 MIME 注册表协商。
-- 本项目直接包装 net/http，没有响应缓冲；链式成立依赖“预设 + 提交点”，不是缓冲。
+1. Send 不带 status 参数；状态只走 `c.Status(...)` 预设，避免两套来源。
+2. 删除 `ContentType()`；renderer 在 `Render` 里设头。JSON 先 marshal，成功后才设头，失败时响应头保持干净。
+3. `c.Status(201)` 后直接写 body：现有 writer 已按预设状态提交（`WriteString → track → commit`），不需要“只对 Send 生效”的文档，也不需要 panic。
+4. 错误不走 Send：Send 返回 error，handler 返回它；`ErrorHandler` / `writeError` 仍是唯一错误漏斗。
+5. Flush 先提交预设状态；Hijack 后不写头，未写状态时 `StatusCode()` 为 0。
+6. 测试见下。
 
 ## 当前代码位置
 
-- `ctx.go`：`Status` 预设最终码并返回 `*Ctx`；1xx 走 `SetStatus` → `WriteHeader`。
-- `write.go`：`SetStatus`、`commit`、`WriteHeader`；101 视为最终状态。
-- `router.go`：handler 成功返回后调用 `c.W.commit()`，提交未写出的预设状态。
-- 测试：`TestPresetStatusCommitsOnWrite`、`TestCommitPromotesInformationalStatus`、`TestWriterSwitchingProtocolsIsFinal`。
+- `send.go`：`Renderer`、`Send`、`JSON`。
+- `ctx.go`：`finish`（commit + logAccess）。
+- `router.go`：路由闭包、NoMatch 回调、ServeHTTP 兜底统一调 `finish`。
+- `send_test.go`：JSON、预设状态提交、marshal 失败、自定义 Renderer。
+- 既有测试：`TestPresetStatusCommitsOnWrite`、`TestCommitPromotesInformationalStatus`、`TestWriterSwitchingProtocolsIsFinal`。
 
-## 下一步
+## 不做
 
-先选 A 或 B，再实现 `Send` 与对应测试；Content-Type 的时序问题必须在写代码前定下来。
+- 不提供 `SendString` / `SendBytes` / `SendStatus`。
+- 不做响应缓冲；链式成立依赖“预设 + 提交点”，不是缓冲。

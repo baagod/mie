@@ -8,5 +8,6 @@ const (
 
 const (
     MIMETextPlainCharsetUTF8  = "text/plain; charset=utf-8"
+    MIMEApplicationJSON       = "application/json"
     ContentTypeOptionsNosniff = "nosniff"
 )

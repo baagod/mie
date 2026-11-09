@@ -26,7 +26,6 @@ type Ctx struct {
     index   int
     traceid string
     start   time.Time
-    handled bool // 表示请求已进入路由闭包；ServeHTTP 据此决定是否补访问日志。
 }
 
 func (c *Ctx) TraceID() string { return c.traceid }
@@ -39,17 +38,17 @@ func (c *Ctx) RemoteIP() string {
     return c.R.RemoteAddr
 }
 
-// Header 读取请求头；为空时返回第一个默认值，没有默认值则返回空串。
-func (c *Ctx) Header(name string, v ...string) string {
+// GetHeader 读取请求头；为空时返回第一个默认值，没有默认值则返回空串。
+func (c *Ctx) GetHeader(name string, or ...string) string {
     h := c.R.Header.Get(name)
-    if h == "" && len(v) > 0 {
-        h = v[0]
+    if h == "" && len(or) > 0 {
+        h = or[0]
     }
     return h
 }
 
-// SetHeader 设置响应头。
-func (c *Ctx) SetHeader(name, value string) {
+// Header 设置响应头。
+func (c *Ctx) Header(name, value string) {
     c.W.Header().Set(name, value)
 }
 
@@ -74,7 +73,7 @@ func newCtx(w http.ResponseWriter, req *http.Request, r *Router) *Ctx {
         c.traceid = hex.EncodeToString(b[:])
     }
 
-    c.SetHeader(HeaderXRequestID, c.traceid)
+    c.Header(HeaderXRequestID, c.traceid)
     return c
 }
 
@@ -102,12 +101,26 @@ func (c *Ctx) Size() int64 {
     return c.W.Size()
 }
 
+// finish 是请求的统一收尾：写错误响应（writeError）、提交预设状态、记一条访问日志。
+// 取消导致的错误不写响应；handlePanic 的中止路径不经 finish。
+func (c *Ctx) finish(err error) {
+    if err != nil && !c.IsCanceled() {
+        c.writeError(err)
+    }
+    c.W.commit()
+    c.logAccess(err)
+}
+
 func (c *Ctx) Param(name string) string { return c.R.PathValue(name) }
 
 func (c *Ctx) Deadline() (time.Time, bool) { return c.R.Context().Deadline() }
 func (c *Ctx) Done() <-chan struct{}       { return c.R.Context().Done() }
 func (c *Ctx) Err() error                  { return c.R.Context().Err() }
 func (c *Ctx) Value(key any) any           { return c.R.Context().Value(key) }
+
+func (c *Ctx) IsCanceled() bool {
+    return errors.Is(c.R.Context().Err(), context.Canceled)
+}
 
 // writeError 是所有错误响应的唯一出口。
 // 错误文本会原样写给客户端：内部细节放日志，不要放进 error 文本。
