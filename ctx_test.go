@@ -24,3 +24,45 @@ func TestHeaderAndTypeChain(t *testing.T) {
         t.Fatalf("X-Test = %q, want %q", got, "1")
     }
 }
+
+// 锁定：请求没带 X-Request-Id 时只生成 TraceID，不往响应里补头。
+func TestTraceIDGeneratedWithoutResponseHeader(t *testing.T) {
+    r := New()
+    var id string
+    r.Get("/trace", func(c *Ctx, _ any) (any, error) {
+        id = c.TraceID()
+        return nil, nil
+    })
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/trace", nil))
+
+    if got := rec.Header().Get(HeaderXRequestID); got != "" {
+        t.Fatalf("响应头 %s = %q, want empty", HeaderXRequestID, got)
+    }
+    if len(id) != 32 {
+        t.Fatalf("TraceID len = %d, want 32", len(id))
+    }
+}
+
+// 锁定：请求带了 X-Request-Id 时复用，但不往响应里重复写。
+func TestTraceIDReusedWithoutResponseHeader(t *testing.T) {
+    r := New()
+    var id string
+    r.Get("/trace", func(c *Ctx, _ any) (any, error) {
+        id = c.TraceID()
+        return nil, nil
+    })
+
+    req := httptest.NewRequest(http.MethodGet, "/trace", nil)
+    req.Header.Set(HeaderXRequestID, "trace-1")
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, req)
+
+    if got := rec.Header().Get(HeaderXRequestID); got != "" {
+        t.Fatalf("响应头 %s = %q, want empty", HeaderXRequestID, got)
+    }
+    if id != "trace-1" {
+        t.Fatalf("TraceID = %q, want %q", id, "trace-1")
+    }
+}

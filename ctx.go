@@ -28,8 +28,9 @@ type Ctx struct {
     start   time.Time
 }
 
-// newCtx 包装 ResponseWriter，确定 TraceID 并回写响应头。
+// newCtx 包装 ResponseWriter，确定 TraceID。
 // TraceID 复用 X-Request-Id；缺失或超过 maxTraceIDLen 时生成 32 位十六进制随机值。
+// 只记录在 c.traceid 里，不写响应头。
 func newCtx(w http.ResponseWriter, req *http.Request, r *Router) *Ctx {
     c := &Ctx{
         index:   -1,
@@ -49,7 +50,6 @@ func newCtx(w http.ResponseWriter, req *http.Request, r *Router) *Ctx {
         c.traceid = hex.EncodeToString(b[:])
     }
 
-    c.Header(HeaderXRequestID, c.traceid)
     return c
 }
 
