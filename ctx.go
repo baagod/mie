@@ -28,30 +28,6 @@ type Ctx struct {
     start   time.Time
 }
 
-func (c *Ctx) TraceID() string { return c.traceid }
-
-// RemoteIP 从 RemoteAddr 取 host；解析失败时原样返回。
-func (c *Ctx) RemoteIP() string {
-    if host, _, err := net.SplitHostPort(c.R.RemoteAddr); err == nil {
-        return host
-    }
-    return c.R.RemoteAddr
-}
-
-// GetHeader 读取请求头；为空时返回第一个默认值，没有默认值则返回空串。
-func (c *Ctx) GetHeader(name string, or ...string) string {
-    h := c.R.Header.Get(name)
-    if h == "" && len(or) > 0 {
-        h = or[0]
-    }
-    return h
-}
-
-// Header 设置响应头。
-func (c *Ctx) Header(name, value string) {
-    c.W.Header().Set(name, value)
-}
-
 // newCtx 包装 ResponseWriter，确定 TraceID 并回写响应头。
 // TraceID 复用 X-Request-Id；缺失或超过 maxTraceIDLen 时生成 32 位十六进制随机值。
 func newCtx(w http.ResponseWriter, req *http.Request, r *Router) *Ctx {
@@ -77,6 +53,35 @@ func newCtx(w http.ResponseWriter, req *http.Request, r *Router) *Ctx {
     return c
 }
 
+func (c *Ctx) TraceID() string { return c.traceid }
+
+// RemoteIP 从 RemoteAddr 取 host；解析失败时原样返回。
+func (c *Ctx) RemoteIP() string {
+    if host, _, err := net.SplitHostPort(c.R.RemoteAddr); err == nil {
+        return host
+    }
+    return c.R.RemoteAddr
+}
+
+// GetHeader 读取请求头；为空时返回第一个默认值，没有默认值则返回空串。
+func (c *Ctx) GetHeader(name string, or ...string) string {
+    h := c.R.Header.Get(name)
+    if h == "" && len(or) > 0 {
+        h = or[0]
+    }
+    return h
+}
+
+// Header 设置响应头。
+func (c *Ctx) Header(name, value string) {
+    c.W.Header().Set(name, value)
+}
+
+// Type 设置响应头的内容类型。
+func (c *Ctx) Type(value string) {
+    c.W.Header().Set(HeaderContentType, value)
+}
+
 func (c *Ctx) Next(in any) (any, error) {
     c.index++
     if c.index >= len(c.chain) {
@@ -100,6 +105,13 @@ func (c *Ctx) StatusCode() int {
 func (c *Ctx) Size() int64 {
     return c.W.Size()
 }
+func (c *Ctx) Param(name string) string { return c.R.PathValue(name) }
+
+func (c *Ctx) Deadline() (time.Time, bool) { return c.R.Context().Deadline() }
+func (c *Ctx) Done() <-chan struct{}       { return c.R.Context().Done() }
+func (c *Ctx) Err() error                  { return c.R.Context().Err() }
+func (c *Ctx) Value(key any) any           { return c.R.Context().Value(key) }
+func (c *Ctx) IsCanceled() bool            { return errors.Is(c.R.Context().Err(), context.Canceled) }
 
 // finish 是请求的统一收尾：写错误响应（writeError）、提交预设状态、记一条访问日志。
 // 取消导致的错误不写响应；handlePanic 的中止路径不经 finish。
@@ -109,17 +121,6 @@ func (c *Ctx) finish(err error) {
     }
     c.W.commit()
     c.logAccess(err)
-}
-
-func (c *Ctx) Param(name string) string { return c.R.PathValue(name) }
-
-func (c *Ctx) Deadline() (time.Time, bool) { return c.R.Context().Deadline() }
-func (c *Ctx) Done() <-chan struct{}       { return c.R.Context().Done() }
-func (c *Ctx) Err() error                  { return c.R.Context().Err() }
-func (c *Ctx) Value(key any) any           { return c.R.Context().Value(key) }
-
-func (c *Ctx) IsCanceled() bool {
-    return errors.Is(c.R.Context().Err(), context.Canceled)
 }
 
 // writeError 是所有错误响应的唯一出口。

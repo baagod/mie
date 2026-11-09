@@ -494,6 +494,63 @@ func TestErrorHandlerNilLeavesResponseUntouched(t *testing.T) {
     }
 }
 
+// 锁定：客户端已取消时 handler 返回的错误不写响应，访问日志仍记一条。
+func TestCanceledRequestWritesNothing(t *testing.T) {
+    l, buf := testLogger()
+    r := New(Config{Logger: l})
+    r.Get("/canceled", func(*Ctx, any) (any, error) {
+        return nil, context.Canceled
+    })
+
+    req := httptest.NewRequest(http.MethodGet, "/canceled", nil)
+    ctx, cancel := context.WithCancel(req.Context())
+    cancel()
+    req = req.WithContext(ctx)
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, req)
+
+    if rec.Code != http.StatusOK {
+        t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+    }
+    if rec.Body.Len() != 0 {
+        t.Fatalf("body = %q, want empty", rec.Body.String())
+    }
+    if !strings.Contains(buf.String(), "msg=access") {
+        t.Fatalf("日志 = %q，缺少已取消请求的访问日志", buf.String())
+    }
+}
+
+// 锁定：取消错误不进入用户 ErrorHandler；普通错误照常进入。
+func TestCanceledErrorSkipsErrorHandler(t *testing.T) {
+    var calls int
+    r := New(Config{ErrorHandler: func(_ *Ctx, err error) error {
+        calls++
+        return err
+    }})
+    r.Get("/canceled", func(*Ctx, any) (any, error) {
+        return nil, context.Canceled
+    })
+    r.Get("/failed", func(*Ctx, any) (any, error) {
+        return nil, errors.New("boom")
+    })
+
+    req := httptest.NewRequest(http.MethodGet, "/canceled", nil)
+    ctx, cancel := context.WithCancel(req.Context())
+    cancel()
+    r.ServeHTTP(httptest.NewRecorder(), req.WithContext(ctx))
+
+    if calls != 0 {
+        t.Fatalf("ErrorHandler calls = %d, want 0 for canceled request", calls)
+    }
+
+    r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/failed", nil))
+
+    if calls != 1 {
+        t.Fatalf("ErrorHandler calls = %d, want 1 for failed request", calls)
+    }
+}
+
 func TestWriteErrorKeepsCustomContentType(t *testing.T) {
     r := New()
     r.Get("/json", func(c *Ctx, _ any) (any, error) {
@@ -552,8 +609,32 @@ func TestPanicAfterWriteAbortsResponse(t *testing.T) {
         }
     }
 
+    if n := strings.Count(buf.String(), "msg=access"); n != 1 {
+        t.Fatalf("访问日志条数 = %d, want 1", n)
+    }
+}
+
+// 锁定：RecoverHandler 自己 panic 时，请求仍留一条访问日志。
+func TestPanicRecoverHandlerPanicStillLogs(t *testing.T) {
+    l, buf := testLogger()
+    r := New(Config{
+        Logger:         l,
+        RecoverHandler: func(*Ctx, *Panic) error { panic("recover handler boom") },
+    })
+    r.Get("/boom", func(*Ctx, any) (any, error) { panic("boom") })
+
+    s := httptest.NewServer(r)
+    defer s.Close()
+
+    if resp, err := http.Get(s.URL + "/boom"); err == nil {
+        defer resp.Body.Close()
+        if _, rerr := io.ReadAll(resp.Body); rerr == nil {
+            t.Fatal("response completed; want aborted connection")
+        }
+    }
+
     if !strings.Contains(buf.String(), "msg=access") {
-        t.Fatalf("日志 = %q，缺少响应已提交后 panic 的访问日志", buf.String())
+        t.Fatalf("日志 = %q，缺少 RecoverHandler panic 的访问日志", buf.String())
     }
 }
 

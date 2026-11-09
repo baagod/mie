@@ -8,14 +8,11 @@ type Renderer interface {
     Render(c *Ctx) error
 }
 
-// Send 渲染 r，然后提交预设状态；空 body 的 renderer 也会把 c.Status 预设的状态发出去。
+// Send 渲染 r。响应提交由请求收尾（Ctx.finish）统一负责：
+// 写 body 时已提交，空 body 时 finish 提交 c.Status 预设的状态。
 // 返回的错误应作为 handler 的 error 返回，由 ErrorHandler 与 writeError 统一处理。
 func (c *Ctx) Send(r Renderer) error {
-    if err := r.Render(c); err != nil {
-        return err
-    }
-    c.W.commit()
-    return nil
+    return r.Render(c)
 }
 
 type jsonRenderer struct{ v any }
@@ -28,7 +25,7 @@ func (r jsonRenderer) Render(c *Ctx) error {
     if err != nil {
         return err
     }
-    c.Header(HeaderContentType, MIMEApplicationJSON)
+    c.Type(MIMEApplicationJSON)
     _, err = c.W.Write(b)
     return err
 }

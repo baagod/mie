@@ -61,6 +61,29 @@ func TestSendJSONMarshalError(t *testing.T) {
     }
 }
 
+type emptyRenderer struct{}
+
+func (emptyRenderer) Render(*Ctx) error { return nil }
+
+// 锁定：renderer 不写 body 时，预设状态由 finish 提交。
+func TestSendEmptyRendererKeepsPresetStatus(t *testing.T) {
+    r := New()
+    r.Get("/empty", func(c *Ctx, _ any) (any, error) {
+        c.Status(http.StatusNoContent)
+        return nil, c.Send(emptyRenderer{})
+    })
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/empty", nil))
+
+    if rec.Code != http.StatusNoContent {
+        t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+    }
+    if rec.Body.Len() != 0 {
+        t.Fatalf("body = %q, want empty", rec.Body.String())
+    }
+}
+
 type csvRenderer struct{ body string }
 
 func (r csvRenderer) Render(c *Ctx) error {

@@ -27,7 +27,7 @@ type Config struct {
     // 返回 nil 表示接管完成：写过响应就按写的发；没写则提交拦截到的 404/405（空 body）。
     // 返回 error 交给 writeError 写出。
     // 自行写 body 时请自行设置 Content-Type：标准库已预置的
-    // "text/plain; charset=utf-8" 与 nosniff 会被原样保留；改写 Allow 请用 SetHeader——
+    // "text/plain; charset=utf-8" 与 nosniff 会被原样保留；改写 Allow 请用 Header——
     // 用 Add 追加的值在非 405 响应里会随 mux 预置值一起被清掉。
     // 为 nil 时保留 net/http 的默认 404/405。
     NoMatchHandler func(c *Ctx) error
@@ -177,6 +177,16 @@ func (r *Router) Run(addr string) error {
 // handlePanic 是路由边界的恢复点：接住链、ErrorHandler 与框架自身逃出的 panic。
 // 必须由 defer 直接调用 recover 后转入；recover 在嵌套调用中不生效。
 func (r *Router) handlePanic(c *Ctx, p any) {
+    // RecoverHandler 自己 panic 时也要留一条访问日志，否则请求从日志里消失。
+    defer func() {
+        if q := recover(); q != nil {
+            if q != http.ErrAbortHandler {
+                c.logAccess(nil)
+            }
+            panic(q)
+        }
+    }()
+
     // 判定前先把游标推到链尾：panic 已终止链，恢复回调再调 Next 也不会续跑。
     c.index = len(c.chain)
 
