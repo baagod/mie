@@ -4,14 +4,17 @@ import (
     "net/http"
 )
 
-// Error 让 handler 返回一个带状态码的错误
+// Error 让 handler 返回指定 HTTP 状态码的错误。
+// Text 会原样写给客户端，不要放内部细节。
 type Error struct {
     Status int
     Text   string
 }
 
+// Error 实现 error 接口。
 func (e *Error) Error() string { return e.Text }
 
+// NewError 构造 Error；省略 text 时用 http.StatusText(code)。
 func NewError(code int, text ...string) *Error {
     if len(text) > 0 {
         return &Error{code, text[0]}

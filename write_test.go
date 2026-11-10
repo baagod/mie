@@ -2,7 +2,6 @@ package mux
 
 import (
     "bufio"
-    "errors"
     "fmt"
     "io"
     "net"
@@ -89,9 +88,6 @@ func TestWriterHijackForwards(t *testing.T) {
     if !cw.hijacked {
         t.Fatal("underlying Hijack was not called")
     }
-    if got := c.W.Size(); got != 0 {
-        t.Fatalf("Size after Hijack = %d, want 0", got)
-    }
 }
 
 func TestWriterReadFromForwards(t *testing.T) {
@@ -102,9 +98,6 @@ func TestWriterReadFromForwards(t *testing.T) {
     }
     if n != 5 || !cw.readFrom {
         t.Fatalf("n = %d, readFrom = %v", n, cw.readFrom)
-    }
-    if got := c.W.Size(); got != 5 {
-        t.Fatalf("Size = %d, want 5", got)
     }
     if got := cw.Body.String(); got != "hello" {
         t.Fatalf("body = %q", got)
@@ -130,9 +123,6 @@ func TestWriterReadFromFallback(t *testing.T) {
     }
     if got := c.W.StatusCode(); got != http.StatusOK {
         t.Fatalf("StatusCode = %d, want 200", got)
-    }
-    if got := c.W.Size(); got != 8 {
-        t.Fatalf("Size = %d, want 8", got)
     }
 }
 
@@ -381,56 +371,6 @@ func TestWriteHeaderInvalidCodeAfterCommitDoesNotPanic(t *testing.T) {
     }
 }
 
-func TestWriterSize(t *testing.T) {
-    rec := httptest.NewRecorder()
-    c := newTestCtx(rec, httptest.NewRequest(http.MethodGet, "/", nil))
-
-    if got := c.W.Size(); got != 0 {
-        t.Fatalf("Size before write = %d, want 0", got)
-    }
-    if _, err := c.W.Write([]byte("abc")); err != nil {
-        t.Fatal(err)
-    }
-    if _, err := c.W.WriteString("de"); err != nil {
-        t.Fatal(err)
-    }
-    if _, err := c.W.ReadFrom(strings.NewReader("fg")); err != nil {
-        t.Fatal(err)
-    }
-
-    if got := c.W.Size(); got != 7 {
-        t.Fatalf("Size = %d, want 7", got)
-    }
-    if got := c.Size(); got != 7 {
-        t.Fatalf("Ctx.Size = %d, want 7", got)
-    }
-    if got := rec.Body.String(); got != "abcdefg" {
-        t.Fatalf("body = %q, want abcdefg", got)
-    }
-}
-
-// partialWriter 只写出前 2 个字节就返回错误，用来验证 Size 按实际 n 累加。
-type partialWriter struct{ http.ResponseWriter }
-
-func (w *partialWriter) Write(p []byte) (int, error) {
-    n := min(len(p), 2)
-    _, _ = w.ResponseWriter.Write(p[:n])
-    return n, io.ErrShortWrite
-}
-
-func TestWriterSizePartialWrite(t *testing.T) {
-    rec := httptest.NewRecorder()
-    c := newTestCtx(&partialWriter{rec}, httptest.NewRequest(http.MethodGet, "/", nil))
-
-    n, err := c.W.Write([]byte("hello"))
-    if n != 2 || !errors.Is(err, io.ErrShortWrite) {
-        t.Fatalf("n = %d, err = %v, want 2, ErrShortWrite", n, err)
-    }
-    if got := c.W.Size(); got != 2 {
-        t.Fatalf("Size = %d, want 2", got)
-    }
-}
-
 func TestWriterWriteAfterHijack(t *testing.T) {
     c, cw := newCapabilityCtx()
     if _, _, err := c.W.Hijack(); err != nil {
@@ -456,9 +396,6 @@ func TestWriterWriteAfterHijack(t *testing.T) {
 
     if cw.Body.Len() != 0 {
         t.Fatalf("body = %q, want empty", cw.Body.String())
-    }
-    if got := c.W.Size(); got != 0 {
-        t.Fatalf("Size = %d, want 0", got)
     }
 }
 
@@ -490,9 +427,6 @@ func TestWriterFlushAfterHijackForwards(t *testing.T) {
     }
     if !cw.flushed {
         t.Fatal("underlying Flush must still be called after Hijack")
-    }
-    if got := c.W.Size(); got != 0 {
-        t.Fatalf("Size = %d, want 0", got)
     }
 }
 

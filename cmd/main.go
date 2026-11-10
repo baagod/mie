@@ -7,6 +7,7 @@ import (
 	"mux"
 )
 
+// logging 是记录请求耗时的中间件示例。
 func logging(c *mux.Ctx, in any) (any, error) {
 	start := time.Now()
 	out, err := c.Next(in)
@@ -14,6 +15,7 @@ func logging(c *mux.Ctx, in any) (any, error) {
 	return out, err
 }
 
+// main 启动带日志中间件的示例服务。
 func main() {
 	r := mux.New()
 	r.Use(logging)

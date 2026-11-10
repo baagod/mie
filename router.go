@@ -12,50 +12,44 @@ import (
     "time"
 )
 
-// Config 零值可用：未配置的字段走默认行为。
+// Config 零值即可使用；缺省项在 New 中补齐。
 type Config struct {
-    // ErrorHandler 处理 handler 链返回的 error，返回值交给 writeError 写响应；
-    // nil 时原样放行。panic 与 404/405 不经过这里。
+    // ErrorHandler 处理用户链返回的错误。panic 与 404/405 有独立出口，不经过这里。
     ErrorHandler func(c *Ctx, err error) error
 
-    // RecoverHandler 定制路由边界捕获的 panic，返回值交给 writeError 写响应；
-    // 未配置时记日志并写 500。响应已提交时框架中止连接，不再进入写出口。
+    // RecoverHandler 把恢复到的 panic 转成错误（交给 writeError）；
+    // 未配置时默认记日志并写 500。响应已提交时不再写，框架直接中止连接。
     RecoverHandler func(c *Ctx, p *Panic) error
 
-    // NoMatchHandler 接管未命中响应：在 net/http 写 404/405 之前调用。
-    // 此时 c.StatusCode() 已是 404（路径不存在）或 405（方法不允许）。
-    // 返回 nil 表示接管完成：写过响应就按写的发；没写则提交拦截到的 404/405（空 body）。
-    // 返回 error 交给 writeError 写出。
-    // 接管后响应头归钩子：标准库已预置的 Allow（仅 405）、
-    // "Content-Type: text/plain; charset=utf-8" 与 nosniff 原样保留，框架不做清理；
-    // 写 body 时请自行设置 Content-Type，不再需要时用 c.W.Header().Del 删除。
-    // 为 nil 时保留 net/http 的默认 404/405。
+    // NoMatchHandler 在 net/http 写 404/405 之前接管。
+    // 写 body 时自行设置 Content-Type，不需要时用 c.W.Header().Del 删除。
+    // 未配置时保留 net/http 默认的 404/405。
     NoMatchHandler func(c *Ctx) error
 
-    // Logger 是框架日志的落地位置：访问日志与框架自身的诊断日志都写到这里；
-    // nil 时 New 填入写 stderr 的默认 Logger。按请求过滤或加字段，请包一层 slog.Handler。
+    // Logger 是访问日志与框架诊断日志的落点；nil 时 New 用写 stderr 的默认 Logger。
+    // 需要按请求过滤或附加字段时，请包一层 slog.Handler。
     Logger *slog.Logger
 }
 
+// Router 包装 http.ServeMux，保存中间件与配置。
 type Router struct {
     mux         *http.ServeMux
     middlewares []Handler
     config      Config
 }
 
-// defaultErrorHandler 原样放行错误；响应头与 body 由 writeError 统一写出。
+// defaultErrorHandler 原样放行，真正的响应由 writeError 写出。
 func defaultErrorHandler(_ *Ctx, err error) error {
     return err
 }
 
-// defaultRecoverHandler 是未配置 Config.RecoverHandler 时的兜底：记录 Panic 并返回 500。
+// defaultRecoverHandler 记录 Panic 并返回 500 错误。
 func defaultRecoverHandler(c *Ctx, info *Panic) error {
     c.LogError("PANIC RECOVERED", "detail", info.Text())
     return Status500InternalServerError()
 }
 
-// New 创建 Router。panic 由路由闭包中的 defer 恢复，见 handlePanic。
-// 最多接受一个 Config；多传 panic，避免误以为多个配置会合并。
+// New 创建 Router；最多一个 Config，多传会 panic。panic 的恢复见 handlePanic。
 func New(cfg ...Config) *Router {
     if len(cfg) > 1 {
         panic("mux: New accepts at most one Config")
@@ -85,28 +79,30 @@ func New(cfg ...Config) *Router {
     }
 }
 
-// Use 注册中间件，只影响此后注册的路由；应在服务启动前调用，不要与请求并发。
+// Use 追加中间件，只影响之后注册的路由；服务启动后不要再调用。
 func (r *Router) Use(h Handler) {
     r.middlewares = append(r.middlewares, h)
 }
 
+// Get 注册 GET 路由。
 func (r *Router) Get(pattern string, h Handler) {
     r.handler(http.MethodGet, pattern, h)
 }
 
+// Post 注册 POST 路由。
 func (r *Router) Post(pattern string, h Handler) {
     r.handler(http.MethodPost, pattern, h)
 }
 
+// handler 把中间件与最终 Handler 拼成链，注册到 ServeMux。
 func (r *Router) handler(method, pattern string, h Handler) {
     chain := slices.Concat(r.middlewares, []Handler{h})
 
     r.mux.Handle(method+" "+pattern, http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
-        // Ctx 由 ServeHTTP 创建并挂在 context 上，这里只负责跑链；
-        // panic 的恢复与补记在 ServeHTTP 的 defer 里处理。
+        // Ctx 由 ServeHTTP 创建并挂在 context 上；这里只负责跑链。
         c := req.Context().Value(ctxKey{}).(*Ctx)
         c.chain = chain
-        c.W.noMatch = nil // 已进入路由闭包，此后的 404/405 都不算未命中。
+        c.W.noMatch = nil // 进入路由闭包后，404/405 都算业务响应，不再触发 NoMatchHandler。
 
         _, err := c.Next(nil)
         if err != nil && !c.IsCanceled() {
@@ -117,6 +113,7 @@ func (r *Router) handler(method, pattern string, h Handler) {
     }))
 }
 
+// ServeHTTP 创建 Ctx、安装 NoMatch 钩子、执行 ServeMux，并为未进入用户链的请求补收尾。
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
     c := newCtx(w, req, r)
 
@@ -126,8 +123,8 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
         }
     }()
 
-    // 配了 NoMatchHandler 时把它挂到 writer 上：ServeMux 自己写 404/405 时
-    // 由 writer 就地交给钩子，默认错误体不再发出去。
+    // 挂上 NoMatchHandler：ServeMux 自己写出的 404/405 会在 writer 层被截下来交给钩子，
+    // 默认错误体不再发出。
     var err error
     if r.config.NoMatchHandler != nil {
         c.W.noMatch = func() {
@@ -137,14 +134,14 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
     r.mux.ServeHTTP(c.W, c.R)
 
-    // c.chain 只在命中路由的闭包入口赋值；仍为 nil 说明请求没进用户链
-    // （404/405/规范化重定向），访问日志在这里补一条。
+    // c.chain 只由命中路由的闭包赋值；为 nil 说明请求没进用户链
+    // （404/405/规范化重定向），在这里补访问日志。
     if c.chain == nil {
         c.finish(err)
     }
 }
 
-// Run 启动服务，收到 Interrupt/SIGTERM 后优雅关停。
+// Run 启动 HTTP 服务，收到 Interrupt/SIGTERM 后优雅关停。
 func (r *Router) Run(addr string) error {
     s := &http.Server{
         Addr:              addr,
@@ -174,10 +171,10 @@ func (r *Router) Run(addr string) error {
     }
 }
 
-// handlePanic 是路由边界的恢复点：接住链、ErrorHandler 与框架自身逃出的 panic。
-// 必须由 defer 直接调用 recover 后转入；recover 在嵌套调用中不生效。
+// handlePanic 是路由边界的恢复点：接住用户链、ErrorHandler 与框架自身逃出的 panic。
+// 只能由 defer 直接调用（recover 在嵌套调用里拿不到 panic）。
 func (r *Router) handlePanic(c *Ctx, p any) {
-    // RecoverHandler 自己 panic 时也要留一条访问日志，否则请求从日志里消失。
+    // RecoverHandler 自身 panic 时，请求不能从访问日志里消失：补记一条再把 panic 抛回去。
     defer func() {
         if q := recover(); q != nil {
             if q != http.ErrAbortHandler {
@@ -187,7 +184,7 @@ func (r *Router) handlePanic(c *Ctx, p any) {
         }
     }()
 
-    // 判定前先把游标推到链尾：panic 已终止链，恢复回调再调 Next 也不会续跑。
+    // 先把游标推到链尾：链已被 panic 终止，恢复回调若再调 Next 应直接失败，而不是续跑。
     c.index = len(c.chain)
 
     var err error
@@ -197,11 +194,11 @@ func (r *Router) handlePanic(c *Ctx, p any) {
         abort = c.W.wroteHeader || c.W.hijacked
     }
 
-    // 中止信号 / 已提交断连：都不再写响应，只记一条访问日志。
+    // 两种中止都不再写响应，只补一条访问日志：p 是 ErrAbortHandler，或响应已提交/hijack。
     if abort {
         c.logAccess(nil)
         panic(http.ErrAbortHandler)
     }
 
-    c.finish(err) // 正常恢复：写 500、commit、记日志
+    c.finish(err)
 }

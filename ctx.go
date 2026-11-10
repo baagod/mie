@@ -11,15 +11,16 @@ import (
     "time"
 )
 
-// ctxKey 把 Ctx 挂到请求 context 上，供路由闭包取回。
+// ctxKey 是请求 context 中存放 *Ctx 的键。
 type ctxKey struct{}
 
-// Handler 是链上的统一签名；路由的泛型参数在注册时转成 any。
+// Handler 是中间件与路由的统一签名；路由的泛型入参与返回值在注册时转成 any。
 type Handler func(c *Ctx, in any) (any, error)
 
+// Ctx 是一次请求的上下文，包装响应写入器与请求，并承载中间件游标。
 type Ctx struct {
-    W *ResponseWriter
-    R *http.Request
+    W *ResponseWriter // 响应写入器
+    R *http.Request   // 带 Ctx 的请求副本
 
     router  *Router
     chain   []Handler
@@ -28,9 +29,8 @@ type Ctx struct {
     start   time.Time
 }
 
-// newCtx 包装 ResponseWriter，确定 TraceID。
-// TraceID 复用 X-Request-Id；缺失或超过 maxTraceIDLen 时生成 32 位十六进制随机值。
-// 只记录在 c.traceid 里，不写响应头。
+// newCtx 创建请求上下文，并把 *Ctx 放进请求 context。
+// TraceID 复用合法的 X-Request-Id（不超过 128 字节），否则生成 32 位十六进制随机值。
 func newCtx(w http.ResponseWriter, req *http.Request, r *Router) *Ctx {
     c := &Ctx{
         index:   -1,
@@ -39,8 +39,8 @@ func newCtx(w http.ResponseWriter, req *http.Request, r *Router) *Ctx {
         router:  r,
     }
 
-    // 把 Ctx 塞回请求：路由闭包从 context 取回同一个实例。
-    // Pattern 与 PathValue 由 ServeMux 写在这个副本上，未命中时 Pattern 为空。
+    // 路由闭包靠 context 取回 Ctx；ServeMux 把 Pattern/PathValue 写进请求副本，
+    // 所以必须用 WithContext 的副本。
     c.R = req.WithContext(context.WithValue(req.Context(), ctxKey{}, c))
     c.W = &ResponseWriter{w: w}
 
@@ -53,17 +53,25 @@ func newCtx(w http.ResponseWriter, req *http.Request, r *Router) *Ctx {
     return c
 }
 
-func (c *Ctx) TraceID() string { return c.traceid }
+// Deadline 转发请求 context 的截止时间。
+func (c *Ctx) Deadline() (time.Time, bool) { return c.R.Context().Deadline() }
 
-// RemoteIP 从 RemoteAddr 取 host；解析失败时原样返回。
-func (c *Ctx) RemoteIP() string {
-    if host, _, err := net.SplitHostPort(c.R.RemoteAddr); err == nil {
-        return host
-    }
-    return c.R.RemoteAddr
-}
+// Done 返回请求 context 的取消信号。
+func (c *Ctx) Done() <-chan struct{} { return c.R.Context().Done() }
 
-// GetHeader 读取请求头；为空时返回第一个默认值，没有默认值则返回空串。
+// Err 返回请求 context 的错误。
+func (c *Ctx) Err() error { return c.R.Context().Err() }
+
+// Value 读取请求 context 中的值。
+func (c *Ctx) Value(key any) any { return c.R.Context().Value(key) }
+
+// IsCanceled 判断请求是否因客户端取消而结束；不覆盖 deadline 超时。
+func (c *Ctx) IsCanceled() bool { return errors.Is(c.R.Context().Err(), context.Canceled) }
+
+// Param 返回路径参数的值。
+func (c *Ctx) Param(name string) string { return c.R.PathValue(name) }
+
+// GetHeader 读取请求头；为空时返回第一个默认值。
 func (c *Ctx) GetHeader(name string, or ...string) string {
     h := c.R.Header.Get(name)
     if h == "" && len(or) > 0 {
@@ -72,18 +80,48 @@ func (c *Ctx) GetHeader(name string, or ...string) string {
     return h
 }
 
-// Header 设置响应头，返回 Ctx 便于链式调用
+// RemoteIP 取 RemoteAddr 的主机部分；解析失败时返回原值。
+func (c *Ctx) RemoteIP() string {
+    if host, _, err := net.SplitHostPort(c.R.RemoteAddr); err == nil {
+        return host
+    }
+    return c.R.RemoteAddr
+}
+
+// TraceID 返回请求的追踪 ID：复用 X-Request-Id 或自动生成。
+func (c *Ctx) TraceID() string { return c.traceid }
+
+// Header 设置响应头，返回 Ctx 以便链式调用。
 func (c *Ctx) Header(name, value string) *Ctx {
     c.W.Header().Set(name, value)
     return c
 }
 
-// Type 设置响应头的内容类型，返回 Ctx 便于链式调用
+// Type 设置 Content-Type 响应头。
 func (c *Ctx) Type(value string) *Ctx {
     c.W.Header().Set(HeaderContentType, value)
     return c
 }
 
+// Status 预设响应状态码，返回 Ctx 以便链式调用。
+// 1xx 立即写出；其余状态码在首次写 body 或请求收尾时提交。
+func (c *Ctx) Status(code int) *Ctx {
+    c.W.SetStatus(code)
+    return c
+}
+
+// StatusCode 返回将要写出的状态码；未设置且未 Hijack 时为 200，Hijack 后为 0。
+func (c *Ctx) StatusCode() int {
+    return c.W.StatusCode()
+}
+
+// Send 渲染 r；提交由请求收尾统一负责：写 body 时已提交，空 body 时 finish 提交 c.Status 预设状态。
+// 返回的错误应作为 handler 返回值，交给 ErrorHandler/writeError 处理。
+func (c *Ctx) Send(r Renderer) error {
+    return r.Render(c)
+}
+
+// Next 把游标推进到下一个 Handler 并调用它；越过链尾后再调用返回错误。
 func (c *Ctx) Next(in any) (any, error) {
     c.index++
     if c.index >= len(c.chain) {
@@ -92,31 +130,8 @@ func (c *Ctx) Next(in any) (any, error) {
     return c.chain[c.index](c, in)
 }
 
-// Status 设置响应状态码，返回 Ctx 以便链式调用。
-// 1xx 由 SetStatus 立即写出；其余状态码预设，等首次写 body 或链尾提交。
-func (c *Ctx) Status(code int) *Ctx {
-    c.W.SetStatus(code)
-    return c
-}
-
-func (c *Ctx) StatusCode() int {
-    return c.W.StatusCode()
-}
-
-// Size 返回已写入的响应体字节数，不含响应头。
-func (c *Ctx) Size() int64 {
-    return c.W.Size()
-}
-func (c *Ctx) Param(name string) string { return c.R.PathValue(name) }
-
-func (c *Ctx) Deadline() (time.Time, bool) { return c.R.Context().Deadline() }
-func (c *Ctx) Done() <-chan struct{}       { return c.R.Context().Done() }
-func (c *Ctx) Err() error                  { return c.R.Context().Err() }
-func (c *Ctx) Value(key any) any           { return c.R.Context().Value(key) }
-func (c *Ctx) IsCanceled() bool            { return errors.Is(c.R.Context().Err(), context.Canceled) }
-
-// finish 是请求的统一收尾：写错误响应（writeError）、提交预设状态、记一条访问日志。
-// 取消导致的错误不写响应；handlePanic 的中止路径不经 finish。
+// finish 是请求的统一收尾：写错误响应、提交预设状态、记一条访问日志。
+// 取消导致的错误不写响应；handlePanic 的中止路径不经过 finish。
 func (c *Ctx) finish(err error) {
     if err != nil && !c.IsCanceled() {
         c.writeError(err)
@@ -125,8 +140,7 @@ func (c *Ctx) finish(err error) {
     c.logAccess(err)
 }
 
-// writeError 是所有错误响应的唯一出口。
-// 错误文本会原样写给客户端：内部细节放日志，不要放进 error 文本。
+// writeError 是所有错误响应的唯一出口；错误文本会原样写给客户端，内部细节不要放进 error。
 func (c *Ctx) writeError(err error) {
     if err == nil {
         return
@@ -145,11 +159,11 @@ func (c *Ctx) writeError(err error) {
 
     h := c.W.Header()
     if ct := h.Get(HeaderContentType); ct == "" {
-        // 框架自己选类型：text/plain，配套 nosniff
+        // 没有 Content-Type 时选 text/plain，并加 nosniff，避免错误文本被当成 HTML 渲染。
         h.Set(HeaderContentType, MIMETextPlainCharsetUTF8)
         h.Set(HeaderXContentTypeOptions, ContentTypeOptionsNosniff)
     } else if t, _, e := mime.ParseMediaType(ct); e == nil && t == "text/plain" {
-        // 用户声明了 text/plain：这是唯一会被嗅探成 HTML 的类型，补 nosniff
+        // 只有 text/plain 会被嗅探成 HTML；用户已声明该类型时补 nosniff。
         if h.Get(HeaderXContentTypeOptions) == "" {
             h.Set(HeaderXContentTypeOptions, ContentTypeOptionsNosniff)
         }
