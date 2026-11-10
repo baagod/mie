@@ -23,8 +23,7 @@ type ResponseWriter struct {
     noMatch func()
 
     // discard 在 noMatch 接管后置位，用来吞掉 ServeMux 随后写出的默认错误体。
-    discard      bool
-    noMatchAllow string // 拦截 404/405 时 mux 设的 Allow（通常只有 405 有）
+    discard bool
 }
 
 // StatusCode 返回最近设置的状态码：1xx 也会反映。未设置时：未 Hijack 返回 200，已 Hijack 返回 0。
@@ -73,13 +72,11 @@ func (w *ResponseWriter) WriteHeader(code int) {
     // ServeMux 自己写的 404/405：交给钩子写响应，默认错误体丢弃。
     // 先摘掉钩子再调用：钩子里可能用 writeError 再写一次 404/405，
     // 否则会重新进入本分支并无限递归。
-    // 注意 http.Error 在调 WriteHeader 之前已设置 Content-Type
-    // "text/plain; charset=utf-8" 与 X-Content-Type-Options "nosniff"，
-    // 这里保留它们：钩子自己写 body 时需要自行设置 Content-Type。
+    // http.Error 已预置的 Content-Type "text/plain; charset=utf-8"、nosniff
+    // 以及 405 的 Allow 都原样保留：接管后响应头归钩子，框架不做清理。
     if f := w.noMatch; f != nil && (code == http.StatusNotFound || code == http.StatusMethodNotAllowed) {
         w.noMatch = nil
         w.status = code
-        w.noMatchAllow = w.Header().Get("Allow")
         f()
 
         w.discard = true
@@ -90,11 +87,6 @@ func (w *ResponseWriter) WriteHeader(code int) {
 
     if !w.wroteHeader {
         checkStatus(code)
-        if code != http.StatusMethodNotAllowed && w.noMatchAllow != "" {
-            if h := w.Header(); h.Get("Allow") == w.noMatchAllow {
-                h.Del("Allow")
-            }
-        }
         if w.status = code; code >= 200 || code == 101 {
             w.wroteHeader = true
         }

@@ -71,10 +71,6 @@ func TestNoMatchHandler(t *testing.T) {
             t.Fatalf("%s %s response status=%d body=%q, want hook-written 404",
                 target.method, target.path, rec.Code, rec.Body.String())
         }
-        // 钩子把 405 改写成 404 后，Allow 不能残留（看快照头，实时 map 会掩盖"发得太晚"）。
-        if allow := rec.Result().Header.Get("Allow"); allow != "" {
-            t.Fatalf("%s %s Allow = %q, want empty", target.method, target.path, allow)
-        }
     }
     if calls != 2 {
         t.Fatalf("hook calls = %d, want 2", calls)
@@ -107,23 +103,6 @@ func TestNoMatchHandlerReturnsError(t *testing.T) {
     }
     if got := rec.Body.String(); got != "gone" {
         t.Fatalf("body = %q, want %q", got, "gone")
-    }
-}
-
-func TestNoMatchHandlerDropsAllowAfterStatusChange(t *testing.T) {
-    r := New(Config{NoMatchHandler: func(*Ctx) error {
-        return NewError(http.StatusNotFound, "gone")
-    }})
-    r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
-
-    rec := httptest.NewRecorder()
-    r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
-
-    if rec.Code != http.StatusNotFound || rec.Body.String() != "gone" {
-        t.Fatalf("status=%d body=%q, want 404 gone", rec.Code, rec.Body.String())
-    }
-    if allow := rec.Result().Header.Get("Allow"); allow != "" {
-        t.Fatalf("Allow = %q, want empty（钩子已把状态改成 404）", allow)
     }
 }
 
@@ -183,26 +162,6 @@ func TestNoMatchHandlerStatusOnly(t *testing.T) {
     }
 }
 
-// 钩子自己设置的响应头要保留，不能被框架清理 Allow 的逻辑误删。
-func TestNoMatchHandlerKeepsOwnAllow(t *testing.T) {
-    r := New(Config{NoMatchHandler: func(c *Ctx) error {
-        c.Header("Allow", "GET, POST")
-        c.Status(http.StatusOK)
-        return nil
-    }})
-    r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
-
-    rec := httptest.NewRecorder()
-    r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
-
-    if rec.Code != http.StatusOK {
-        t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-    }
-    if got := rec.Result().Header.Get("Allow"); got != "GET, POST" {
-        t.Fatalf("Allow = %q, want %q", got, "GET, POST")
-    }
-}
-
 func TestNoMatchHandlerAccessLog(t *testing.T) {
     lg, buf := testLogger()
     r := New(Config{
@@ -230,7 +189,7 @@ func TestNoMatchHandlerAccessLog(t *testing.T) {
     }
 }
 
-func TestNoMatchHandlerPanicDropsAllow(t *testing.T) {
+func TestNoMatchHandlerPanicWrites500(t *testing.T) {
     lg, _ := testLogger()
     r := New(Config{
         NoMatchHandler: func(*Ctx) error { panic("hook boom") },
@@ -243,9 +202,6 @@ func TestNoMatchHandlerPanicDropsAllow(t *testing.T) {
 
     if rec.Code != http.StatusInternalServerError {
         t.Fatalf("status = %d, want 500", rec.Code)
-    }
-    if allow := rec.Result().Header.Get("Allow"); allow != "" {
-        t.Fatalf("Allow = %q, want empty（panic 后写的是 500）", allow)
     }
     if body := rec.Body.String(); body != http.StatusText(http.StatusInternalServerError) {
         t.Fatalf("body = %q, want %q", body, http.StatusText(http.StatusInternalServerError))
@@ -265,9 +221,6 @@ func TestNoMatchHandlerMayRewriteStatus(t *testing.T) {
 
     if rec.Code != http.StatusOK || rec.Body.String() != "ok" {
         t.Fatalf("status=%d body=%q, want 200 ok", rec.Code, rec.Body.String())
-    }
-    if allow := rec.Result().Header.Get("Allow"); allow != "" {
-        t.Fatalf("Allow = %q, want empty（钩子已改写成 200）", allow)
     }
 }
 

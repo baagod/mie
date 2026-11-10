@@ -23,12 +23,12 @@ type Config struct {
     RecoverHandler func(c *Ctx, p *Panic) error
 
     // NoMatchHandler 接管未命中响应：在 net/http 写 404/405 之前调用。
-    // 此时 c.StatusCode() 已是 404（路径不存在）或 405（方法不允许），405 的 Allow 头也已写好。
+    // 此时 c.StatusCode() 已是 404（路径不存在）或 405（方法不允许）。
     // 返回 nil 表示接管完成：写过响应就按写的发；没写则提交拦截到的 404/405（空 body）。
     // 返回 error 交给 writeError 写出。
-    // 自行写 body 时请自行设置 Content-Type：标准库已预置的
-    // "text/plain; charset=utf-8" 与 nosniff 会被原样保留；改写 Allow 请用 Header——
-    // 用 Add 追加的值在非 405 响应里会随 mux 预置值一起被清掉。
+    // 接管后响应头归钩子：标准库已预置的 Allow（仅 405）、
+    // "Content-Type: text/plain; charset=utf-8" 与 nosniff 原样保留，框架不做清理；
+    // 写 body 时请自行设置 Content-Type，不再需要时用 c.W.Header().Del 删除。
     // 为 nil 时保留 net/http 的默认 404/405。
     NoMatchHandler func(c *Ctx) error
 
