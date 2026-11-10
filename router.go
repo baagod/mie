@@ -171,34 +171,31 @@ func (r *Router) Run(addr string) error {
     }
 }
 
-// handlePanic 是路由边界的恢复点：接住用户链、ErrorHandler 与框架自身逃出的 panic。
-// 只能由 defer 直接调用（recover 在嵌套调用里拿不到 panic）。
+// handlePanic 是请求边界的最后一道恢复：接住用户链、ErrorHandler 与框架自身逃出的 panic。
+// 只能由 defer 直接调用——recover 在嵌套调用里拿不到 panic。
 func (r *Router) handlePanic(c *Ctx, p any) {
-    // RecoverHandler 自身 panic 时，请求不能从访问日志里消失：补记一条再把 panic 抛回去。
+    // 从这里逃出的 panic（包括 RecoverHandler 自己崩了）仍要留下访问日志，
+    // 否则请求会从日志里消失；记完按原值抛回，让 net/http 继续兜底。
     defer func() {
-        if q := recover(); q != nil {
-            if q != http.ErrAbortHandler {
-                c.logAccess(nil)
-            }
-            panic(q)
+        if err := recover(); err != nil {
+            c.logAccess(nil)
+            panic(err)
         }
     }()
 
-    // 先把游标推到链尾：链已被 panic 终止，恢复回调若再调 Next 应直接失败，而不是续跑。
+    // 链已被 panic 终止：把游标推到链尾，恢复再调 Next() 会直接报错。
     c.index = len(c.chain)
 
-    var err error
-    abort := p == http.ErrAbortHandler
-    if !abort {
-        err = r.config.RecoverHandler(c, NewPanic(c, p))
-        abort = c.W.wroteHeader || c.W.hijacked
+    if p == http.ErrAbortHandler {
+        panic(p) // 调用方要求中止连接，不写响应，原样抛回。
     }
 
-    // 两种中止都不再写响应，只补一条访问日志：p 是 ErrAbortHandler，或响应已提交/hijack。
-    if abort {
-        c.logAccess(nil)
+    err := r.config.RecoverHandler(c, NewPanic(c, p))
+    if c.W.wroteHeader || c.W.hijacked {
+        // 响应已经发出，状态不可信：再写只会污染半截响应，按中止交给 net/http。
         panic(http.ErrAbortHandler)
     }
 
+    // 响应还没写：恢复器给出的错误交 finish 写响应并收尾（默认 500）。
     c.finish(err)
 }
