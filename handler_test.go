@@ -390,6 +390,26 @@ func TestBindBodyTooLargeByMiddleware(t *testing.T) {
     }
 }
 
+type bodyErrorReader struct{}
+
+func (bodyErrorReader) Read([]byte) (int, error) { return 0, errors.New("read failed") }
+
+func TestBindBodyReadErrorIs500(t *testing.T) {
+    r := New()
+    r.Post("/users", func(c *Ctx, in bodyIn) (struct{}, error) {
+        return struct{}{}, nil
+    })
+
+    req := httptest.NewRequest(http.MethodPost, "/users", bodyErrorReader{})
+    req.Header.Set(HeaderContentType, MIMEAppJSON)
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, req)
+
+    if rec.Code != http.StatusInternalServerError {
+        t.Fatalf("status = %d, want 500", rec.Code)
+    }
+}
+
 func TestBodyIsCached(t *testing.T) {
     r := New()
     r.Post("/echo", func(c *Ctx, _ struct{}) (string, error) {
@@ -857,31 +877,36 @@ func TestBindExplicitEmptyClearsValue(t *testing.T) {
     }
 }
 
-func TestBindBodyOnlyPost(t *testing.T) {
+func TestBindBodyByContentType(t *testing.T) {
     type in struct {
         Name string `json:"name"`
     }
 
     r := New()
-    r.Post("/p", func(c *Ctx, v in) (string, error) { return v.Name, nil })
-    r.Put("/p", func(c *Ctx, v in) (string, error) { return v.Name, nil })
+    h := func(c *Ctx, v in) (string, error) { return v.Name, nil }
+    r.Post("/p", h)
+    r.Put("/p", h)
+    r.Patch("/p", h)
+    r.Get("/p", h)
 
     body := `{"name":"alice"}`
-
-    rec := httptest.NewRecorder()
-    req := httptest.NewRequest(http.MethodPost, "/p", strings.NewReader(body))
-    req.Header.Set(HeaderContentType, MIMEAppJSON)
-    r.ServeHTTP(rec, req)
-    if rec.Code != http.StatusOK || rec.Body.String() != `"alice"` {
-        t.Fatalf("post status/body = %d/%q, want 200/\"alice\"", rec.Code, rec.Body.String())
+    cases := []struct {
+        method string
+        want   string
+    }{
+        {http.MethodPost, `"alice"`},
+        {http.MethodPut, `"alice"`},
+        {http.MethodPatch, `"alice"`},
+        {http.MethodGet, `""`}, // GET 没有 body 可绑
     }
-
-    rec = httptest.NewRecorder()
-    req = httptest.NewRequest(http.MethodPut, "/p", strings.NewReader(body))
-    req.Header.Set(HeaderContentType, MIMEAppJSON)
-    r.ServeHTTP(rec, req)
-    if rec.Code != http.StatusOK || rec.Body.String() != `""` {
-        t.Fatalf("put status/body = %d/%q, want 200/\"\" (body only bound on POST)", rec.Code, rec.Body.String())
+    for _, tc := range cases {
+        rec := httptest.NewRecorder()
+        req := httptest.NewRequest(tc.method, "/p", strings.NewReader(body))
+        req.Header.Set(HeaderContentType, MIMEAppJSON)
+        r.ServeHTTP(rec, req)
+        if rec.Code != http.StatusOK || rec.Body.String() != tc.want {
+            t.Fatalf("%s status/body = %d/%q, want 200/%q", tc.method, rec.Code, rec.Body.String(), tc.want)
+        }
     }
 }
 

@@ -10,13 +10,16 @@ import (
     "net"
     "net/http"
     "time"
+
+    "github.com/baagod/mie/bind"
 )
 
-// ctxKey 是请求 context 中存放 *Ctx 的键。
-type ctxKey struct{}
-
-// bodyKey 是请求 context 中缓存 Body 读取结果的键。
-type bodyKey struct{}
+type (
+    // ctxKey 是请求 context 中存放 *Ctx 的键。
+    ctxKey struct{}
+    // bodyKey 是请求 context 中缓存 Body 读取结果的键。
+    bodyKey struct{}
+)
 
 // reqBody 缓存 Body 的读取结果：字节与错误一起保存，保证重复调用语义一致。
 type reqBody struct {
@@ -168,6 +171,36 @@ func (c *Ctx) Next() error {
         return errors.New("mie: Next called after the end of the chain")
     }
     return c.chain[c.index](c)
+}
+
+// Bind 按方案绑定 in：先位置来源，再按 Content-Type 解码 body 覆盖。
+// in 必须是指向 IN 的非 nil 指针。
+func (c *Ctx) Bind(p *bind.Plan, in any) (err error) {
+    if err = p.Bind(c.R, in); err != nil {
+        return Status400BadRequest(err.Error())
+    }
+
+    // GET/HEAD 约定没有 body；其余方法按 Content-Type 分派，目前只实现 JSON。
+    if c.R.Method == http.MethodGet || c.R.Method == http.MethodHead {
+        return
+    }
+
+    var b []byte
+    switch ct, _, _ := mime.ParseMediaType(c.ContentType()); ct {
+    case MIMEAppJSON:
+        if b, err = c.Body(); err != nil {
+            return
+        }
+        if len(b) > 0 {
+            err = p.BindJSON(b, in)
+        }
+    }
+
+    if err != nil {
+        return Status400BadRequest("bind body: " + err.Error())
+    }
+
+    return
 }
 
 // finish 是请求的统一收尾：写错误响应、提交预设状态、记一条访问日志。

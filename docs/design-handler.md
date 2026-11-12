@@ -96,7 +96,7 @@ func (r *Router) Handle(method, pattern string, h Handler)
 
 位置/头部/参数来源只认显式 tag；body 的字段匹配交给 `encoding/json` 标准规则。
 
-实现见 `bind.go`：`newBindPlan` 编译方案、`bind` 编排、`bindValue` 取来源值、`setValues` 写字段。
+实现见 `bind/plan.go` 与 `bind/bind.go`：`NewPlan` 编译方案、`Plan.Bind` 编排、`bindValue` 取来源值、`setValues` 写字段。
 
 ### 4.1 字段 tag
 
@@ -118,13 +118,13 @@ type UpdateUser struct {
 | 不写位置 tag | 位置来源不写；body 仍可能写入（`encoding/json` 规则） |
 | `json:"-"` | body 不写；位置来源若无其它 tag 也不写 |
 | 多个位置 tag | 依次 `path` → `header` → `query`/`form` 绑定，后写覆盖先写；来源缺失（没有这个参数/头）跳过，来源存在但值为空串（`?x=`、空 header）则把字段清零 |
-| 位置 tag + body | 位置来源先绑，body 最后整块解码覆盖（仅 POST 且 JSON；body 里没有的键保留位置来源的值） |
+| 位置 tag + body | 位置来源先绑，body 最后整块解码覆盖（非 GET/HEAD 且 Content-Type 为 JSON 时；body 里没有的键保留位置来源的值） |
 | 切片/数组字段 | 来源提供多个值时写入全部值：切片全量、数组按序填充（超出丢弃、不足补零）；标量字段只取第一个 |
 
 - 多值来源：参数重复（`?id=1&id=2`）或同名 header 多个值时，切片写入全部值、数组按声明长度依次填充；标量字段只取第一个值。首个值为空串（`?x=`、空 header）仍按空值清零。
 
 - 参数来源：IN 里有参数字段时调用一次 `c.R.ParseForm()`；`ParseForm` 自己决定是否读 body（POST/PUT/PATCH 且 urlencoded 时读并合并），框架不还原 `c.R.Body`，需要原始 body 的调用方自己提前 `c.Body()` 或重新序列化。
-- body 来源：仅当方法是 **POST** 且 `Content-Type` 的 media type 是 `application/json` 时，读取 `c.Body()` 并整块 `json.Unmarshal(b, in.Addr())`；CT 缺失或无法解析（畸形）视为没有 JSON CT，不读 body、不报错：
+- body 来源：当方法不是 GET/HEAD 且 `Content-Type` 的 media type 是 `application/json` 时，读取 `c.Body()` 并整块 `json.Unmarshal(b, in.Addr())`；CT 缺失或无法解析（畸形）视为没有 JSON CT，不读 body、不报错：
   - 不设内置上限，body 全量读入内存；应用中间件可用 `http.MaxBytesReader` 收紧，超限由 `Ctx.Body()` 映射为 413；
   - 空 body 跳过解码、保持零值；`null` 解码为零值；数组等与 struct 不匹配时由解码错误返回 400；
   - 字段匹配、未知键、大小写、`json` tag 选项全部按 `encoding/json` 标准规则；
@@ -135,7 +135,7 @@ type UpdateUser struct {
 ### 4.2 `IN` 与 `*IN`、允许的类型
 
 - `IN` 允许 struct、`*struct`、`struct{}`，以及其它能整体 JSON 解码的类型（`map[string]any`、切片、标量）。
-- 非 struct 的 `IN` 不做 tag 绑定：整个 body 就是值（不设内置上限）；仅当方法是 POST 且 `Content-Type` 的 media type 是 `application/json` 时解码，其它/缺失/畸形时不读 body、`IN` 为零值；空 body 时也为零值。
+- 非 struct 的 `IN` 不做 tag 绑定：整个 body 就是值（不设内置上限）；仅当方法不是 GET/HEAD 且 `Content-Type` 的 media type 是 `application/json` 时解码，其它/缺失/畸形时不读 body、`IN` 为零值；空 body 时也为零值。
 - `*T` 由框架分配，handler 永远拿到非 nil 指针；指针归请求所有，handler 不应持有到请求之外。
 - 拷贝是**浅拷贝**：值 `IN` 被复制时，结构体里的 slice / map / 指针 / 接口字段仍共享底层数据，改这些字段的元素或目标会反映到原对象；`i := *in` 取副本再改，也只隔离顶层值字段。要完全隔离只能深拷贝。
 - 语义选择：只读输入用值 `IN`；需要跨链共享修改用 `*IN`；只想局部改值字段、不影响原对象可用 `i := *in`。
@@ -215,7 +215,7 @@ r.Use(func(c *Ctx, _ struct{}) (any, error) {
 1. `OUT` 的接口零值（`nil`）不写 body；其它值都编码（`struct{}` → `{}`）。中间件返回 `nil` 即无输出。需要完全手写响应时用 `Handle`。
 2. `He` 把只返回 error 的处理器适配成 `HandlerFunc[IN, any]`（`OUT` 为 `nil`，不写 body），命名与推断可用（`r.Delete("/users/{id}", He(func(c *Ctx, in DeleteUser) error {...}))` 免显式类型参数，已验证）；无输入处理器不另设形状，直接在 IN 处写 `struct{}`。v1 只做 `He`。
 3. bind 错误统一为 `*Error`（默认 400；`*http.MaxBytesError` 映射为 413），文案含来源/字段/原因；`ErrorHandler` 可改变最终响应。
-4. 来源顺序：同一字段多个来源 tag 按 `path` → `header` → `query`/`form`（参数）→ body 依次绑定，后写的覆盖先写的；来源缺失（没有该参数/头）跳过，来源存在但值为空串则清空字段（不 panic）。body 仅 POST 读取，整块交给 `encoding/json`：未知键忽略、键名大小写敏感（标准库默认精确匹配）、未打 tag 的导出字段也会写入。框架不设 body 上限，需要限制时由应用中间件用 `http.MaxBytesReader`，超限映射为 413。
+4. 来源顺序：同一字段多个来源 tag 按 `path` → `header` → `query`/`form`（参数）→ body 依次绑定，后写的覆盖先写的；来源缺失（没有该参数/头）跳过，来源存在但值为空串则清空字段（不 panic）。body 在非 GET/HEAD 且 CT 为 JSON 时读取，整块交给 `encoding/json`：未知键忽略、键名大小写敏感（标准库默认精确匹配）、未打 tag 的导出字段也会写入。框架不设 body 上限，需要限制时由应用中间件用 `http.MaxBytesReader`，超限映射为 413。
 5. `Next()` 从 `(any, error)` 改为 `error`，是一次性破坏性变更，已随类型化 Handler 提交合入。
 6. `IN` 类型范围：struct / `*struct` / `struct{}` / 可整体 JSON 解码的非 struct。
 7. `query` 与 `form` 是同一个参数来源：都读 `ParseForm` 后的 `c.R.Form`；GET/HEAD 只有 URL query，POST/PUT/PATCH 的 urlencoded body 与 query 合并，body 优先。`ParseForm` 会消耗 body，框架不还原。
@@ -231,7 +231,7 @@ r.Use(func(c *Ctx, _ struct{}) (any, error) {
 ## 10. 测试计划
 
 - 处理器形状：有输入/无输入（`struct{}`）、有输出、只返回 error（`He`，不写 body）、预设状态、手写响应（`Handle`）；中间件用 `HandlerFunc[IN, any]` 或 `He(...)` 注册，返回 `nil` 不额外写 body。
-- 绑定：path/header/参数（query 与 urlencoded form 合并）各来源、类型转换失败（文案含实际 tag，如 `query.Page`）、同字段多来源按 path → header → params → body 顺序绑定、后写覆盖、缺值跳过、未导出字段跳过（不 panic）、空 tag 等同没写、空 body、非法 JSON、body 非对象（数组/标量）400、body `null` 零值、未知键忽略、未打 tag 的导出字段按标准库绑定、键名大小写敏感（标准库默认精确匹配）、中间件 `http.MaxBytesReader` 超限 413、body 仅 POST 读取、CT 非 JSON（含缺失/畸形）时不读 body（忽略大小写与 `; charset` 参数）、显式空值（`?x=`、空 header）清空字段、来源缺失跳过、非 struct IN 整体解码、切片/数组字段接多值（切片全量、数组按序填充/超出丢弃/不足补零、标量只取第一个）。
+- 绑定：path/header/参数（query 与 urlencoded form 合并）各来源、类型转换失败（文案含实际 tag，如 `query.Page`）、同字段多来源按 path → header → params → body 顺序绑定、后写覆盖、缺值跳过、未导出字段跳过（不 panic）、空 tag 等同没写、空 body、非法 JSON、body 非对象（数组/标量）400、body `null` 零值、未知键忽略、未打 tag 的导出字段按标准库绑定、键名大小写敏感（标准库默认精确匹配）、中间件 `http.MaxBytesReader` 超限 413、body 在非 GET/HEAD 且 CT 为 JSON 时读取（CT 非 JSON 含缺失/畸形时不读，忽略大小写与 `; charset` 参数）、显式空值（`?x=`、空 header）清空字段、来源缺失跳过、非 struct IN 整体解码、切片/数组字段接多值（切片全量、数组按序填充/超出丢弃/不足补零、标量只取第一个）。
 - body 缓存：`Ctx.Body()` 重复调用返回同一份字节与错误；中间件先读后叶子绑定仍能读到。
 - 指针 IN：非 nil、各来源正常绑定、生命周期不跨请求。
 - 输出：JSON 编码失败、nil 输出不写 body、零值照常编码、`struct{}` 输出、预设 204。
