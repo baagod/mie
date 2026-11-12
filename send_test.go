@@ -8,8 +8,8 @@ import (
 
 func TestSendJSON(t *testing.T) {
     r := New()
-    r.Get("/user", func(c *Ctx, _ any) (any, error) {
-        return nil, c.Send(JSON(map[string]string{"name": "alice"}))
+    r.Handle(http.MethodGet, "/user", func(c *Ctx) error {
+        return c.Send(JSON(map[string]string{"name": "alice"}))
     })
 
     rec := httptest.NewRecorder()
@@ -18,8 +18,8 @@ func TestSendJSON(t *testing.T) {
     if rec.Code != http.StatusOK {
         t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
     }
-    if got := rec.Header().Get(HeaderContentType); got != MIMEApplicationJSON {
-        t.Fatalf("Content-Type = %q, want %q", got, MIMEApplicationJSON)
+    if got := rec.Header().Get(HeaderContentType); got != MIMEAppJSON {
+        t.Fatalf("Content-Type = %q, want %q", got, MIMEAppJSON)
     }
     if got := rec.Body.String(); got != `{"name":"alice"}` {
         t.Fatalf("body = %q", got)
@@ -28,9 +28,9 @@ func TestSendJSON(t *testing.T) {
 
 func TestSendCommitsPresetStatus(t *testing.T) {
     r := New()
-    r.Get("/created", func(c *Ctx, _ any) (any, error) {
+    r.Handle(http.MethodGet, "/created", func(c *Ctx) error {
         c.Status(http.StatusCreated)
-        return nil, c.Send(JSON(map[string]int{"id": 1}))
+        return c.Send(JSON(map[string]int{"id": 1}))
     })
 
     rec := httptest.NewRecorder()
@@ -43,8 +43,8 @@ func TestSendCommitsPresetStatus(t *testing.T) {
 
 func TestSendJSONMarshalError(t *testing.T) {
     r := New()
-    r.Get("/bad", func(c *Ctx, _ any) (any, error) {
-        return nil, c.Send(JSON(make(chan int)))
+    r.Handle(http.MethodGet, "/bad", func(c *Ctx) error {
+        return c.Send(JSON(make(chan int)))
     })
 
     rec := httptest.NewRecorder()
@@ -53,8 +53,8 @@ func TestSendJSONMarshalError(t *testing.T) {
     if rec.Code != http.StatusInternalServerError {
         t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
     }
-    if got := rec.Header().Get(HeaderContentType); got != MIMETextPlainCharsetUTF8 {
-        t.Fatalf("Content-Type = %q, want %q", got, MIMETextPlainCharsetUTF8)
+    if got := rec.Header().Get(HeaderContentType); got != MIMETextPlainUTF8 {
+        t.Fatalf("Content-Type = %q, want %q", got, MIMETextPlainUTF8)
     }
     if got := rec.Header().Get(HeaderXContentTypeOptions); got != ContentTypeOptionsNosniff {
         t.Fatalf("X-Content-Type-Options = %q, want %q", got, ContentTypeOptionsNosniff)
@@ -68,9 +68,9 @@ func (emptyRenderer) Render(*Ctx) error { return nil }
 // 锁定：renderer 不写 body 时，预设状态由 finish 提交。
 func TestSendEmptyRendererKeepsPresetStatus(t *testing.T) {
     r := New()
-    r.Get("/empty", func(c *Ctx, _ any) (any, error) {
+    r.Handle(http.MethodGet, "/empty", func(c *Ctx) error {
         c.Status(http.StatusNoContent)
-        return nil, c.Send(emptyRenderer{})
+        return c.Send(emptyRenderer{})
     })
 
     rec := httptest.NewRecorder()
@@ -94,8 +94,8 @@ func (r csvRenderer) Render(c *Ctx) error {
 
 func TestSendCustomRenderer(t *testing.T) {
     r := New()
-    r.Get("/csv", func(c *Ctx, _ any) (any, error) {
-        return nil, c.Send(csvRenderer{body: "a,b\n"})
+    r.Handle(http.MethodGet, "/csv", func(c *Ctx) error {
+        return c.Send(csvRenderer{body: "a,b\n"})
     })
 
     rec := httptest.NewRecorder()

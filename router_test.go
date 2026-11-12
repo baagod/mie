@@ -15,9 +15,9 @@ import (
 
 func TestRouteParam(t *testing.T) {
     r := New()
-    r.Get("/users/{id}", func(c *Ctx, _ any) (any, error) {
+    r.Handle(http.MethodGet, "/users/{id}", func(c *Ctx) error {
         _, _ = c.W.WriteString("user:" + c.Param("id"))
-        return nil, nil
+        return nil
     })
 
     rec := httptest.NewRecorder()
@@ -34,7 +34,7 @@ func TestRouteParam(t *testing.T) {
 func TestUnmatchedPathSkipsErrorHandler(t *testing.T) {
     called := false
     r := New(Config{ErrorHandler: func(_ *Ctx, err error) error { called = true; return err }})
-    r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
+    r.Get("/health", func(*Ctx, struct{}) (struct{}, error) { return struct{}{}, nil })
 
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nope", nil))
@@ -59,7 +59,7 @@ func TestNoMatchHandler(t *testing.T) {
         _, _ = c.W.WriteString("hooked")
         return nil
     }})
-    r.Get("/health", func(*Ctx, any) (any, error) { served++; return nil, nil })
+    r.Get("/health", func(*Ctx, struct{}) (struct{}, error) { served++; return struct{}{}, nil })
 
     for _, target := range []struct{ method, path string }{
         {http.MethodPost, "/health"},
@@ -108,7 +108,7 @@ func TestNoMatchHandlerReturnsError(t *testing.T) {
 
 func TestNoMatchHandlerWritesNothing(t *testing.T) {
     r := New(Config{NoMatchHandler: func(*Ctx) error { return nil }})
-    r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
+    r.Get("/health", func(*Ctx, struct{}) (struct{}, error) { return struct{}{}, nil })
 
     // 405：保留 Allow，body 为空。
     rec := httptest.NewRecorder()
@@ -149,7 +149,7 @@ func TestNoMatchHandlerStatusOnly(t *testing.T) {
         c.Status(http.StatusNoContent)
         return nil
     }})
-    r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
+    r.Get("/health", func(*Ctx, struct{}) (struct{}, error) { return struct{}{}, nil })
 
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
@@ -168,7 +168,7 @@ func TestNoMatchHandlerAccessLog(t *testing.T) {
         NoMatchHandler: func(*Ctx) error { return nil },
         Logger:         lg,
     })
-    r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
+    r.Get("/health", func(*Ctx, struct{}) (struct{}, error) { return struct{}{}, nil })
 
     for _, tc := range []struct{ method, path string }{
         {http.MethodPost, "/health"},
@@ -195,7 +195,7 @@ func TestNoMatchHandlerPanicWrites500(t *testing.T) {
         NoMatchHandler: func(*Ctx) error { panic("hook boom") },
         Logger:         lg,
     })
-    r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
+    r.Get("/health", func(*Ctx, struct{}) (struct{}, error) { return struct{}{}, nil })
 
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
@@ -214,7 +214,7 @@ func TestNoMatchHandlerMayRewriteStatus(t *testing.T) {
         _, _ = c.W.WriteString("ok")
         return nil
     }})
-    r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
+    r.Get("/health", func(*Ctx, struct{}) (struct{}, error) { return struct{}{}, nil })
 
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
@@ -252,7 +252,7 @@ func TestNoMatchHandlerSeesStatus(t *testing.T) {
         _, _ = c.W.WriteString("hooked")
         return nil
     }})
-    r.Get("/health", func(*Ctx, any) (any, error) { return nil, nil })
+    r.Get("/health", func(*Ctx, struct{}) (struct{}, error) { return struct{}{}, nil })
 
     // 路径存在、方法不对：405，Allow 头保留。
     rec := httptest.NewRecorder()
@@ -288,8 +288,8 @@ func TestNoMatchHandlerIgnoresBusiness404(t *testing.T) {
         calls++
         return nil
     }})
-    r.Get("/missing", func(*Ctx, any) (any, error) {
-        return nil, NewError(http.StatusNotFound, "account gone")
+    r.Get("/missing", func(*Ctx, struct{}) (struct{}, error) {
+        return struct{}{}, NewError(http.StatusNotFound, "account gone")
     })
 
     rec := httptest.NewRecorder()
@@ -309,14 +309,14 @@ func TestNoMatchHandlerIgnoresManual404(t *testing.T) {
         calls++
         return nil
     }})
-    r.Get("/manual", func(c *Ctx, _ any) (any, error) {
+    r.Handle(http.MethodGet, "/manual", func(c *Ctx) error {
         c.W.WriteHeader(http.StatusNotFound)
         _, _ = c.W.WriteString("manual 404")
-        return nil, nil
+        return nil
     })
-    r.Get("/teapot", func(c *Ctx, _ any) (any, error) {
+    r.Handle(http.MethodGet, "/teapot", func(c *Ctx) error {
         http.Error(c.W, "nope", http.StatusMethodNotAllowed)
-        return nil, nil
+        return nil
     })
 
     for _, tc := range []struct {
@@ -341,8 +341,8 @@ func TestNoMatchHandlerIgnoresManual404(t *testing.T) {
 
 func TestDefaultErrorHandlerWritesResponse(t *testing.T) {
     r := New()
-    r.Get("/teapot", func(*Ctx, any) (any, error) {
-        return nil, NewError(http.StatusTeapot, "short and stout")
+    r.Get("/teapot", func(*Ctx, struct{}) (struct{}, error) {
+        return struct{}{}, NewError(http.StatusTeapot, "short and stout")
     })
 
     rec := httptest.NewRecorder()
@@ -354,8 +354,8 @@ func TestDefaultErrorHandlerWritesResponse(t *testing.T) {
     if got := rec.Body.String(); got != "short and stout" {
         t.Fatalf("body = %q, want %q", got, "short and stout")
     }
-    if got := rec.Header().Get(HeaderContentType); got != MIMETextPlainCharsetUTF8 {
-        t.Fatalf("Content-Type = %q, want %q", got, MIMETextPlainCharsetUTF8)
+    if got := rec.Header().Get(HeaderContentType); got != MIMETextPlainUTF8 {
+        t.Fatalf("Content-Type = %q, want %q", got, MIMETextPlainUTF8)
     }
     if got := rec.Header().Get(HeaderXContentTypeOptions); got != ContentTypeOptionsNosniff {
         t.Fatalf("X-Content-Type-Options = %q, want %q", got, ContentTypeOptionsNosniff)
@@ -364,8 +364,8 @@ func TestDefaultErrorHandlerWritesResponse(t *testing.T) {
 
 func TestDefaultErrorHandlerUnknownError(t *testing.T) {
     r := New()
-    r.Get("/boom", func(*Ctx, any) (any, error) {
-        return nil, errors.New("db down")
+    r.Get("/boom", func(*Ctx, struct{}) (struct{}, error) {
+        return struct{}{}, errors.New("db down")
     })
 
     rec := httptest.NewRecorder()
@@ -381,10 +381,10 @@ func TestDefaultErrorHandlerUnknownError(t *testing.T) {
 
 func TestWriteErrorKeepsWrittenResponse(t *testing.T) {
     r := New()
-    r.Get("/partial", func(c *Ctx, _ any) (any, error) {
+    r.Get("/partial", func(c *Ctx, _ struct{}) (struct{}, error) {
         c.W.WriteHeader(http.StatusCreated)
         _, _ = c.W.WriteString("created")
-        return nil, errors.New("late failure")
+        return struct{}{}, errors.New("late failure")
     })
 
     rec := httptest.NewRecorder()
@@ -400,9 +400,9 @@ func TestWriteErrorKeepsWrittenResponse(t *testing.T) {
 
 func TestRouteCommitsPresetStatus(t *testing.T) {
     r := New()
-    r.Get("/no-content", func(c *Ctx, _ any) (any, error) {
+    r.Get("/no-content", func(c *Ctx, _ struct{}) (struct{}, error) {
         c.Status(http.StatusNoContent)
-        return nil, nil
+        return struct{}{}, nil
     })
 
     rec := httptest.NewRecorder()
@@ -416,9 +416,9 @@ func TestRouteCommitsPresetStatus(t *testing.T) {
 // 用户声明 text/plain 但没设 nosniff 时，框架补上。
 func TestWriteErrorAddsNosniffToUserTextPlain(t *testing.T) {
     r := New()
-    r.Get("/plain", func(c *Ctx, _ any) (any, error) {
+    r.Get("/plain", func(c *Ctx, _ struct{}) (struct{}, error) {
         c.Header(HeaderContentType, "text/plain; charset=utf-8")
-        return nil, NewError(http.StatusBadRequest, "bad input")
+        return struct{}{}, NewError(http.StatusBadRequest, "bad input")
     })
 
     rec := httptest.NewRecorder()
@@ -432,8 +432,8 @@ func TestWriteErrorAddsNosniffToUserTextPlain(t *testing.T) {
 // 锁定契约：ErrorHandler 返回 nil 表示已自行处理，框架不再写任何响应。
 func TestErrorHandlerNilLeavesResponseUntouched(t *testing.T) {
     r := New(Config{ErrorHandler: func(*Ctx, error) error { return nil }})
-    r.Get("/handled", func(*Ctx, any) (any, error) {
-        return nil, errors.New("handled elsewhere")
+    r.Get("/handled", func(*Ctx, struct{}) (struct{}, error) {
+        return struct{}{}, errors.New("handled elsewhere")
     })
 
     rec := httptest.NewRecorder()
@@ -451,8 +451,8 @@ func TestErrorHandlerNilLeavesResponseUntouched(t *testing.T) {
 func TestCanceledRequestWritesNothing(t *testing.T) {
     l, buf := testLogger()
     r := New(Config{Logger: l})
-    r.Get("/canceled", func(*Ctx, any) (any, error) {
-        return nil, context.Canceled
+    r.Get("/canceled", func(*Ctx, struct{}) (struct{}, error) {
+        return struct{}{}, context.Canceled
     })
 
     req := httptest.NewRequest(http.MethodGet, "/canceled", nil)
@@ -481,11 +481,11 @@ func TestCanceledErrorSkipsErrorHandler(t *testing.T) {
         calls++
         return err
     }})
-    r.Get("/canceled", func(*Ctx, any) (any, error) {
-        return nil, context.Canceled
+    r.Get("/canceled", func(*Ctx, struct{}) (struct{}, error) {
+        return struct{}{}, context.Canceled
     })
-    r.Get("/failed", func(*Ctx, any) (any, error) {
-        return nil, errors.New("boom")
+    r.Get("/failed", func(*Ctx, struct{}) (struct{}, error) {
+        return struct{}{}, errors.New("boom")
     })
 
     req := httptest.NewRequest(http.MethodGet, "/canceled", nil)
@@ -506,9 +506,9 @@ func TestCanceledErrorSkipsErrorHandler(t *testing.T) {
 
 func TestWriteErrorKeepsCustomContentType(t *testing.T) {
     r := New()
-    r.Get("/json", func(c *Ctx, _ any) (any, error) {
+    r.Get("/json", func(c *Ctx, _ struct{}) (struct{}, error) {
         c.Header(HeaderContentType, "application/json")
-        return nil, NewError(http.StatusBadRequest, "bad input")
+        return struct{}{}, NewError(http.StatusBadRequest, "bad input")
     })
 
     rec := httptest.NewRecorder()
@@ -527,7 +527,7 @@ func TestWriteErrorKeepsCustomContentType(t *testing.T) {
 
 func TestPanicWritesDefault500(t *testing.T) {
     r := New()
-    r.Get("/panic", func(*Ctx, any) (any, error) { panic("boom") })
+    r.Get("/panic", func(*Ctx, struct{}) (struct{}, error) { panic("boom") })
 
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/panic", nil))
@@ -546,7 +546,7 @@ func TestPanicWritesDefault500(t *testing.T) {
 func TestPanicAfterWriteAbortsResponse(t *testing.T) {
     l, buf := testLogger()
     r := New(Config{Logger: l})
-    r.Get("/half", func(c *Ctx, _ any) (any, error) {
+    r.Get("/half", func(c *Ctx, _ struct{}) (struct{}, error) {
         _, _ = c.W.WriteString("half")
         panic("boom")
     })
@@ -574,7 +574,7 @@ func TestPanicRecoverHandlerPanicStillLogs(t *testing.T) {
         Logger:         l,
         RecoverHandler: func(*Ctx, *Panic) error { panic("recover handler boom") },
     })
-    r.Get("/boom", func(*Ctx, any) (any, error) { panic("boom") })
+    r.Get("/boom", func(*Ctx, struct{}) (struct{}, error) { panic("boom") })
 
     s := httptest.NewServer(r)
     defer s.Close()
@@ -615,18 +615,18 @@ func (h *accessRecordHandler) WithGroup(string) slog.Handler      { return h }
 func TestWriteErrorAfterHijackLeavesConnectionAlone(t *testing.T) {
     h := &accessRecordHandler{access: make(chan slog.Record, 1)}
     r := New(Config{Logger: slog.New(h)})
-    r.Get("/hijack", func(c *Ctx, _ any) (any, error) {
+    r.Get("/hijack", func(c *Ctx, _ struct{}) (struct{}, error) {
         conn, _, err := c.W.Hijack()
         if err != nil {
             t.Errorf("Hijack: %v", err)
-            return nil, err
+            return struct{}{}, err
         }
         defer conn.Close()
 
         if _, err := conn.Write([]byte("hijacked\n")); err != nil {
             t.Errorf("write hijacked connection: %v", err)
         }
-        return nil, NewError(http.StatusBadRequest, "late")
+        return struct{}{}, NewError(http.StatusBadRequest, "late")
     })
 
     s := httptest.NewServer(r)
@@ -682,7 +682,7 @@ func TestNoMatchHandlerPanicLogsOnce(t *testing.T) {
     }()
 
     var n int
-    for _, line := range strings.Split(buf.String(), "\n") {
+    for line := range strings.SplitSeq(buf.String(), "\n") {
         if strings.Contains(line, "msg=access") {
             n++
         }

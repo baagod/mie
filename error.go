@@ -25,3 +25,11 @@ func NewError(code int, text ...string) *Error {
 func Status500InternalServerError(text ...string) *Error {
     return NewError(http.StatusInternalServerError, text...)
 }
+
+func Status413RequestEntityTooLarge(text ...string) *Error {
+    return NewError(http.StatusRequestEntityTooLarge, text...)
+}
+
+func Status400BadRequest(text ...string) *Error {
+    return NewError(http.StatusBadRequest, text...)
+}

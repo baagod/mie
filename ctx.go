@@ -5,6 +5,7 @@ import (
     "crypto/rand"
     "encoding/hex"
     "errors"
+    "io"
     "mime"
     "net"
     "net/http"
@@ -14,8 +15,20 @@ import (
 // ctxKey 是请求 context 中存放 *Ctx 的键。
 type ctxKey struct{}
 
-// Handler 是中间件与路由的统一签名；路由的泛型入参与返回值在注册时转成 any。
-type Handler func(c *Ctx, in any) (any, error)
+// bodyKey 是请求 context 中缓存 Body 读取结果的键。
+type bodyKey struct{}
+
+// reqBody 缓存 Body 的读取结果：字节与错误一起保存，保证重复调用语义一致。
+type reqBody struct {
+    b   []byte
+    err error
+}
+
+// Handler 是框架内部执行的处理器形状：链元素与中间件。
+type Handler func(c *Ctx) error
+
+// HandlerFunc 是注册口使用的处理器形状：IN 由请求绑定，OUT 渲染为响应。
+type HandlerFunc[IN, OUT any] func(c *Ctx, in IN) (OUT, error)
 
 // Ctx 是一次请求的上下文，包装响应写入器与请求，并承载中间件游标。
 type Ctx struct {
@@ -53,6 +66,28 @@ func newCtx(w http.ResponseWriter, req *http.Request, r *Router) *Ctx {
     return c
 }
 
+// Body 返回请求体：首次调用读取并缓存，后续调用返回同一份结果（包括读取错误）。
+func (c *Ctx) Body() (b []byte, err error) {
+    if cached, ok := c.Value(bodyKey{}).(reqBody); ok {
+        return cached.b, cached.err
+    }
+
+    if b, err = io.ReadAll(c.R.Body); err != nil {
+        if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+            b, err = nil, Status413RequestEntityTooLarge("mux: request body too large")
+        }
+    }
+
+    c.Set(bodyKey{}, reqBody{b: b, err: err})
+    return
+}
+
+// Set 把请求级键值写入请求 context；之后用 c.Value 读取。
+func (c *Ctx) Set(key, value any) *Ctx {
+    c.R = c.R.WithContext(context.WithValue(c.R.Context(), key, value))
+    return c
+}
+
 // Deadline 转发请求 context 的截止时间。
 func (c *Ctx) Deadline() (time.Time, bool) { return c.R.Context().Deadline() }
 
@@ -78,6 +113,11 @@ func (c *Ctx) GetHeader(name string, or ...string) string {
         h = or[0]
     }
     return h
+}
+
+// ContentType 返回请求头的内容类型
+func (c *Ctx) ContentType() string {
+    return c.GetHeader(HeaderContentType)
 }
 
 // RemoteIP 取 RemoteAddr 的主机部分；解析失败时返回原值。
@@ -121,13 +161,13 @@ func (c *Ctx) Send(r Renderer) error {
     return r.Render(c)
 }
 
-// Next 把游标推进到下一个 Handler 并调用它；越过链尾后再调用返回错误。
-func (c *Ctx) Next(in any) (any, error) {
+// Next 把游标推进到下一个链元素并调用它；越过链尾后再调用返回错误。
+func (c *Ctx) Next() error {
     c.index++
     if c.index >= len(c.chain) {
-        return nil, errors.New("mux: Next called after the end of the chain")
+        return errors.New("mux: Next called after the end of the chain")
     }
-    return c.chain[c.index](c, in)
+    return c.chain[c.index](c)
 }
 
 // finish 是请求的统一收尾：写错误响应、提交预设状态、记一条访问日志。
@@ -160,7 +200,7 @@ func (c *Ctx) writeError(err error) {
     h := c.W.Header()
     if ct := h.Get(HeaderContentType); ct == "" {
         // 没有 Content-Type 时选 text/plain，并加 nosniff，避免错误文本被当成 HTML 渲染。
-        h.Set(HeaderContentType, MIMETextPlainCharsetUTF8)
+        h.Set(HeaderContentType, MIMETextPlainUTF8)
         h.Set(HeaderXContentTypeOptions, ContentTypeOptionsNosniff)
     } else if t, _, e := mime.ParseMediaType(ct); e == nil && t == "text/plain" {
         // 只有 text/plain 会被嗅探成 HTML；用户已声明该类型时补 nosniff。

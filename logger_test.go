@@ -23,7 +23,7 @@ func TestAccessLogWritesRecord(t *testing.T) {
         name    string
         pattern string
         path    string
-        handler Handler
+        handler HandlerFunc[struct{}, struct{}]
         want    []string
         notWant []string
     }{
@@ -31,8 +31,8 @@ func TestAccessLogWritesRecord(t *testing.T) {
             name:    "handler error",
             pattern: "/teapot",
             path:    "/teapot",
-            handler: func(*Ctx, any) (any, error) {
-                return nil, NewError(http.StatusTeapot, "short and stout")
+            handler: func(*Ctx, struct{}) (struct{}, error) {
+                return struct{}{}, NewError(http.StatusTeapot, "short and stout")
             },
             want: []string{
                 "level=WARN", "msg=access", "status=418", "path=/teapot", "pattern=/teapot",
@@ -49,7 +49,7 @@ func TestAccessLogWritesRecord(t *testing.T) {
             name:    "panic",
             pattern: "/panic",
             path:    "/panic",
-            handler: func(*Ctx, any) (any, error) { panic("boom") },
+            handler: func(*Ctx, struct{}) (struct{}, error) { panic("boom") },
             want: []string{
                 "level=ERROR", "msg=access", "status=500", "latency=", "traceid=trace-1", "ip=192.0.2.1",
             },
@@ -87,20 +87,20 @@ func TestAccessLogWritesRecord(t *testing.T) {
 func TestAccessLogMeasuresLatency(t *testing.T) {
     l, buf := testLogger()
     r := New(Config{Logger: l})
-    r.Get("/slow", func(*Ctx, any) (any, error) {
+    r.Get("/slow", func(*Ctx, struct{}) (struct{}, error) {
         time.Sleep(2 * time.Millisecond)
-        return nil, nil
+        return struct{}{}, nil
     })
 
     r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/slow", nil))
 
     out := buf.String()
     const marker = "latency="
-    i := strings.Index(out, marker)
-    if i < 0 {
+    _, after, ok := strings.Cut(out, marker)
+    if !ok {
         t.Fatalf("日志 = %q，缺少 latency", out)
     }
-    field := out[i+len(marker):]
+    field := after
     if j := strings.IndexByte(field, ' '); j >= 0 {
         field = field[:j]
     }
@@ -134,7 +134,7 @@ func (h enrichHandler) WithGroup(name string) slog.Handler {
 func TestHandlerCanReadCtx(t *testing.T) {
     var buf bytes.Buffer
     r := New(Config{Logger: slog.New(enrichHandler{slog.NewTextHandler(&buf, nil)})})
-    r.Get("/users/{id}", func(*Ctx, any) (any, error) { return nil, nil })
+    r.Get("/users/{id}", func(*Ctx, struct{}) (struct{}, error) { return struct{}{}, nil })
 
     r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/users/42", nil))
 
@@ -160,8 +160,8 @@ func TestLoggerOverridesDefault(t *testing.T) {
     l, buf := testLogger()
 
     r := New(Config{Logger: l})
-    r.Get("/teapot", func(*Ctx, any) (any, error) {
-        return nil, NewError(http.StatusTeapot, "short and stout")
+    r.Get("/teapot", func(*Ctx, struct{}) (struct{}, error) {
+        return struct{}{}, NewError(http.StatusTeapot, "short and stout")
     })
 
     r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/teapot", nil))
@@ -178,7 +178,7 @@ func TestLoggerOverridesDefault(t *testing.T) {
 func TestAccessLogCoversCanonicalRedirect(t *testing.T) {
     l, buf := testLogger()
     r := New(Config{Logger: l})
-    r.Get("/x/", func(*Ctx, any) (any, error) { return nil, nil })
+    r.Get("/x/", func(*Ctx, struct{}) (struct{}, error) { return struct{}{}, nil })
 
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
@@ -213,7 +213,7 @@ func TestLogWithoutRouterFallsBackToDefault(t *testing.T) {
 func TestAccessLogWrittenOnceForHandledRoute(t *testing.T) {
     l, buf := testLogger()
     r := New(Config{Logger: l})
-    r.Get("/ok", func(*Ctx, any) (any, error) { return nil, nil })
+    r.Get("/ok", func(*Ctx, struct{}) (struct{}, error) { return struct{}{}, nil })
 
     r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/ok", nil))
 
@@ -229,11 +229,11 @@ func TestLoggerReceivesFrameworkLogs(t *testing.T) {
     l, buf := testLogger()
 
     r := New(Config{Logger: l})
-    r.Get("/panic", func(*Ctx, any) (any, error) { panic("boom") })
-    r.Get("/late", func(c *Ctx, _ any) (any, error) {
+    r.Get("/panic", func(*Ctx, struct{}) (struct{}, error) { panic("boom") })
+    r.Get("/late", func(c *Ctx, _ struct{}) (struct{}, error) {
         c.W.WriteHeader(http.StatusCreated)
         _, _ = c.W.WriteString("created")
-        return nil, errors.New("late failure")
+        return struct{}{}, errors.New("late failure")
     })
 
     r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/panic", nil))

@@ -9,7 +9,8 @@ const (
 
 // 框架自行选择类型时使用的 MIME 与选项值。
 const (
-    MIMETextPlainCharsetUTF8  = "text/plain; charset=utf-8"
-    MIMEApplicationJSON       = "application/json"
+    MIMETextPlainUTF8         = "text/plain; charset=utf-8"
+    MIMEAppJSON               = "application/json"
+    MIMEAppFormUrlencoded     = "application/x-www-form-urlencoded"
     ContentTypeOptionsNosniff = "nosniff"
 )

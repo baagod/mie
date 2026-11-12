@@ -9,9 +9,9 @@ import (
 // 锁定：Header/Type 返回 Ctx，可以链式调用。
 func TestHeaderAndTypeChain(t *testing.T) {
     r := New()
-    r.Get("/chain", func(c *Ctx, _ any) (any, error) {
+    r.Get("/chain", func(c *Ctx, _ struct{}) (struct{}, error) {
         c.Type("application/json").Header("X-Test", "1")
-        return nil, nil
+        return struct{}{}, nil
     })
 
     rec := httptest.NewRecorder()
@@ -29,9 +29,9 @@ func TestHeaderAndTypeChain(t *testing.T) {
 func TestTraceIDGeneratedWithoutResponseHeader(t *testing.T) {
     r := New()
     var id string
-    r.Get("/trace", func(c *Ctx, _ any) (any, error) {
+    r.Get("/trace", func(c *Ctx, _ struct{}) (struct{}, error) {
         id = c.TraceID()
-        return nil, nil
+        return struct{}{}, nil
     })
 
     rec := httptest.NewRecorder()
@@ -49,9 +49,9 @@ func TestTraceIDGeneratedWithoutResponseHeader(t *testing.T) {
 func TestTraceIDReusedWithoutResponseHeader(t *testing.T) {
     r := New()
     var id string
-    r.Get("/trace", func(c *Ctx, _ any) (any, error) {
+    r.Get("/trace", func(c *Ctx, _ struct{}) (struct{}, error) {
         id = c.TraceID()
-        return nil, nil
+        return struct{}{}, nil
     })
 
     req := httptest.NewRequest(http.MethodGet, "/trace", nil)

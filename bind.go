@@ -41,7 +41,6 @@ type bindPlan struct {
 // newBindPlan 检查 IN 类型并生成绑定方案；非法声明记入 p.err，不 panic。
 func newBindPlan(t reflect.Type) *bindPlan {
     p := &bindPlan{}
-
     if p.ptr = t.Kind() == reflect.Pointer; p.ptr {
         t = t.Elem()
     }

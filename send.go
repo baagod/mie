@@ -20,7 +20,7 @@ func (r jsonRenderer) Render(c *Ctx) error {
     if err != nil {
         return err
     }
-    c.Type(MIMEApplicationJSON)
+    c.Type(MIMEAppJSON)
     _, err = c.W.Write(b)
     return err
 }
