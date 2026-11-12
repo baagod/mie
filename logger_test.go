@@ -1,4 +1,4 @@
-package mux
+package mie
 
 import (
     "bytes"
@@ -240,7 +240,7 @@ func TestLoggerReceivesFrameworkLogs(t *testing.T) {
     r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/late", nil))
 
     out := buf.String()
-    for _, want := range []string{"PANIC RECOVERED", "mux: error after response committed", "msg=access"} {
+    for _, want := range []string{"PANIC RECOVERED", "mie: error after response committed", "msg=access"} {
         if !strings.Contains(out, want) {
             t.Fatalf("日志 = %q，缺少 %q", out, want)
         }

@@ -1,4 +1,4 @@
-package mux
+package mie
 
 import (
     "context"
@@ -74,7 +74,7 @@ func (c *Ctx) Body() (b []byte, err error) {
 
     if b, err = io.ReadAll(c.R.Body); err != nil {
         if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
-            b, err = nil, Status413RequestEntityTooLarge("mux: request body too large")
+            b, err = nil, Status413RequestEntityTooLarge("mie: request body too large")
         }
     }
 
@@ -165,7 +165,7 @@ func (c *Ctx) Send(r Renderer) error {
 func (c *Ctx) Next() error {
     c.index++
     if c.index >= len(c.chain) {
-        return errors.New("mux: Next called after the end of the chain")
+        return errors.New("mie: Next called after the end of the chain")
     }
     return c.chain[c.index](c)
 }
@@ -188,7 +188,7 @@ func (c *Ctx) writeError(err error) {
 
     c.index = len(c.chain)
     if c.W.hijacked {
-        c.LogWarn("mux: error after hijack", "error", err)
+        c.LogWarn("mie: error after hijack", "error", err)
         return
     }
 
@@ -210,12 +210,12 @@ func (c *Ctx) writeError(err error) {
     }
 
     if c.W.wroteHeader {
-        c.LogWarn("mux: error after response committed", "error", err)
+        c.LogWarn("mie: error after response committed", "error", err)
     } else {
         c.W.WriteHeader(status)
     }
 
     if _, e := c.W.WriteString(err.Error()); e != nil {
-        c.LogWarn("mux: write error response", "error", e)
+        c.LogWarn("mie: write error response", "error", e)
     }
 }

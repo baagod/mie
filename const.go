@@ -1,4 +1,4 @@
-package mux
+package mie
 
 // 协议头名。
 const (

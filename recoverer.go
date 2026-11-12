@@ -1,4 +1,4 @@
-package mux
+package mie
 
 import (
     "cmp"
@@ -87,12 +87,12 @@ func (p *Panic) JSON() string {
     return string(b)
 }
 
-// captureFrames 从 recover 点向上收集业务帧；运行时、net/http、testing 与 mux 自身的帧不算。
+// captureFrames 从 recover 点向上收集业务帧；运行时、net/http、testing 与 mie 自身的帧不算。
 func captureFrames() []Frame {
     pcs := make([]uintptr, 64)
     n := runtime.Callers(3, pcs[:])
     iter := runtime.CallersFrames(pcs[:n])
-    muxDir := packageDir()
+    mieDir := packageDir()
 
     out := make([]Frame, 0, maxPanicFrames)
     for len(out) < maxPanicFrames {
@@ -100,7 +100,7 @@ func captureFrames() []Frame {
         if f.Function == "" {
             break
         }
-        if !skipPanicFrame(f.Function, f.File, muxDir) {
+        if !skipPanicFrame(f.Function, f.File, mieDir) {
             out = append(out, Frame{
                 File:   displayFile(f.File),
                 Line:   f.Line,
@@ -117,17 +117,17 @@ func captureFrames() []Frame {
 }
 
 // skipPanicFrame 判断一帧是否属于运行时、net/http、测试或框架自身。
-func skipPanicFrame(fn, file, muxDir string) bool {
+func skipPanicFrame(fn, file, mieDir string) bool {
     for _, prefix := range []string{"runtime.", "net/http.", "testing."} {
         if strings.HasPrefix(fn, prefix) {
             return true
         }
     }
-    // 同目录的非测试文件即 mux 自身；不按函数名判断，避免 rename 后失效。
-    return filepath.Dir(file) == muxDir && !strings.HasSuffix(file, "_test.go")
+    // 同目录的非测试文件即 mie 自身；不按函数名判断，避免 rename 后失效。
+    return filepath.Dir(file) == mieDir && !strings.HasSuffix(file, "_test.go")
 }
 
-// packageDir 返回 mux 源码目录，用于识别框架自身的帧。
+// packageDir 返回 mie 源码目录，用于识别框架自身的帧。
 func packageDir() string {
     _, file, _, ok := runtime.Caller(0)
     if !ok {

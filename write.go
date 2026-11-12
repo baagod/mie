@@ -1,4 +1,4 @@
-package mux
+package mie
 
 import (
     "bufio"
@@ -199,6 +199,6 @@ func (w *ResponseWriter) track(f func() (int, error)) (int, error) {
 // checkStatus 在状态码越界（<100 或 >999）时 panic，不做静默纠正。
 func checkStatus(code int) {
     if code < 100 || code > 999 {
-        panic(fmt.Sprintf("mux: invalid status code %d", code))
+        panic(fmt.Sprintf("mie: invalid status code %d", code))
     }
 }

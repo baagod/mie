@@ -1,4 +1,4 @@
-package mux
+package mie
 
 import (
     "context"
@@ -53,7 +53,7 @@ func defaultRecoverHandler(c *Ctx, info *Panic) error {
 // New 创建 Router；最多一个 Config，多传会 panic。panic 的恢复见 handlePanic。
 func New(cfg ...Config) *Router {
     if len(cfg) > 1 {
-        panic("mux: New accepts at most one Config")
+        panic("mie: New accepts at most one Config")
     }
 
     var c Config
@@ -81,7 +81,7 @@ func New(cfg ...Config) *Router {
 // 带 IN 的中间件（typed middleware）尚未支持。
 func (r *Router) Use[IN any](m HandlerFunc[IN, any]) error {
     if reflect.TypeFor[IN]() != reflect.TypeFor[struct{}]() {
-        return errors.New("mux: typed middleware is not supported")
+        return errors.New("mie: typed middleware is not supported")
     }
     r.middlewares = append(r.middlewares, handler(m))
     return nil
