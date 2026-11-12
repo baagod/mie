@@ -10,7 +10,7 @@
 - 类型化：每个路由自己声明输入和输出类型，编译期可检查。
 - 默认处理器必须带输入：`func(c *Ctx, in IN) (OUT, error)`（`HandlerFunc[IN, OUT]`）。
 - 没有输入的路由传 `struct{}`，不另设无输入处理器；没有输出的场景用 `He` 适配。
-- 输入只接收显式声明了来源的字段：没写绑定 tag 的字段永远是零值，框架不猜。
+- 位置来源只认显式 tag：没写 path/header/query/form tag 的字段不会被位置来源写入；body 仍按 `encoding/json` 标准规则解码，未打 tag 的导出字段也会写入。
 - 外部处理器一律用 `HandlerFunc[IN, OUT]` 注册；框架适配成内部的 `Handler`（`func(c *Ctx) error`）后入链，中间件也是 `HandlerFunc`。
 
 非目标：
@@ -74,6 +74,9 @@ app.Delete("/users/{id}", He(func(c *Ctx, in DeleteUser) error {
 func (r *Router) Get[IN, OUT any](pattern string, h HandlerFunc[IN, OUT])
 func (r *Router) Post[IN, OUT any](pattern string, h HandlerFunc[IN, OUT])
 // Put/Patch/Delete 同型；Use 返回 error（typed 中间件校验）
+
+// 手写响应/非泛型入口。
+func (r *Router) Handle(method, pattern string, h Handler)
 ```
 
 - 类型参数从处理器字面量推断（Go 1.27 支持泛型方法与字面量推断，已验证）；`He(...)` 内联也能推断，无需显式实例化。
@@ -93,7 +96,7 @@ func (r *Router) Post[IN, OUT any](pattern string, h HandlerFunc[IN, OUT])
 
 位置/头部/参数来源只认显式 tag；body 的字段匹配交给 `encoding/json` 标准规则。
 
-实现层逐段讲解见 [bind.md](bind.md)（该文档仍按旧实现整理，待重写）。
+实现见 `bind.go`：`newBindPlan` 编译方案、`bind` 编排、`bindValue` 取来源值、`setValues` 写字段。
 
 ### 4.1 字段 tag
 
@@ -213,7 +216,7 @@ r.Use(func(c *Ctx, _ struct{}) (any, error) {
 2. `He` 把只返回 error 的处理器适配成 `HandlerFunc[IN, any]`（`OUT` 为 `nil`，不写 body），命名与推断可用（`r.Delete("/users/{id}", He(func(c *Ctx, in DeleteUser) error {...}))` 免显式类型参数，已验证）；无输入处理器不另设形状，直接在 IN 处写 `struct{}`。v1 只做 `He`。
 3. bind 错误统一为 `*Error`（默认 400；`*http.MaxBytesError` 映射为 413），文案含来源/字段/原因；`ErrorHandler` 可改变最终响应。
 4. 来源顺序：同一字段多个来源 tag 按 `path` → `header` → `query`/`form`（参数）→ body 依次绑定，后写的覆盖先写的；来源缺失（没有该参数/头）跳过，来源存在但值为空串则清空字段（不 panic）。body 仅 POST 读取，整块交给 `encoding/json`：未知键忽略、键名大小写敏感（标准库默认精确匹配）、未打 tag 的导出字段也会写入。框架不设 body 上限，需要限制时由应用中间件用 `http.MaxBytesReader`，超限映射为 413。
-5. `Next()` 改造为一次性破坏性变更，按既有 `type!` 提交方式迁移。
+5. `Next()` 从 `(any, error)` 改为 `error`，是一次性破坏性变更，已随类型化 Handler 提交合入。
 6. `IN` 类型范围：struct / `*struct` / `struct{}` / 可整体 JSON 解码的非 struct。
 7. `query` 与 `form` 是同一个参数来源：都读 `ParseForm` 后的 `c.R.Form`；GET/HEAD 只有 URL query，POST/PUT/PATCH 的 urlencoded body 与 query 合并，body 优先。`ParseForm` 会消耗 body，框架不还原。
 8. 外部处理器一律 `HandlerFunc[IN, OUT]`，框架适配成内部 `Handler`（`func(c *Ctx) error`）入链；中间件用 `HandlerFunc[IN, any]` 注册，返回 `nil` 表示无输出。
