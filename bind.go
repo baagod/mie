@@ -9,6 +9,8 @@ import (
     "strconv"
 )
 
+// 绑定实现：字段按显式 tag 从 path/header/参数取值，POST + JSON 时再整块解码 body。
+// 每个处理器首次请求编译一次 bindPlan（含错误），请求期只按方案赋值。
 const (
     bindPath   = "path"
     bindHeader = "header"
@@ -22,22 +24,21 @@ var posTags = [...]string{bindPath, bindHeader, bindQuery, bindForm}
 
 // bindField 是 struct IN 的一个取值项；同一字段声明多个来源时会有多项。
 type bindField struct {
-    index  int    // 字段下标，reflect.Value.Field(index) 用
-    name   string // 字段名，只用于错误文案
-    source string // 从哪取值
-    key    string // 取值的键：path 参数名、header 名，或 query/form 的参数名
+    index  int    // 字段下标
+    name   string // 仅用于错误文案
+    source string
+    key    string
 }
 
-// bindPlan 是首次请求时算好的 IN 绑定方案；请求期只按它填值，不再解析 tag。
+// bindPlan 是首次请求编译出的赋值方案；请求期不再解析 tag。
 type bindPlan struct {
-    fields  []bindField // 绑定项，按 struct 声明顺序、字段内按来源顺序排列
-    ptr     bool        // IN 是指针：请求期先分配，handler 永远拿到非 nil 指针
-    hasForm bool        // 有 query/form 字段：请求期要先 ParseForm
-    err     error       // 编译失败：fields 为空；serve 在绑定前拦截
+    fields  []bindField
+    ptr     bool  // IN 是 *T：请求期分配，handler 永远拿到非 nil
+    hasForm bool  // 有参数来源：请求期先 ParseForm
+    err     error // 非 nil 时 serve 直接返回 500
 }
 
-// newBindPlan 在首次请求时把 IN 的类型检查一遍并生成绑定方案。
-// 非法声明写进 p.err，不 panic；每个 IN 类型只调用一次。
+// newBindPlan 检查 IN 类型并生成绑定方案；非法声明记入 p.err，不 panic。
 func newBindPlan(t reflect.Type) *bindPlan {
     p := &bindPlan{}
 
@@ -45,19 +46,19 @@ func newBindPlan(t reflect.Type) *bindPlan {
         t = t.Elem()
     }
 
-    // 非 struct 的 IN（map/切片/标量）：没有字段可绑，整个 body 就是值。
+    // 非 struct 的 IN 没有字段：整个 body 就是值（由结尾的整块解码处理）。
     if t.Kind() != reflect.Struct {
         return p
     }
 
     for i := 0; i < t.NumField(); i++ {
         sf := t.Field(i)
-        if sf.PkgPath != "" { // 跳过未导出字段
+        if sf.PkgPath != "" { // 未导出字段
             continue
         }
 
-        // 同一字段可以声明多个来源：按 posTags 的顺序依次生成绑定项，
-        // 请求期后写的覆盖先写的；某个来源没提供值就跳过，保留前面写进去的值。
+        // 同一字段的多来源生成多项：按 path→header→参数 的顺序，后写覆盖先写；
+        // query 与 form 同源，都读 ParseForm 后的参数表。
         for _, tag := range posTags {
             v, _ := sf.Tag.Lookup(tag)
             if v == "" {
@@ -79,17 +80,16 @@ func newBindPlan(t reflect.Type) *bindPlan {
     return p
 }
 
-// bind 把请求中的值写进 IN；in 必须是可设置的 IN 值。
-// 顺序：分配指针 → 逐字段填位置来源 → 最后整块解 JSON body（覆盖前面的值）。
+// bind 按方案把请求值写入 in；in 必须可设置。
 func (p *bindPlan) bind(c *Ctx, in reflect.Value) (err error) {
-    // *struct：请求期在这里分配，handler 永远拿到非 nil 指针。
-    if p.ptr { // p.ptr 在首次请求编译时由 newBindPlan 标记：IN 是 *T
-        v := reflect.New(in.Type().Elem()) // 分配一个新的 T（零值），得到 *T
-        in.Set(v)                          // 把 IN 指向这个新分配的 *T
-        in = v.Elem()                      // 后续统一操作 T 本体，避免到处判断指针
+    // *T：请求期分配，handler 永远拿到非 nil 指针。
+    if p.ptr {
+        v := reflect.New(in.Type().Elem())
+        in.Set(v)
+        in = v.Elem()
     }
 
-    // query 与 form 合并：ParseForm 对 GET 只取 URL，对 POST/PUT/PATCH + urlencoded 读 body。
+    // query/form 同源：GET 只取 URL query，POST/PUT/PATCH 的 urlencoded body 也合并进来。
     if p.hasForm {
         if err = c.R.ParseForm(); err != nil {
             return Status400BadRequest("bind params: " + err.Error())
@@ -97,16 +97,18 @@ func (p *bindPlan) bind(c *Ctx, in reflect.Value) (err error) {
     }
 
     for _, f := range p.fields {
-        // 位置来源统一走字符串解析
-        if err = bindScalar(c, in.Field(f.index), f); err != nil {
+        if err = bindValue(c, in.Field(f.index), f); err != nil {
             return err
         }
     }
 
-    // body 只在 POST + JSON 时读；整块解，覆盖路径/参数写入的值。
-    // 按 media type 比较：忽略大小写和 charset 等参数。
+    if c.R.Method != http.MethodPost {
+        return
+    }
+
+    // body 仅 POST + JSON：整块解码，覆盖前面写入的值；CT 按 media type 比较（忽略大小写与 charset）。
     ct, _, _ := mime.ParseMediaType(c.ContentType())
-    if c.R.Method == http.MethodPost && ct == MIMEAppJSON {
+    if ct == MIMEAppJSON {
         var b []byte
         if b, err = bindBytes(c); err != nil {
             return err
@@ -121,8 +123,8 @@ func (p *bindPlan) bind(c *Ctx, in reflect.Value) (err error) {
     return
 }
 
-// bindBytes 取请求体字节（经 Ctx.Body 缓存），并把读取错误转换成 bind 错误。
-// 不设内置上限；应用可用 http.MaxBytesReader 中间件限制，超限时这里返回 413。
+// bindBytes 经 Ctx.Body 取请求体；读取错误转成 bind 错误，已是 *Error 的（如 413）原样返回。
+// 不设内置上限，应用可用 http.MaxBytesReader 收紧。
 func bindBytes(c *Ctx) (b []byte, err error) {
     if b, err = c.Body(); err != nil {
         if _, ok := errors.AsType[*Error](err); !ok {
@@ -132,10 +134,9 @@ func bindBytes(c *Ctx) (b []byte, err error) {
     return
 }
 
-// bindScalar 把位置来源的值写进字段。
-// 来源缺失（没有这个参数/头）就跳过，保留前面来源写进去的值；
-// 来源存在但值为空串（?x=、空 header）则把字段清零。
-func bindScalar(c *Ctx, v reflect.Value, f bindField) (err error) {
+// bindValue 把该字段来源的值写进去：缺失（没有该参数/头）跳过，保留前面来源的值；
+// 存在但首个值为空串（?x=、空 header）则清零字段。切片/数组写入全部值，标量取第一个。
+func bindValue(c *Ctx, v reflect.Value, f bindField) (err error) {
     var s []string
     switch f.source {
     case bindPath:
@@ -152,27 +153,54 @@ func bindScalar(c *Ctx, v reflect.Value, f bindField) (err error) {
         return
     }
 
-    if s[0] == "" {
-        v.SetZero()
-        return
-    }
-
-    if err = setScalar(v, s[0]); err != nil {
-        return Status400BadRequest("mux: bind " + f.source + "." + f.name + ": " + err.Error())
+    if err = setValues(v, s); err != nil {
+        return Status400BadRequest("bind: " + f.source + "." + f.name + ": " + err.Error())
     }
 
     return
 }
 
-func setScalar(v reflect.Value, s string) (err error) {
-    if v.Kind() == reflect.Pointer { // 指针字段先解析成功再分配
+// setValues 写字段：标量取第一个；切片整体替换；数组按序覆盖，多余丢弃、不足补零。
+func setValues(v reflect.Value, s []string) (err error) {
+    if s[0] == "" { // 存在但为空：清零，与标量语义一致
+        v.SetZero()
+        return
+    }
+
+    if v.Kind() == reflect.Pointer { // 解析成功后再分配
         p := reflect.New(v.Type().Elem())
-        if err = setScalar(p.Elem(), s); err == nil {
+        if err = setValues(p.Elem(), s); err == nil {
             v.Set(p)
         }
         return
     }
 
+    switch v.Kind() {
+    case reflect.Slice:
+        ss := reflect.MakeSlice(v.Type(), len(s), len(s))
+        for i := range s {
+            if err = setScalar(ss.Index(i), s[i]); err != nil {
+                return
+            }
+        }
+        v.Set(ss)
+    case reflect.Array:
+        // 先清零：来源值不足时尾部保持零，也清掉前一个来源写的残留。
+        v.SetZero()
+        for i := range min(len(s), v.Len()) {
+            if err = setScalar(v.Index(i), s[i]); err != nil {
+                return
+            }
+        }
+    default:
+        return setScalar(v, s[0])
+    }
+
+    return
+}
+
+// setScalar 把字符串解析成标量写入；解析失败不写。
+func setScalar(v reflect.Value, s string) (err error) {
     switch v.Kind() {
     case reflect.String:
         v.SetString(s)
@@ -203,9 +231,13 @@ func setScalar(v reflect.Value, s string) (err error) {
     return
 }
 
-// scalarKind 判断字段类型能否从字符串转换；指针取其元素类型。
+// scalarKind 判断字段类型能否逐元素解析；指针、切片、数组看元素类型。
 func scalarKind(t reflect.Type) bool {
     if t.Kind() == reflect.Pointer {
+        t = t.Elem()
+    }
+
+    if t.Kind() == reflect.Slice || t.Kind() == reflect.Array {
         t = t.Elem()
     }
 
