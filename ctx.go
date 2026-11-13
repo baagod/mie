@@ -30,18 +30,12 @@ type reqBody struct {
     err error
 }
 
-// Handler 是框架内部执行的处理器形状：链元素与中间件。
-type Handler func(c *Ctx) error
-
-// HandlerFunc 是注册口使用的处理器形状：IN 由请求绑定，OUT 渲染为响应。
-type HandlerFunc[IN, OUT any] func(c *Ctx, in IN) (OUT, error)
-
 // Ctx 是一次请求的上下文，包装响应写入器与请求，并承载中间件游标。
 type Ctx struct {
     W *ResponseWriter // 响应写入器
     R *http.Request   // 带 Ctx 的请求副本
 
-    router  *Router
+    app     *App
     chain   []Handler
     index   int
     traceid string
@@ -50,12 +44,12 @@ type Ctx struct {
 
 // newCtx 创建请求上下文，并把 *Ctx 放进请求 context。
 // TraceID 复用合法的 X-Request-Id（不超过 128 字节），否则生成 32 位十六进制随机值。
-func newCtx(w http.ResponseWriter, req *http.Request, r *Router) *Ctx {
+func newCtx(w http.ResponseWriter, req *http.Request, a *App) *Ctx {
     c := &Ctx{
         index:   -1,
         traceid: req.Header.Get(HeaderXRequestID),
         start:   time.Now(),
-        router:  r,
+        app:     a,
     }
 
     // 路由闭包靠 context 取回 Ctx；ServeMux 把 Pattern/PathValue 写进请求副本，

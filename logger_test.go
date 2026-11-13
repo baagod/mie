@@ -194,8 +194,8 @@ func TestAccessLogCoversCanonicalRedirect(t *testing.T) {
     }
 }
 
-// 锁定：Ctx 由用户手工构造（无 Router）时，Log 不 panic，退回框架自己的 logger。
-func TestLogWithoutRouterFallsBackToDefault(t *testing.T) {
+// 锁定：Ctx 由用户手工构造（无 App）时，Log 不 panic，退回框架自己的 logger。
+func TestLogWithoutAppFallsBackToDefault(t *testing.T) {
     var buf bytes.Buffer
     prev := logger
     logger = slog.New(slog.NewTextHandler(&buf, nil))

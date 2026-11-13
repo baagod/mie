@@ -41,11 +41,11 @@ func (w *capabilityWriter) SetReadDeadline(time.Time) error  { w.readDeadline = 
 func (w *capabilityWriter) SetWriteDeadline(time.Time) error { w.writeDeadline = true; return nil }
 func (w *capabilityWriter) EnableFullDuplex() error          { w.fullDuplex = true; return nil }
 
-// testRouter 只给写层测试提供 Logger 与 context 注入，不参与路由。
-var testRouter = New()
+// testApp 只给写层测试提供 Logger 与 context 注入，不参与路由。
+var testApp = New()
 
 func newTestCtx(w http.ResponseWriter, req *http.Request) *Ctx {
-    return newCtx(w, req, testRouter)
+    return newCtx(w, req, testApp)
 }
 
 func newCapabilityCtx() (*Ctx, *capabilityWriter) {

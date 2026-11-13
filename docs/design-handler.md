@@ -71,12 +71,12 @@ app.Delete("/users/{id}", He(func(c *Ctx, in DeleteUser) error {
 沿用现有路由方法，增加类型参数：
 
 ```go
-func (r *Router) Get[IN, OUT any](pattern string, h HandlerFunc[IN, OUT])
-func (r *Router) Post[IN, OUT any](pattern string, h HandlerFunc[IN, OUT])
+func (r *App) Get[IN, OUT any](pattern string, h HandlerFunc[IN, OUT])
+func (r *App) Post[IN, OUT any](pattern string, h HandlerFunc[IN, OUT])
 // Put/Patch/Delete 同型；Use 返回 error（typed 中间件校验）
 
 // 手写响应/非泛型入口。
-func (r *Router) Handle(method, pattern string, h Handler)
+func (r *App) Handle(method, pattern string, h Handler)
 ```
 
 - 类型参数从处理器字面量推断（Go 1.27 支持泛型方法与字面量推断，已验证）；`He(...)` 内联也能推断，无需显式实例化。
@@ -173,7 +173,7 @@ bind 错误的形态：位置来源与 body 解码错误统一为 `*Error`（默
 中间件是 `HandlerFunc[IN, any]`，返回 `nil` 表示没有输出：
 
 ```go
-func (r *Router) Use[IN any](m HandlerFunc[IN, any]) error
+func (r *App) Use[IN any](m HandlerFunc[IN, any]) error
 func (c *Ctx) Next() error
 ```
 

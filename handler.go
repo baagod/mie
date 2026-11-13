@@ -2,6 +2,12 @@ package mie
 
 import "reflect"
 
+// Handler 是框架内部执行的处理器形状：链元素与中间件。
+type Handler func(c *Ctx) error
+
+// HandlerFunc 是注册口使用的处理器形状：IN 由请求绑定，OUT 渲染为响应。
+type HandlerFunc[IN, OUT any] func(c *Ctx, in IN) (OUT, error)
+
 // He 把只返回 error 的处理器适配成 HandlerFunc，OUT 固定为 nil（不写 body）。
 func He[IN any](f func(c *Ctx, in IN) error) HandlerFunc[IN, any] {
     return func(c *Ctx, in IN) (any, error) {

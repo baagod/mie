@@ -16,7 +16,7 @@ type ResponseWriter struct {
     wroteHeader bool // 最终状态是否已写出
     hijacked    bool // 连接是否已交给调用方
 
-    // noMatch 由 Router 在启用 NoMatchHandler 时挂上：ServeMux 自写的 404/405 先交给钩子，
+    // noMatch 由 App 在启用 NoMatchHandler 时挂上：ServeMux 自写的 404/405 先交给钩子，
     // 默认错误体不再发给客户端；钩子从 w.status/StatusCode() 读状态码。
     noMatch func()
 
