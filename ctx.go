@@ -10,6 +10,8 @@ import (
     "mime"
     "net"
     "net/http"
+    "reflect"
+    "strings"
     "time"
 
     "github.com/baagod/mie/bind"
@@ -20,7 +22,7 @@ type (
     ctxKey struct{}
     // bodyKey 是请求 context 中缓存 Body 读取结果的键。
     bodyKey struct{}
-
+    // bindInKey 是请求 context 中缓存已绑定 IN 的键。
     bindInKey struct{}
 )
 
@@ -175,7 +177,8 @@ func (c *Ctx) Bind[IN any](in *IN) (err error) {
     if v := c.Value(bindInKey{}); v != nil {
         cached, ok := v.(IN)
         if !ok {
-            return errors.New("mie: bound input type mismatch")
+            return errors.New("mie: bound input is " + reflect.TypeOf(v).String() +
+                ", not " + reflect.TypeFor[IN]().String())
         }
         *in = cached
         return
@@ -200,7 +203,12 @@ func (c *Ctx) BindBody[IN any](in *IN) (err error) {
     }
 
     ct, _, _ := mime.ParseMediaType(c.ContentType())
-    if dec, ok := bind.Lookup(ct); ok {
+    dec, ok := bind.Lookup(ct)
+    if !ok && strings.HasSuffix(ct, "+json") { // vendor JSON（application/vnd.api+json 等）用 JSON 解码
+        dec, ok = bind.Lookup(bind.MIMEAppJSON)
+    }
+
+    if ok {
         var b []byte
         if b, err = c.Body(); err != nil {
             return fmt.Errorf("bind body: %w", err)

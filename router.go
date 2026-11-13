@@ -7,6 +7,8 @@ import (
     "reflect"
     "slices"
     "strings"
+
+    "github.com/baagod/mie/bind"
 )
 
 // Router 是注册面：前缀、本层中间件，以及最终落到的 ServeMux（由 App 持有）。
@@ -20,7 +22,7 @@ type Router struct {
 
 // Use 追加中间件，只影响之后注册的路由。
 // 中间件是 HandlerFunc[IN, any]：必须调用 c.Next() 推进链；返回 nil 表示不写 body。
-// 同层中间件的 IN 必须相同，且与该层每条路由的 IN 一致，否则 panic。
+// 同层中间件的 IN 必须相同；带 IN 的 Use 之后注册的每条路由（含无输入路由）IN 必须与之一致，否则 panic。
 func (r *Router) Use[I any](m HandlerFunc[I, any]) *Router {
     if in := reflect.TypeFor[I](); in != reflect.TypeFor[struct{}]() {
         if r.in != nil && r.in != in {
@@ -69,11 +71,16 @@ func (r *Router) Delete[IN, OUT any](pattern string, h HandlerFunc[IN, OUT]) *Ro
     return r.Handle(http.MethodDelete, pattern, h)
 }
 
-// Handle 校验中间件输入后，把链注册到 ServeMux。
+// Handle 校验中间件输入与 IN 的绑定声明，然后把链注册到 ServeMux。
 func (r *Router) Handle[IN, OUT any](method, pattern string, h HandlerFunc[IN, OUT]) *Router {
-    if in := reflect.TypeFor[IN](); r.in != nil && r.in != in {
+    in := reflect.TypeFor[IN]()
+    if r.in != nil && r.in != in {
         panic("mie: " + method + " " + pattern + " input " + in.String() +
             " does not match middleware input " + r.in.String())
+    }
+
+    if err := bind.Validate(in); err != nil {
+        panic("mie: " + method + " " + pattern + ": " + err.Error())
     }
 
     chain := slices.Concat(r.middlewares, []Handler{handler(h)})

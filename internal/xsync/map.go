@@ -13,6 +13,10 @@ func (m *Map[K, V]) Load(k K) (v V, ok bool) {
     return
 }
 
+func (m *Map[K, V]) Store(k K, v V) {
+    m.m.Store(k, v)
+}
+
 func (m *Map[K, V]) LoadOrStore(k K, v V) (V, bool) {
     actual, loaded := m.m.LoadOrStore(k, v)
     return actual.(V), loaded

@@ -792,25 +792,45 @@ func TestBindSkipsUnexportedAndEmptyTags(t *testing.T) {
     }
 }
 
-func TestBindErrorIsReportedOnRequest(t *testing.T) {
-    type in struct {
+func TestRegisterRejectsUnbindableInput(t *testing.T) {
+    type bad struct {
         Items map[string]int `query:"items"`
     }
 
-    r := New()
-    r.Get("/lazy", func(c *Ctx, v in) (struct{}, error) { return struct{}{}, nil })
+    // 字段类型非法是服务端声明错误：注册时 panic，避免每个请求都拿到 400。
+    t.Run("value", func(t *testing.T) {
+        mustPanicWith(t, "unsupported binding type map[string]int", func() {
+            New().Get("/lazy", func(c *Ctx, v bad) (struct{}, error) { return struct{}{}, nil })
+        })
+    })
 
-    // 注册不报错：类型非法在首次绑定时才发现，按绑定失败返回 400。
-    rec := httptest.NewRecorder()
-    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/lazy?items=1", nil))
-    if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "unsupported binding type map[string]int") {
-        t.Fatalf("first status/body = %d/%q, want 400 with unsupported binding type", rec.Code, rec.Body.String())
+    t.Run("pointer", func(t *testing.T) {
+        mustPanicWith(t, "unsupported binding type map[string]int", func() {
+            New().Get("/lazy", func(c *Ctx, v *bad) (struct{}, error) { return struct{}{}, nil })
+        })
+    })
+}
+
+func TestBindMismatchReportsBothTypes(t *testing.T) {
+    type nameIn struct {
+        Name string `query:"name"`
+    }
+    type idIn struct {
+        ID int `query:"id"`
     }
 
-    rec = httptest.NewRecorder()
-    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/lazy?items=1", nil))
-    if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "unsupported binding type map[string]int") {
-        t.Fatalf("second status/body = %d/%q, want 400 with unsupported binding type", rec.Code, rec.Body.String())
+    r := New()
+    r.Get("/mismatch", func(c *Ctx, v nameIn) (struct{}, error) {
+        var other idIn
+        return struct{}{}, c.Bind(&other)
+    })
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/mismatch?name=bob", nil))
+
+    body := rec.Body.String()
+    if rec.Code != http.StatusInternalServerError || !strings.Contains(body, "idIn") || !strings.Contains(body, "nameIn") {
+        t.Fatalf("status/body = %d/%q, want 500 naming both types", rec.Code, body)
     }
 }
 
@@ -917,20 +937,23 @@ func TestBindBodyByContentType(t *testing.T) {
     body := `{"name":"alice"}`
     cases := []struct {
         method string
+        ct     string
         want   string
     }{
-        {http.MethodPost, `"alice"`},
-        {http.MethodPut, `"alice"`},
-        {http.MethodPatch, `"alice"`},
-        {http.MethodGet, `""`}, // GET 没有 body 可绑
+        {http.MethodPost, MIMEAppJSON, `"alice"`},
+        {http.MethodPut, MIMEAppJSON, `"alice"`},
+        {http.MethodPatch, MIMEAppJSON, `"alice"`},
+        {http.MethodGet, MIMEAppJSON, `""`}, // GET 没有 body 可绑
+        {http.MethodPost, "application/vnd.api+json", `"alice"`},
+        {http.MethodPost, MIMETextPlainUTF8, `""`}, // 未注册的 CT 不读 body
     }
     for _, tc := range cases {
         rec := httptest.NewRecorder()
         req := httptest.NewRequest(tc.method, "/p", strings.NewReader(body))
-        req.Header.Set(HeaderContentType, MIMEAppJSON)
+        req.Header.Set(HeaderContentType, tc.ct)
         r.ServeHTTP(rec, req)
         if rec.Code != http.StatusOK || rec.Body.String() != tc.want {
-            t.Fatalf("%s status/body = %d/%q, want 200/%q", tc.method, rec.Code, rec.Body.String(), tc.want)
+            t.Fatalf("%s %s status/body = %d/%q, want 200/%q", tc.method, tc.ct, rec.Code, rec.Body.String(), tc.want)
         }
     }
 }

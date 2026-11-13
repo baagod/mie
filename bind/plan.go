@@ -37,8 +37,12 @@ type plan struct {
     err     error
 }
 
-// planFor 取类型的方案；并发首批请求可能各自扫描一次，结果一致。
+// planFor 取类型的方案；指针按元素类型规划，并发首批请求可能各自扫描一次，结果一致。
 func planFor(t reflect.Type) *plan {
+    if t.Kind() == reflect.Pointer {
+        t = t.Elem()
+    }
+
     if p, ok := plans.Load(t); ok {
         return p
     }
@@ -46,6 +50,11 @@ func planFor(t reflect.Type) *plan {
     p := scan(t)
     actual, _ := plans.LoadOrStore(t, p)
     return actual
+}
+
+// Validate 报告 IN 的绑定声明是否可用；注册期调用，让写错的字段类型在启动时暴露。
+func Validate(t reflect.Type) error {
+    return planFor(t).err
 }
 
 // scan 检查 IN 的字段声明并生成方案；非法声明记入 err。

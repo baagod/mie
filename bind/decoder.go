@@ -27,10 +27,9 @@ func init() {
     Register(MIMEAppJSON, jsonDecoder{})
 }
 
+// Register 注册 Content-Type 的解码器；后注册的覆盖先注册的，包括默认的 JSON。
 func Register(ct string, d Decoder) {
-    if _, loaded := decoders.LoadOrStore(strings.ToLower(ct), d); loaded {
-        panic("bind: duplicate decoder for " + ct)
-    }
+    decoders.Store(strings.ToLower(ct), d)
 }
 
 func Lookup(ct string) (Decoder, bool) {
