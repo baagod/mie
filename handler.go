@@ -15,39 +15,28 @@ func He[IN any](f func(c *Ctx, in IN) error) HandlerFunc[IN, any] {
     }
 }
 
-// endpoint 是注册好的处理器；IN 的绑定由 Ctx.Bind 负责。
-type endpoint[IN, OUT any] struct {
-    f       HandlerFunc[IN, OUT]
-    noInput bool // IN 是 struct{}：不绑定
-}
-
-// handler 把 HandlerFunc 适配成链元素 Handler。
+// handler 把 HandlerFunc 适配成链元素 Handler：绑定输入、调用处理器、渲染输出。
 func handler[IN, OUT any](f HandlerFunc[IN, OUT]) Handler {
-    e := &endpoint[IN, OUT]{
-        f:       f,
-        noInput: reflect.TypeFor[IN]() == reflect.TypeFor[struct{}](),
-    }
-    return e.serve
-}
+    noInput := reflect.TypeFor[IN]() == reflect.TypeFor[struct{}]()
 
-// serve 是链元素：绑定输入后调用处理器。
-func (e *endpoint[IN, OUT]) serve(c *Ctx) error {
-    var in IN
+    return func(c *Ctx) error {
+        var in IN
 
-    if !e.noInput {
-        if err := c.Bind(&in); err != nil {
+        if !noInput {
+            if err := c.Bind(&in); err != nil {
+                return err
+            }
+        }
+
+        out, err := f(c, in)
+        if err != nil {
             return err
         }
-    }
 
-    out, err := e.f(c, in)
-    if err != nil {
-        return err
-    }
+        if any(out) == nil {
+            return nil
+        }
 
-    if any(out) == nil {
-        return nil
+        return c.Send(JSON(out))
     }
-
-    return c.Send(JSON(out))
 }
