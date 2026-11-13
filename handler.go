@@ -1,11 +1,6 @@
 package mie
 
-import (
-    "reflect"
-    "sync/atomic"
-
-    "github.com/baagod/mie/bind"
-)
+import "reflect"
 
 // He 把只返回 error 的处理器适配成 HandlerFunc，OUT 固定为 nil（不写 body）。
 func He[IN any](f func(c *Ctx, in IN) error) HandlerFunc[IN, any] {
@@ -14,16 +9,10 @@ func He[IN any](f func(c *Ctx, in IN) error) HandlerFunc[IN, any] {
     }
 }
 
-type compiler struct {
-    plan *bind.Plan
-    err  error
-}
-
-// endpoint 是注册好的处理器：绑定方案延迟到首次请求才编译，后续请求只按方案填值。
+// endpoint 是注册好的处理器；IN 的绑定由 Ctx.Bind 负责。
 type endpoint[IN, OUT any] struct {
     f       HandlerFunc[IN, OUT]
-    noInput bool                     // IN 是 struct{}：不编译方案、不绑定
-    comp    atomic.Pointer[compiler] // 首次请求编译；失败时 plan.err 非 nil，一并缓存
+    noInput bool // IN 是 struct{}：不绑定
 }
 
 // handler 把 HandlerFunc 适配成链元素 Handler。
@@ -35,23 +24,12 @@ func handler[IN, OUT any](f HandlerFunc[IN, OUT]) Handler {
     return e.serve
 }
 
-// serve 是链元素：首次请求编译方案，之后每个请求只做绑定与调用。
+// serve 是链元素：绑定输入后调用处理器。
 func (e *endpoint[IN, OUT]) serve(c *Ctx) error {
     var in IN
 
     if !e.noInput {
-        com := e.comp.Load()
-        if com == nil {
-            plan, err := bind.NewPlan(reflect.TypeFor[IN]())
-            com = &compiler{plan, err}
-            e.comp.Store(com)
-        }
-
-        if com.err != nil {
-            return com.err
-        }
-
-        if err := c.Bind(com.plan, &in); err != nil {
+        if err := c.Bind(&in); err != nil {
             return err
         }
     }

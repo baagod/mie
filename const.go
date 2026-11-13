@@ -1,5 +1,7 @@
 package mie
 
+import "github.com/baagod/mie/bind"
+
 // 协议头名。
 const (
     HeaderContentType         = "Content-Type"
@@ -9,8 +11,8 @@ const (
 
 // 框架自行选择类型时使用的 MIME 与选项值。
 const (
-    MIMETextPlainUTF8         = "text/plain; charset=utf-8"
-    MIMEAppJSON               = "application/json"
-    MIMEAppFormUrlencoded     = "application/x-www-form-urlencoded"
-    ContentTypeOptionsNosniff = "nosniff"
+    MIMETextPlainUTF8      = "text/plain; charset=utf-8"
+    MIMEAppJSON            = bind.MIMEAppJSON
+    MIMEAppFormUrlencoded  = bind.MIMEAppFormUrlencoded
+    MIMEContentTypeNosniff = "nosniff"
 )

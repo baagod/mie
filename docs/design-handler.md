@@ -17,7 +17,7 @@
 
 - 不做自动 OpenAPI/schema 生成。
 - 不做反射路由、不做 `any` 形状的默认处理器。
-- 不引入 c 挂载输入输出（`c.Bind` / `c.JSON`）那套旧模型。
+- 不做 `c.JSON` 那类手动挂载响应的旧模型（输入绑定走 `Ctx.Bind[IN]`，见 §4）。
 
 ## 2. 处理器形状
 
@@ -81,12 +81,12 @@ func (r *Router) Handle(method, pattern string, h Handler)
 
 - 类型参数从处理器字面量推断（Go 1.27 支持泛型方法与字面量推断，已验证）；`He(...)` 内联也能推断，无需显式实例化。
 - 推断失败时显式实例化：`r.Get[CreateUser, User]("/users", h)`。
-- 注册时把 `HandlerFunc` 适配成链元素 `Handler` 存进路由表；IN/OUT 在注册点擦除，`OUT` 是否写 body 由返回值决定（`nil` 不写），`IN` 的绑定方案在首次请求时编译。
+- 注册时把 `HandlerFunc` 适配成链元素 `Handler` 存进路由表；IN/OUT 在注册点擦除，`OUT` 是否写 body 由返回值决定（`nil` 不写），`IN` 的绑定由 `Ctx.Bind` 在请求中完成（每请求一次）。
 - 同一字段可声明多个来源 tag：按 `path` → `header` → `query`/`form`（参数）→ body 的顺序依次绑定，后写的覆盖先写的；某个来源没提供值时跳过、不覆盖；不 panic（tag 可能另有用途，如序列化或别的库）。
 - `query` 与 `form` 是同一个来源：都从 `ParseForm` 后的参数表取值，不再区分 URL query 与表单 body。
 - body 不按字段声明，整块交给 `encoding/json` 解码：未打 tag 的导出字段也会被写入，`json:"-"` 不写，键名大小写敏感（标准库默认精确匹配）；只有路径/头部/参数来源才要求显式 tag。
 - 未导出字段（无论有没有 tag）一律跳过：反射写不进去，留给 handler 私下用；空 tag（如 `path:""`）等同没写。
-- 非法声明不 panic、注册也不报错：绑定方案在首次请求时编译，编译错误以 500 返回（配置错误），并缓存，后续请求返回同样的 500。
+- 非法声明不 panic、注册也不报错：类型非法在首次绑定时才暴露，按绑定失败返回 400（含原因文案）。
   - path/header/参数指向的类型不是标量（string/bool/整数/浮点，含其指针；或元素为标量的切片/数组）。
   - 不同字段可以声明同一个来源 + key：各写各的字段，拿到同一个值。
 
@@ -96,7 +96,9 @@ func (r *Router) Handle(method, pattern string, h Handler)
 
 位置/头部/参数来源只认显式 tag；body 的字段匹配交给 `encoding/json` 标准规则。
 
-实现见 `bind/plan.go` 与 `bind/bind.go`：`NewPlan` 编译方案、`Plan.Bind` 编排、`bindValue` 取来源值、`setValues` 写字段。
+实现见 `bind/plan.go` 与 `../bind/scalar.go`：`bind.Bind` 扫描字段并写入、`bindValue` 取来源值、`setValues` 写字段。方案按 IN 的元素类型缓存（`sync.Map`），同一类型只扫描一次；非法类型的错误也随方案缓存。
+
+入口是 `Ctx.Bind[IN any](in *IN) error`：第一次绑定位置来源与 body 后把 IN 存进请求上下文，后续调用直接取缓存，不再重复绑定。
 
 ### 4.1 字段 tag
 
@@ -136,7 +138,7 @@ type UpdateUser struct {
 
 - `IN` 允许 struct、`*struct`、`struct{}`，以及其它能整体 JSON 解码的类型（`map[string]any`、切片、标量）。
 - 非 struct 的 `IN` 不做 tag 绑定：整个 body 就是值（不设内置上限）；仅当方法不是 GET/HEAD 且 `Content-Type` 的 media type 是 `application/json` 时解码，其它/缺失/畸形时不读 body、`IN` 为零值；空 body 时也为零值。
-- `*T` 由框架分配，handler 永远拿到非 nil 指针；指针归请求所有，handler 不应持有到请求之外。
+- `*T` 由框架分配，handler 通常拿到非 nil 指针；例外是 body 为 JSON `null` 时解码会把指针置回 nil，handler 需自行判空。指针归请求所有，handler 不应持有到请求之外。
 - 拷贝是**浅拷贝**：值 `IN` 被复制时，结构体里的 slice / map / 指针 / 接口字段仍共享底层数据，改这些字段的元素或目标会反映到原对象；`i := *in` 取副本再改，也只隔离顶层值字段。要完全隔离只能深拷贝。
 - 语义选择：只读输入用值 `IN`；需要跨链共享修改用 `*IN`；只想局部改值字段、不影响原对象可用 `i := *in`。
 - 传值成本：一次 struct 拷贝，大小按字段量算；对常见 DTO（几十到几百字节）远小于 JSON 解码的微秒级开销。第一版只在叶子绑定一次，因此只拷贝一次。
@@ -164,7 +166,7 @@ type UpdateUser struct {
 - panic → `Config.RecoverHandler`，行为与现在一致。
 - 所有错误最终仍由 `writeError` 写响应（唯一错误出口）。
 
-bind 错误的形态：统一为 `*Error`（默认 400；应用用 `http.MaxBytesReader` 收紧时超限为 413），文案含来源、字段与原因，便于 `ErrorHandler` 直接取用。`ErrorHandler` 仍按现有契约返回 error，最终由 `writeError` 写响应；要改状态码或文案就在这里返回自己的 `*Error`。声明错误（非法 tag/类型）不属于 bind 错误：它在首次请求编译方案时以 500 返回并缓存。
+bind 错误的形态：位置来源与 body 解码错误统一为 `*Error`（默认 400）；body 读取错误原样返回——`http.MaxBytesReader` 超限由 `Ctx.Body()` 映射为 `*Error` 413，其余读取错误（连接中断等）按普通错误走 500。文案含来源、字段与原因，便于 `ErrorHandler` 直接取用。`ErrorHandler` 仍按现有契约返回 error，最终由 `writeError` 写响应；要改状态码或文案就在这里返回自己的 `*Error`。类型非法不做预处理，同样在绑定时暴露，按绑定失败 400 返回。
 
 ## 7. 中间件与链
 
@@ -214,13 +216,13 @@ r.Use(func(c *Ctx, _ struct{}) (any, error) {
 
 1. `OUT` 的接口零值（`nil`）不写 body；其它值都编码（`struct{}` → `{}`）。中间件返回 `nil` 即无输出。需要完全手写响应时用 `Handle`。
 2. `He` 把只返回 error 的处理器适配成 `HandlerFunc[IN, any]`（`OUT` 为 `nil`，不写 body），命名与推断可用（`r.Delete("/users/{id}", He(func(c *Ctx, in DeleteUser) error {...}))` 免显式类型参数，已验证）；无输入处理器不另设形状，直接在 IN 处写 `struct{}`。v1 只做 `He`。
-3. bind 错误统一为 `*Error`（默认 400；`*http.MaxBytesError` 映射为 413），文案含来源/字段/原因；`ErrorHandler` 可改变最终响应。
+3. bind 错误：位置来源与 body 解码错误为 `*Error`（默认 400）；body 读取超限（`*http.MaxBytesError`）映射为 413，其余读取错误走 500。文案含来源/字段/原因；`ErrorHandler` 可改变最终响应。
 4. 来源顺序：同一字段多个来源 tag 按 `path` → `header` → `query`/`form`（参数）→ body 依次绑定，后写的覆盖先写的；来源缺失（没有该参数/头）跳过，来源存在但值为空串则清空字段（不 panic）。body 在非 GET/HEAD 且 CT 为 JSON 时读取，整块交给 `encoding/json`：未知键忽略、键名大小写敏感（标准库默认精确匹配）、未打 tag 的导出字段也会写入。框架不设 body 上限，需要限制时由应用中间件用 `http.MaxBytesReader`，超限映射为 413。
 5. `Next()` 从 `(any, error)` 改为 `error`，是一次性破坏性变更，已随类型化 Handler 提交合入。
 6. `IN` 类型范围：struct / `*struct` / `struct{}` / 可整体 JSON 解码的非 struct。
 7. `query` 与 `form` 是同一个参数来源：都读 `ParseForm` 后的 `c.R.Form`；GET/HEAD 只有 URL query，POST/PUT/PATCH 的 urlencoded body 与 query 合并，body 优先。`ParseForm` 会消耗 body，框架不还原。
 8. 外部处理器一律 `HandlerFunc[IN, OUT]`，框架适配成内部 `Handler`（`func(c *Ctx) error`）入链；中间件用 `HandlerFunc[IN, any]` 注册，返回 `nil` 表示无输出。
-9. 绑定方案延迟到首次请求编译（`atomic.Pointer` 缓存，含编译错误）；`Get/Post/Put/Patch/Delete` 不返回 error，`Use` 仍返回 typed 中间件的校验错误。
+9. 绑定在请求中由 `Ctx.Bind` 完成：同一请求只绑一次并缓存结果；`Get/Post/Put/Patch/Delete` 不返回 error，`Use` 仍返回 typed 中间件的校验错误。
 
 延后：
 
@@ -237,4 +239,4 @@ r.Use(func(c *Ctx, _ struct{}) (any, error) {
 - 输出：JSON 编码失败、nil 输出不写 body、零值照常编码、`struct{}` 输出、预设 204。
 - 错误：handler error、bind error 均进 `ErrorHandler`；panic 进 `RecoverHandler`。
 - 中间件：无类型中间件顺序不变；typed 中间件（若实现）绑定时机与错误归属。
-- 懒编译：注册不报错；首请求 500（含原因文案）；二次请求仍 500（错误缓存）；并发首请求只编译一次。
+- 绑定错误：注册不报错；类型非法在请求时返回 400（含原因文案）；并发首批请求安全。

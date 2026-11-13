@@ -5,6 +5,7 @@ import (
     "crypto/rand"
     "encoding/hex"
     "errors"
+    "fmt"
     "io"
     "mime"
     "net"
@@ -19,6 +20,8 @@ type (
     ctxKey struct{}
     // bodyKey 是请求 context 中缓存 Body 读取结果的键。
     bodyKey struct{}
+
+    bindInKey struct{}
 )
 
 // reqBody 缓存 Body 的读取结果：字节与错误一起保存，保证重复调用语义一致。
@@ -173,31 +176,50 @@ func (c *Ctx) Next() error {
     return c.chain[c.index](c)
 }
 
-// Bind 按方案绑定 in：先位置来源，再按 Content-Type 解码 body 覆盖。
-// in 必须是指向 IN 的非 nil 指针。
-func (c *Ctx) Bind(p *bind.Plan, in any) (err error) {
-    if err = p.Bind(c.R, in); err != nil {
+// Bind 绑定 IN：先位置来源，再按 Content-Type 解码 body 覆盖；同一请求只绑一次。
+func (c *Ctx) Bind[IN any](in *IN) (err error) {
+    if v := c.Value(bindInKey{}); v != nil {
+        cached, ok := v.(IN)
+        if !ok {
+            return errors.New("mie: bound input type mismatch")
+        }
+        *in = cached
+        return
+    }
+
+    if err = bind.Decode(c.R, in); err != nil {
         return Status400BadRequest(err.Error())
     }
 
-    // GET/HEAD 约定没有 body；其余方法按 Content-Type 分派，目前只实现 JSON。
+    if err = c.BindBody(in); err != nil {
+        return err
+    }
+
+    c.Set(bindInKey{}, *in)
+    return
+}
+
+// BindBody 按 Content-Type 解码 body；GET/HEAD 不读 body。
+func (c *Ctx) BindBody[IN any](in *IN) (err error) {
     if c.R.Method == http.MethodGet || c.R.Method == http.MethodHead {
         return
     }
 
-    var b []byte
-    switch ct, _, _ := mime.ParseMediaType(c.ContentType()); ct {
-    case MIMEAppJSON:
+    ct, _, _ := mime.ParseMediaType(c.ContentType())
+    if dec, ok := bind.Lookup(ct); ok {
+        var b []byte
         if b, err = c.Body(); err != nil {
-            return
+            return fmt.Errorf("bind body: %w", err)
         }
         if len(b) > 0 {
-            err = p.BindJSON(b, in)
+            err = dec.Decode(b, in)
         }
     }
 
     if err != nil {
-        return Status400BadRequest("bind body: " + err.Error())
+        if _, ok := errors.AsType[*Error](err); !ok {
+            return Status400BadRequest("bind body: " + err.Error())
+        }
     }
 
     return
@@ -234,11 +256,11 @@ func (c *Ctx) writeError(err error) {
     if ct := h.Get(HeaderContentType); ct == "" {
         // 没有 Content-Type 时选 text/plain，并加 nosniff，避免错误文本被当成 HTML 渲染。
         h.Set(HeaderContentType, MIMETextPlainUTF8)
-        h.Set(HeaderXContentTypeOptions, ContentTypeOptionsNosniff)
+        h.Set(HeaderXContentTypeOptions, MIMEContentTypeNosniff)
     } else if t, _, e := mime.ParseMediaType(ct); e == nil && t == "text/plain" {
         // 只有 text/plain 会被嗅探成 HTML；用户已声明该类型时补 nosniff。
         if h.Get(HeaderXContentTypeOptions) == "" {
-            h.Set(HeaderXContentTypeOptions, ContentTypeOptionsNosniff)
+            h.Set(HeaderXContentTypeOptions, MIMEContentTypeNosniff)
         }
     }
 

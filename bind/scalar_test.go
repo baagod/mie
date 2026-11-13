@@ -16,7 +16,7 @@ func TestBindRejectsUnsupportedFieldType(t *testing.T) {
     }
 
     var v in
-    err := bind.Bind[in](httptest.NewRequest(http.MethodGet, "/?m=1", nil), &v)
+    err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/?m=1", nil), &v)
     if err == nil || !strings.Contains(err.Error(), "unsupported binding type map[string]int") {
         t.Fatalf("err = %v, want unsupported binding type", err)
     }
@@ -29,7 +29,7 @@ func TestBindSkipsUnexportedAndEmptyTags(t *testing.T) {
     }
 
     var v in
-    if err := bind.Bind[in](httptest.NewRequest(http.MethodGet, "/?id=5", nil), &v); err != nil {
+    if err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/?id=5", nil), &v); err != nil {
         t.Fatalf("Bind: %v", err)
     }
     if v.Name != "" {
@@ -42,7 +42,7 @@ func TestBindRequiresNonNilPointer(t *testing.T) {
         ID int `query:"id"`
     }
 
-    err := bind.Bind[in](httptest.NewRequest(http.MethodGet, "/", nil), nil)
+    err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/", nil), nil)
     if err == nil || !strings.Contains(err.Error(), "non-nil pointer") {
         t.Fatalf("Bind(nil) err = %v, want non-nil pointer error", err)
     }
@@ -54,7 +54,7 @@ func TestBindPointerInputAllocates(t *testing.T) {
     }
 
     var v *in
-    if err := bind.Bind[*in](httptest.NewRequest(http.MethodGet, "/?id=7", nil), &v); err != nil {
+    if err := bind.Decode[*in](httptest.NewRequest(http.MethodGet, "/?id=7", nil), &v); err != nil {
         t.Fatalf("Bind: %v", err)
     }
     if v == nil || v.ID != 7 {
@@ -69,7 +69,7 @@ func TestBindSliceAndArray(t *testing.T) {
     }
 
     var v in
-    if err := bind.Bind[in](httptest.NewRequest(http.MethodGet, "/?tag=a&tag=b&n=1", nil), &v); err != nil {
+    if err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/?tag=a&tag=b&n=1", nil), &v); err != nil {
         t.Fatalf("Bind: %v", err)
     }
     if len(v.Tags) != 2 || v.Tags[0] != "a" || v.Tags[1] != "b" {
@@ -99,7 +99,7 @@ func TestBindConcurrentFirstUse(t *testing.T) {
         go func() {
             defer wg.Done()
             var v in
-            err := bind.Bind[in](httptest.NewRequest(http.MethodGet, "/?id=7", nil), &v)
+            err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/?id=7", nil), &v)
             results <- result{v, err}
         }()
     }

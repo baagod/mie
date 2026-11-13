@@ -357,8 +357,8 @@ func TestDefaultErrorHandlerWritesResponse(t *testing.T) {
     if got := rec.Header().Get(HeaderContentType); got != MIMETextPlainUTF8 {
         t.Fatalf("Content-Type = %q, want %q", got, MIMETextPlainUTF8)
     }
-    if got := rec.Header().Get(HeaderXContentTypeOptions); got != ContentTypeOptionsNosniff {
-        t.Fatalf("X-Content-Type-Options = %q, want %q", got, ContentTypeOptionsNosniff)
+    if got := rec.Header().Get(HeaderXContentTypeOptions); got != MIMEContentTypeNosniff {
+        t.Fatalf("X-Content-Type-Options = %q, want %q", got, MIMEContentTypeNosniff)
     }
 }
 
@@ -424,8 +424,8 @@ func TestWriteErrorAddsNosniffToUserTextPlain(t *testing.T) {
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/plain", nil))
 
-    if got := rec.Header().Get(HeaderXContentTypeOptions); got != ContentTypeOptionsNosniff {
-        t.Fatalf("X-Content-Type-Options = %q, want %q", got, ContentTypeOptionsNosniff)
+    if got := rec.Header().Get(HeaderXContentTypeOptions); got != MIMEContentTypeNosniff {
+        t.Fatalf("X-Content-Type-Options = %q, want %q", got, MIMEContentTypeNosniff)
     }
 }
 
@@ -538,8 +538,8 @@ func TestPanicWritesDefault500(t *testing.T) {
     if got := rec.Body.String(); got != http.StatusText(http.StatusInternalServerError) {
         t.Fatalf("body = %q, want %q", got, http.StatusText(http.StatusInternalServerError))
     }
-    if got := rec.Header().Get(HeaderXContentTypeOptions); got != ContentTypeOptionsNosniff {
-        t.Fatalf("X-Content-Type-Options = %q, want %q", got, ContentTypeOptionsNosniff)
+    if got := rec.Header().Get(HeaderXContentTypeOptions); got != MIMEContentTypeNosniff {
+        t.Fatalf("X-Content-Type-Options = %q, want %q", got, MIMEContentTypeNosniff)
     }
 }
 

@@ -791,7 +791,7 @@ func TestBindSkipsUnexportedAndEmptyTags(t *testing.T) {
     }
 }
 
-func TestPlanErrorIsReportedOnFirstRequest(t *testing.T) {
+func TestBindErrorIsReportedOnRequest(t *testing.T) {
     type in struct {
         Items map[string]int `query:"items"`
     }
@@ -799,18 +799,42 @@ func TestPlanErrorIsReportedOnFirstRequest(t *testing.T) {
     r := New()
     r.Get("/lazy", func(c *Ctx, v in) (struct{}, error) { return struct{}{}, nil })
 
-    // 注册不报错：方案在首次请求时才编译，错误以 500 返回。
+    // 注册不报错：类型非法在首次绑定时才发现，按绑定失败返回 400。
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/lazy?items=1", nil))
-    if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "unsupported binding type map[string]int") {
-        t.Fatalf("first status/body = %d/%q, want 500 with unsupported binding type", rec.Code, rec.Body.String())
+    if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "unsupported binding type map[string]int") {
+        t.Fatalf("first status/body = %d/%q, want 400 with unsupported binding type", rec.Code, rec.Body.String())
     }
 
-    // 错误同样缓存：第二次请求不再重复编译。
     rec = httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/lazy?items=1", nil))
-    if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "unsupported binding type map[string]int") {
-        t.Fatalf("second status/body = %d/%q, want cached 500", rec.Code, rec.Body.String())
+    if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "unsupported binding type map[string]int") {
+        t.Fatalf("second status/body = %d/%q, want 400 with unsupported binding type", rec.Code, rec.Body.String())
+    }
+}
+
+func TestBindTwiceReusesCachedInput(t *testing.T) {
+    type in struct {
+        ID int `header:"X-Id"`
+    }
+
+    r := New()
+    r.Get("/twice", func(c *Ctx, v in) (int, error) {
+        c.R.Header.Set("X-Id", "5")
+
+        var again in
+        if err := c.Bind(&again); err != nil {
+            return 0, err
+        }
+        return again.ID, nil
+    })
+
+    req := httptest.NewRequest(http.MethodGet, "/twice", nil)
+    req.Header.Set("X-Id", "9")
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, req)
+    if rec.Code != http.StatusOK || rec.Body.String() != "9" {
+        t.Fatalf("status/body = %d/%q, want 200 with cached 9", rec.Code, rec.Body.String())
     }
 }
 

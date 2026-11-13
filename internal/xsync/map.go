@@ -1,4 +1,4 @@
-package sync
+package xsync
 
 import "sync"
 
@@ -8,11 +8,9 @@ type Map[K comparable, V any] struct {
 
 func (m *Map[K, V]) Load(k K) (v V, ok bool) {
     if a, b := m.m.Load(k); b {
-        if v, ok = a.(V); ok {
-            return
-        }
+        v, ok = a.(V)
     }
-    return v, ok
+    return
 }
 
 func (m *Map[K, V]) Store(k K, v V) {
@@ -37,8 +35,11 @@ func (m *Map[K, V]) LoadAndDelete(k K) (v V, ok bool) {
     return actual.(V), loaded
 }
 
-func (m *Map[K, V]) Swap(k K, v V) {
-    m.m.Swap(k, v)
+func (m *Map[K, V]) Swap(k K, v V) (previous V, loaded bool) {
+    if p, b := m.m.Swap(k, v); b {
+        previous, loaded = p.(V)
+    }
+    return
 }
 
 func (m *Map[K, V]) Range(f func(K, V) bool) {
