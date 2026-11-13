@@ -8,6 +8,8 @@ import (
     "strings"
     "sync"
     "testing"
+
+    "github.com/baagod/mie/bind"
 )
 
 type bindSources struct {
@@ -1066,5 +1068,35 @@ func TestBindSliceConversionError(t *testing.T) {
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/e?id=1&id=x", nil))
     if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "bind: query.IDs") {
         t.Fatalf("status/body = %d/%q, want 400 with bind: query.IDs", rec.Code, rec.Body.String())
+    }
+}
+
+type prefixDecoder struct{}
+
+func (prefixDecoder) Decode(b []byte, in any) error {
+    p, ok := in.(*string)
+    if !ok {
+        return errors.New("prefixDecoder: want *string")
+    }
+    *p = "decoded:" + string(b)
+    return nil
+}
+
+var registerTestDecoder sync.Once
+
+func TestBindBodyUsesRegisteredDecoder(t *testing.T) {
+    const ct = "application/x-mie-test"
+    registerTestDecoder.Do(func() { bind.Register(ct, prefixDecoder{}) })
+
+    r := New()
+    r.Post("/decode", func(c *Ctx, in string) (string, error) { return in, nil })
+
+    req := httptest.NewRequest(http.MethodPost, "/decode", strings.NewReader("raw"))
+    req.Header.Set(HeaderContentType, ct)
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, req)
+
+    if rec.Code != http.StatusOK || rec.Body.String() != `"decoded:raw"` {
+        t.Fatalf("status/body = %d/%q, want 200 with decoded body", rec.Code, rec.Body.String())
     }
 }

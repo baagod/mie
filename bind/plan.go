@@ -37,7 +37,7 @@ type plan struct {
     err     error
 }
 
-// planFor 取类型的方案；首次并发调用最多重复扫描一次，结果一致。
+// planFor 取类型的方案；并发首批请求可能各自扫描一次，结果一致。
 func planFor(t reflect.Type) *plan {
     if p, ok := plans.Load(t); ok {
         return p
