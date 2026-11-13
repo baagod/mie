@@ -8,9 +8,9 @@ import (
 
 func TestSendJSON(t *testing.T) {
     r := New()
-    r.Handle(http.MethodGet, "/user", func(c *Ctx) error {
+    r.Handle(http.MethodGet, "/user", He(func(c *Ctx, _ struct{}) error {
         return c.Send(JSON(map[string]string{"name": "alice"}))
-    })
+    }))
 
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/user", nil))
@@ -28,10 +28,10 @@ func TestSendJSON(t *testing.T) {
 
 func TestSendCommitsPresetStatus(t *testing.T) {
     r := New()
-    r.Handle(http.MethodGet, "/created", func(c *Ctx) error {
+    r.Handle(http.MethodGet, "/created", He(func(c *Ctx, _ struct{}) error {
         c.Status(http.StatusCreated)
         return c.Send(JSON(map[string]int{"id": 1}))
-    })
+    }))
 
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/created", nil))
@@ -43,9 +43,9 @@ func TestSendCommitsPresetStatus(t *testing.T) {
 
 func TestSendJSONMarshalError(t *testing.T) {
     r := New()
-    r.Handle(http.MethodGet, "/bad", func(c *Ctx) error {
+    r.Handle(http.MethodGet, "/bad", He(func(c *Ctx, _ struct{}) error {
         return c.Send(JSON(make(chan int)))
-    })
+    }))
 
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/bad", nil))
@@ -68,10 +68,10 @@ func (emptyRenderer) Render(*Ctx) error { return nil }
 // 锁定：renderer 不写 body 时，预设状态由 finish 提交。
 func TestSendEmptyRendererKeepsPresetStatus(t *testing.T) {
     r := New()
-    r.Handle(http.MethodGet, "/empty", func(c *Ctx) error {
+    r.Handle(http.MethodGet, "/empty", He(func(c *Ctx, _ struct{}) error {
         c.Status(http.StatusNoContent)
         return c.Send(emptyRenderer{})
-    })
+    }))
 
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/empty", nil))
@@ -94,9 +94,9 @@ func (r csvRenderer) Render(c *Ctx) error {
 
 func TestSendCustomRenderer(t *testing.T) {
     r := New()
-    r.Handle(http.MethodGet, "/csv", func(c *Ctx) error {
+    r.Handle(http.MethodGet, "/csv", He(func(c *Ctx, _ struct{}) error {
         return c.Send(csvRenderer{body: "a,b\n"})
-    })
+    }))
 
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/csv", nil))

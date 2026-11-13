@@ -15,10 +15,10 @@ import (
 
 func TestRouteParam(t *testing.T) {
     r := New()
-    r.Handle(http.MethodGet, "/users/{id}", func(c *Ctx) error {
+    r.Handle(http.MethodGet, "/users/{id}", He(func(c *Ctx, _ struct{}) error {
         _, _ = c.W.WriteString("user:" + c.Param("id"))
         return nil
-    })
+    }))
 
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/users/42", nil))
@@ -309,15 +309,15 @@ func TestNoMatchHandlerIgnoresManual404(t *testing.T) {
         calls++
         return nil
     }})
-    r.Handle(http.MethodGet, "/manual", func(c *Ctx) error {
+    r.Handle(http.MethodGet, "/manual", He(func(c *Ctx, _ struct{}) error {
         c.W.WriteHeader(http.StatusNotFound)
         _, _ = c.W.WriteString("manual 404")
         return nil
-    })
-    r.Handle(http.MethodGet, "/teapot", func(c *Ctx) error {
+    }))
+    r.Handle(http.MethodGet, "/teapot", He(func(c *Ctx, _ struct{}) error {
         http.Error(c.W, "nope", http.StatusMethodNotAllowed)
         return nil
-    })
+    }))
 
     for _, tc := range []struct {
         path   string

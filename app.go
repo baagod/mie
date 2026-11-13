@@ -7,8 +7,6 @@ import (
     "net/http"
     "os"
     "os/signal"
-    "reflect"
-    "slices"
     "syscall"
     "time"
 )
@@ -32,11 +30,11 @@ type Config struct {
     Logger *slog.Logger
 }
 
-// App 包装 http.ServeMux，保存中间件与配置。
+// App 持有 ServeMux、配置与生命周期方法；注册面见 Router。
 type App struct {
-    mux         *http.ServeMux
-    middlewares []Handler
-    config      Config
+    *Router
+    mux    *http.ServeMux
+    config Config
 }
 
 // defaultErrorHandler 原样放行，真正的响应由 writeError 写出。
@@ -73,62 +71,9 @@ func New(cfg ...Config) *App {
         c.Logger = logger
     }
 
-    return &App{mux: http.NewServeMux(), config: c}
-}
-
-// Use 追加中间件，只影响之后注册的路由；服务启动后不要再调用。
-// 中间件是 HandlerFunc[IN, any]：必须调用 c.Next() 推进链；返回 nil 表示不写 body。
-// 带 IN 的中间件（typed middleware）尚未支持。
-func (a *App) Use[IN any](m HandlerFunc[IN, any]) error {
-    if reflect.TypeFor[IN]() != reflect.TypeFor[struct{}]() {
-        return errors.New("mie: typed middleware is not supported")
-    }
-    a.middlewares = append(a.middlewares, handler(m))
-    return nil
-}
-
-// Get 注册 GET 路由。
-func (a *App) Get[IN, OUT any](pattern string, h HandlerFunc[IN, OUT]) {
-    a.Handle(http.MethodGet, pattern, handler(h))
-}
-
-// Post 注册 POST 路由。
-func (a *App) Post[IN, OUT any](pattern string, h HandlerFunc[IN, OUT]) {
-    a.Handle(http.MethodPost, pattern, handler(h))
-}
-
-// Put 注册 PUT 路由。
-func (a *App) Put[IN, OUT any](pattern string, h HandlerFunc[IN, OUT]) {
-    a.Handle(http.MethodPut, pattern, handler(h))
-}
-
-// Patch 注册 PATCH 路由。
-func (a *App) Patch[IN, OUT any](pattern string, h HandlerFunc[IN, OUT]) {
-    a.Handle(http.MethodPatch, pattern, handler(h))
-}
-
-// Delete 注册 DELETE 路由。
-func (a *App) Delete[IN, OUT any](pattern string, h HandlerFunc[IN, OUT]) {
-    a.Handle(http.MethodDelete, pattern, handler(h))
-}
-
-// Handle 把中间件与最终处理器拼成链，注册到 ServeMux。
-func (a *App) Handle(method, pattern string, h Handler) {
-    chain := slices.Concat(a.middlewares, []Handler{h})
-
-    a.mux.Handle(method+" "+pattern, http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
-        // Ctx 由 ServeHTTP 创建并挂在 context 上；这里只负责跑链。
-        c := req.Context().Value(ctxKey{}).(*Ctx)
-        c.chain = chain
-        c.W.noMatch = nil // 进入路由闭包后，404/405 都算业务响应。
-
-        err := c.Next()
-        if err != nil && !c.IsCanceled() {
-            err = a.config.ErrorHandler(c, err)
-        }
-
-        c.finish(err)
-    }))
+    a := &App{mux: http.NewServeMux(), config: c}
+    a.Router = &Router{app: a}
+    return a
 }
 
 // ServeHTTP 创建 Ctx、安装 NoMatch 钩子、执行 ServeMux，并为未进入用户链的请求补收尾。

@@ -374,10 +374,10 @@ func TestBindNestedStructBody(t *testing.T) {
 
 func TestBindBodyTooLargeByMiddleware(t *testing.T) {
     r := New()
-    r.Use(func(c *Ctx, _ struct{}) (any, error) {
+    r.Use(He(func(c *Ctx, _ struct{}) error {
         c.R.Body = http.MaxBytesReader(c.W, c.R.Body, 8)
-        return nil, c.Next()
-    })
+        return c.Next()
+    }))
     r.Post("/users", func(c *Ctx, in bodyIn) (struct{}, error) {
         return struct{}{}, nil
     })
@@ -625,13 +625,12 @@ func TestOUTRules(t *testing.T) {
 func TestMiddlewareRunsAroundHandler(t *testing.T) {
     var steps []string
     r := New()
-    var mw HandlerFunc[struct{}, any] = He(func(c *Ctx, _ struct{}) error {
+    r.Use(He(func(c *Ctx, _ struct{}) error {
         steps = append(steps, "before")
         err := c.Next()
         steps = append(steps, "after")
         return err
-    })
-    r.Use(mw)
+    }))
     r.Get("/m", func(c *Ctx, _ struct{}) (struct{}, error) {
         steps = append(steps, "handler")
         return struct{}{}, nil

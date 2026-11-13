@@ -27,14 +27,21 @@ func He[IN any](h func(c *Ctx, in IN) error) HandlerFunc[IN, any]
 ## 3. 注册 API
 
 ```go
-func (r *App) Get[IN, OUT any](pattern string, h HandlerFunc[IN, OUT])
-func (r *App) Post[IN, OUT any](pattern string, h HandlerFunc[IN, OUT])
-// Put/Patch/Delete 同型；Use 返回 typed 中间件的校验错误
-func (r *App) Handle(method, pattern string, h Handler)
+func (r *Router) Get[IN, OUT any](pattern string, h HandlerFunc[IN, OUT]) *Router
+func (r *Router) Post[IN, OUT any](pattern string, h HandlerFunc[IN, OUT]) *Router
+// Put/Patch/Delete 同型；Use 返回所在组，可链式注册
+func (r *Router) Handle[IN, OUT any](method, pattern string, h HandlerFunc[IN, OUT]) *Router
+func (r *Router) Group(prefix string) *Router
+func (r *Router) Use[IN any](m HandlerFunc[IN, any]) *Router
 ```
 
+- 注册方法返回所在组，可链式追加；`*App` 嵌入根 `Router`，`app.Get` 等价于在根组注册。
+- `Group` 的前缀按 `path.Join` 归一，pattern 末尾的 `/` 保留（ServeMux 靠它表示子树）；前缀缺前导 `/` 时补上，`""` 与 `"/"` 都不加前缀。pattern 为空时落在前缀本身，前缀末尾的 `/` 同样保留（`/api` 精确、`/api/` 子树）。
+- 组的中间件是创建时的快照：父组之后再 `Use` 不影响已建组，子组 `Use` 不影响兄弟。
+- 组不能 `Run`：服务生命周期只在 `App` 上。
+
 - 类型参数从处理器字面量推断，失败时显式写 `Get[CreateUser, User]`。
-- 注册只把处理器适配成链元素，不做反射、不因 IN 声明报错；IN 的检查与绑定都在请求期（首次绑定，结果缓存）。
+- 注册只把处理器适配成链元素；中间件声明的 `IN` 在注册时与本层路由的 `IN` 比对，不一致 panic。
 - 绑定失败返回 400（含来源、字段与原因）。
 
 ## 4. 输入绑定（IN）
@@ -66,15 +73,16 @@ func (r *App) Handle(method, pattern string, h Handler)
 ## 7. 中间件与链
 
 - 中间件是 `HandlerFunc[IN, any]`，用 `Use` 注册，必须调用 `c.Next()`；返回 nil 不写 body，返回其它值由框架照常编码。
-- 只返回 error 的中间件用 `He` 适配。
+- 只返回 error 的中间件用 `He` 适配：`He(func(c *Ctx, _ struct{}) error { ... })`。
 - 链元素统一是 `Handler`（`func(c *Ctx) error`），`Next()` 只返回 error。
-- v1 只接受 `IN = struct{}`；typed 中间件延后，约束届时再定。
+- `Use` 追加到当前层，只覆盖之后注册的路由；已注册的路由不受影响。
+- 中间件声明的 `IN` 必须与该链最终处理器的 `IN` 一致：注册时比对，不一致 panic。
 
 ## 8. 已定与延后
 
-已定：OUT 零值不写 body；`He` 是唯一适配器；bind 错误 400/413/500 分流；来源顺序 path → header → param → body、后写覆盖、空值清零；`Next()` 只返回 error；`IN` 支持 struct / `*struct` / `struct{}` / 可整体解码的非 struct；body 按 Content-Type 查解码器（默认 JSON）；处理器统一 `HandlerFunc[IN, OUT]` 入链，`Use` 收 `HandlerFunc[IN, any]`。
+已定：OUT 零值不写 body；`He` 是唯一适配器；bind 错误 400/413/500 分流；来源顺序 path → header → param → body、后写覆盖、空值清零；`Next()` 只返回 error；`IN` 支持 struct / `*struct` / `struct{}` / 可整体解码的非 struct；body 按 Content-Type 查解码器（默认 JSON）；处理器统一 `HandlerFunc[IN, OUT]` 入链，中间件收 `HandlerFunc[IN, any]`；中间件的 `IN` 须与最终处理器一致，注册期校验。
 
-延后：typed 中间件；body 重放/流式；严格未知字段；`multipart/form-data`。
+延后：body 重放/流式；严格未知字段；`multipart/form-data`。
 
 ## 9. 测试要点
 
