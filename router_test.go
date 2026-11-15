@@ -159,9 +159,9 @@ func TestGroupRootTrailingSlash(t *testing.T) {
     r.Group("/api/").Get("", func(*Ctx, struct{}) (string, error) { return "subtree", nil })
 
     cases := []struct{ path, body string }{
-        {"/api", `"exact"`},
-        {"/api/", `"subtree"`},
-        {"/api/x", `"subtree"`},
+        {"/api", "exact"},
+        {"/api/", "subtree"},
+        {"/api/x", "subtree"},
     }
 
     for _, tc := range cases {

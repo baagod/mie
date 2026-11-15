@@ -34,7 +34,8 @@
 
 ## 4. 输出与错误
 
-- error 非 nil 时忽略 OUT；OUT 接口零值不写 body（中间件 `return nil, nil` 即放行），状态取 `c.Status`，未设置则 200；其余值 JSON 编码（`encoding/json/v2`，`struct{}` → `{}`）。
+- error 非 nil 时忽略 OUT；OUT 为 nil 不写 body（中间件 `return nil, nil` 即放行），状态取 `c.Status`，未设置则 200。
+- 输出：`Renderer` 自己渲染（`JSON(x)` 显式覆盖 Accept）；其余按 `Accept` 选：`application/json` 时任何值 JSON 编码（`[]byte` 变 base64）；`application/*` 先看值能否原样出字节，能就写原字节，否则 JSON；其它项只在覆盖值自身类型时命中——string 是 `text/plain`，`[]byte` 是嗅探结果，完全相等（大小写不敏感）或 `type/*` 同族才算覆盖，`Content-Type` 用值自身类型，不按客户端改名。`Accept` 缺失或 `*/*` 时直接取值自身类型：string → `text/plain; charset=utf-8`，`[]byte` 原样写，其余 JSON。无法满足时 406，响应带 `Vary: Accept`。
 - handler error、bind error 都交给 `Config.ErrorHandler`，最终由 `writeError` 写响应（唯一错误出口）。
 - bind 错误：来源绑定与解码失败 400；`http.MaxBytesReader` 超限由 `Ctx.Body()` 映射 413；其它读取错误（连接中断等）500。
 - panic 走 `Config.RecoverHandler`。

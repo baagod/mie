@@ -157,10 +157,34 @@ func (c *Ctx) StatusCode() int {
     return c.W.StatusCode()
 }
 
-// Send 渲染 r；提交由请求收尾统一负责：写 body 时已提交，空 body 时 finish 提交 c.Status 预设状态。
-// 返回的错误应作为 handler 返回值，交给 ErrorHandler/writeError 处理。
-func (c *Ctx) Send(r Renderer) error {
-    return r.Render(c)
+// Send 按 Accept 输出 v：Renderer 显式渲染；string/[]byte 可原样写字节；
+// 其余值只能 JSON 编码；无法满足时 406。Accept 缺失或 */* 时按值取默认。
+// 提交由请求收尾负责，返回的错误当作 handler 返回值交给 ErrorHandler。
+func (c *Ctx) Send(v any) (err error) {
+    if v == nil {
+        return // 无 body：收尾时由 finish 按 c.Status 提交
+    }
+
+    if r, ok := v.(Renderer); ok {
+        return r.Render(c) // 显式渲染覆盖 Accept，不设 Vary。
+    }
+
+    // 要在任何 return 之前设：406 也要带，否则缓存会把一次 406 当成对所有 Accept 都成立。
+    c.W.Header().Add(HeaderVary, HeaderAccept)
+    switch media := negotiate(c.GetHeader(HeaderAccept), v); media {
+    case "":
+        return Status406NotAcceptable() // 唯一表示「没有可满足类型」的信号
+    case MIMEAppJSON:
+        return JSON(v).Render(c)
+    default: // 能原样写出的只有 string/[]byte
+        c.Type(media)
+        if s, ok := v.(string); ok {
+            _, err = c.W.WriteString(s)
+            return
+        }
+        _, err = c.W.Write(v.([]byte))
+        return err
+    }
 }
 
 // Next 把游标推进到下一个链元素并调用它；越过链尾后再调用返回错误。
@@ -198,7 +222,7 @@ func (c *Ctx) Bind[IN any](in *IN) (err error) {
 
 // BindBody 按 Content-Type 解码 body；GET/HEAD 不读 body。
 func (c *Ctx) BindBody[IN any](in *IN) (err error) {
-    if c.R.Method == http.MethodGet || c.R.Method == http.MethodHead {
+    if c.R.Method == http.MethodGet || c.R.Method == http.MethodHead || c.R.ContentLength == 0 {
         return
     }
 

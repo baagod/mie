@@ -1,6 +1,8 @@
 package mie
 
-import "reflect"
+import (
+    "github.com/baagod/mie/internal/xtype"
+)
 
 // Handler 是框架内部执行的处理器形状：链元素与中间件。
 type Handler func(c *Ctx) error
@@ -17,7 +19,7 @@ func He[IN any](f func(c *Ctx, in IN) error) HandlerFunc[IN, any] {
 
 // handler 把 HandlerFunc 适配成链元素 Handler：绑定输入、调用处理器、渲染输出。
 func handler[IN, OUT any](f HandlerFunc[IN, OUT]) Handler {
-    noInput := reflect.TypeFor[IN]() == reflect.TypeFor[struct{}]()
+    noInput := xtype.Eq[IN, struct{}]()
 
     return func(c *Ctx) error {
         var in IN
@@ -33,10 +35,6 @@ func handler[IN, OUT any](f HandlerFunc[IN, OUT]) Handler {
             return err
         }
 
-        if any(out) == nil {
-            return nil
-        }
-
-        return c.Send(JSON(out))
+        return c.Send(out)
     }
 }

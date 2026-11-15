@@ -33,3 +33,7 @@ func Status413RequestEntityTooLarge(text ...string) *Error {
 func Status400BadRequest(text ...string) *Error {
     return NewError(http.StatusBadRequest, text...)
 }
+
+func Status406NotAcceptable(text ...string) *Error {
+    return NewError(http.StatusNotAcceptable, text...)
+}

@@ -259,7 +259,7 @@ func TestBindNonStructINRequiresJSONContentType(t *testing.T) {
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, req)
 
-    if rec.Code != http.StatusOK || rec.Body.String() != `""` {
+    if rec.Code != http.StatusOK || rec.Body.String() != "" {
         t.Fatalf("status=%d body=%q, want 200 空字符串（CT 不是 JSON 不解析）", rec.Code, rec.Body.String())
     }
 }
@@ -367,8 +367,8 @@ func TestBindNestedStructBody(t *testing.T) {
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, req)
 
-    if rec.Code != http.StatusOK || rec.Body.String() != `"alice|a,b"` {
-        t.Fatalf("status/body = %d/%q, want 200 with \"alice|a,b\"", rec.Code, rec.Body.String())
+    if rec.Code != http.StatusOK || rec.Body.String() != "alice|a,b" {
+        t.Fatalf("status/body = %d/%q, want 200 with alice|a,b", rec.Code, rec.Body.String())
     }
 }
 
@@ -432,8 +432,8 @@ func TestBodyIsCached(t *testing.T) {
     if rec.Code != http.StatusOK {
         t.Fatalf("status = %d, want 200", rec.Code)
     }
-    if got := rec.Body.String(); got != `"hi|hi"` {
-        t.Fatalf("body = %s, want %q", got, `"hi|hi"`)
+    if got := rec.Body.String(); got != "hi|hi" {
+        t.Fatalf("body = %s, want %q", got, "hi|hi")
     }
 }
 
@@ -728,8 +728,8 @@ func TestBindSourceOrder(t *testing.T) {
         rec := httptest.NewRecorder()
         r.ServeHTTP(rec, req)
 
-        if rec.Code != http.StatusOK || rec.Body.String() != `"form"` {
-            t.Fatalf("status/body = %d/%q, want 200/\"form\"", rec.Code, rec.Body.String())
+        if rec.Code != http.StatusOK || rec.Body.String() != "form" {
+            t.Fatalf("status/body = %d/%q, want 200/form", rec.Code, rec.Body.String())
         }
     })
 
@@ -745,8 +745,8 @@ func TestBindSourceOrder(t *testing.T) {
         rec := httptest.NewRecorder()
         r.ServeHTTP(rec, req)
 
-        if rec.Code != http.StatusOK || rec.Body.String() != `"query"` {
-            t.Fatalf("status/body = %d/%q, want 200/\"query\"", rec.Code, rec.Body.String())
+        if rec.Code != http.StatusOK || rec.Body.String() != "query" {
+            t.Fatalf("status/body = %d/%q, want 200/query", rec.Code, rec.Body.String())
         }
     })
 
@@ -762,8 +762,8 @@ func TestBindSourceOrder(t *testing.T) {
         rec := httptest.NewRecorder()
         r.ServeHTTP(rec, req)
 
-        if rec.Code != http.StatusOK || rec.Body.String() != `"json"` {
-            t.Fatalf("status/body = %d/%q, want 200/\"json\"", rec.Code, rec.Body.String())
+        if rec.Code != http.StatusOK || rec.Body.String() != "json" {
+            t.Fatalf("status/body = %d/%q, want 200/json", rec.Code, rec.Body.String())
         }
     })
 }
@@ -910,15 +910,15 @@ func TestBindExplicitEmptyClearsValue(t *testing.T) {
     // 显式空值：query 覆盖 path，字段被清零。
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x/abc?name=", nil))
-    if rec.Code != http.StatusOK || rec.Body.String() != `""` {
-        t.Fatalf("explicit empty status/body = %d/%q, want 200/\"\"", rec.Code, rec.Body.String())
+    if rec.Code != http.StatusOK || rec.Body.String() != "" {
+        t.Fatalf("explicit empty status/body = %d/%q, want 200 empty", rec.Code, rec.Body.String())
     }
 
     // 缺失：保留 path 写入的值。
     rec = httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x/abc", nil))
-    if rec.Code != http.StatusOK || rec.Body.String() != `"abc"` {
-        t.Fatalf("missing status/body = %d/%q, want 200/\"abc\"", rec.Code, rec.Body.String())
+    if rec.Code != http.StatusOK || rec.Body.String() != "abc" {
+        t.Fatalf("missing status/body = %d/%q, want 200/abc", rec.Code, rec.Body.String())
     }
 }
 
@@ -940,12 +940,12 @@ func TestBindBodyByContentType(t *testing.T) {
         ct     string
         want   string
     }{
-        {http.MethodPost, MIMEAppJSON, `"alice"`},
-        {http.MethodPut, MIMEAppJSON, `"alice"`},
-        {http.MethodPatch, MIMEAppJSON, `"alice"`},
-        {http.MethodGet, MIMEAppJSON, `""`}, // GET 没有 body 可绑
-        {http.MethodPost, "application/vnd.api+json", `"alice"`},
-        {http.MethodPost, MIMETextPlainUTF8, `""`}, // 未注册的 CT 不读 body
+        {http.MethodPost, MIMEAppJSON, "alice"},
+        {http.MethodPut, MIMEAppJSON, "alice"},
+        {http.MethodPatch, MIMEAppJSON, "alice"},
+        {http.MethodGet, MIMEAppJSON, ""}, // GET 没有 body 可绑
+        {http.MethodPost, "application/vnd.api+json", "alice"},
+        {http.MethodPost, MIMETextPlainUTF8, ""}, // 未注册的 CT 不读 body
     }
     for _, tc := range cases {
         rec := httptest.NewRecorder()
@@ -1118,7 +1118,7 @@ func TestBindBodyUsesRegisteredDecoder(t *testing.T) {
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, req)
 
-    if rec.Code != http.StatusOK || rec.Body.String() != `"decoded:raw"` {
+    if rec.Code != http.StatusOK || rec.Body.String() != "decoded:raw" {
         t.Fatalf("status/body = %d/%q, want 200 with decoded body", rec.Code, rec.Body.String())
     }
 }
