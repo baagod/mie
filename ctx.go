@@ -175,7 +175,8 @@ func (c *Ctx) Send(v any) error {
     if media == "" {
         // 要在任何 return 之前设：406 也要带，否则缓存会把一次 406 当成对所有 Accept 都成立。
         c.W.Header().Add(HeaderVary, HeaderAccept)
-        if media = c.negotiate(valueMedia(v)); media == "" {
+        formats := []string{MIMEAppJSON, MIMEAppXML}
+        if media = negotiate(c.HeaderGet(HeaderAccept), mediaOf(v), formats); media == "" {
             return Status406NotAcceptable() // 唯一表示「没有可满足类型」的信号
         }
     }

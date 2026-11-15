@@ -5,29 +5,27 @@ import (
     "strings"
 )
 
-// negotiate 按 Accept 的书写顺序选出第一个能提供的媒体类型，q 值不参与排序。
-// 能提供的是：值自身的类型（natural），以及 app 配置过的编码器格式；
+// negotiate 按 Accept 的书写顺序选出第一个能产出的媒体类型，q 值不参与排序。
+// 能产出的是：值自身的类型（ownMedia），以及 offers 里的格式；
 // Accept 只能选择，不能把值改标成别的类型。
-func (c *Ctx) negotiate(natural string) string {
-    accept := c.HeaderGet(HeaderAccept)
+func negotiate(accept, ownMedia string, offers []string) string {
     if accept == "" || accept == MIMEAny {
-        return natural
+        return ownMedia
     }
 
-    base, _, _ := strings.Cut(natural, ";")
+    base, _, _ := strings.Cut(ownMedia, ";")
 
     for part := range strings.SplitSeq(accept, ",") {
         media, _, _ := strings.Cut(part, ";")
-        switch media = strings.ToLower(strings.TrimSpace(media)); {
-        case covers(media, base):
-            return natural
-        case media == MIMEAppAny:
-            return MIMEAppJSON
-        case media == MIMEAny:
-            return natural
-        default:
-            if _, ok := c.app.encoder(media); ok {
-                return media
+        media = strings.ToLower(strings.TrimSpace(media))
+
+        if covers(media, base) {
+            return ownMedia
+        }
+
+        for _, o := range offers {
+            if covers(media, o) {
+                return o
             }
         }
     }
@@ -35,16 +33,14 @@ func (c *Ctx) negotiate(natural string) string {
     return ""
 }
 
-// covers 报告 Accept 项是否覆盖 natural：完全相等，或 type/* 覆盖同族。
-func covers(media, natural string) bool {
-    if media == natural {
-        return true
-    }
-    return strings.HasSuffix(media, "/*") && strings.HasPrefix(natural, media[:len(media)-1])
+// covers 报告 Accept 项是否覆盖基类型 base：完全相等、*/*，或 type/* 覆盖同族。
+func covers(media, base string) bool {
+    return media == MIMEAny || media == base ||
+        (strings.HasSuffix(media, "/*") && strings.HasPrefix(base, media[:len(media)-1]))
 }
 
-// valueMedia 是客户端没表态时的响应类型，无匹配时返回 application/json。
-func valueMedia(v any) string {
+// mediaOf 是客户端没表态时的响应类型，无匹配时返回 application/json。
+func mediaOf(v any) string {
     switch v := v.(type) {
     case string:
         return MIMETextPlainUTF8
