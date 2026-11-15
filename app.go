@@ -7,6 +7,7 @@ import (
     "net/http"
     "os"
     "os/signal"
+    "strings"
     "syscall"
     "time"
 )
@@ -28,6 +29,9 @@ type Config struct {
     // Logger 是访问日志与框架诊断日志的落点；nil 时 New 用写 stderr 的默认 Logger。
     // 需要按请求过滤或附加字段时，请包一层 slog.Handler。
     Logger *slog.Logger
+
+    // Encoders 为框架定义的格式提供编码器；nil 字段由 New 填成内置实现（JSON、XML），格式无法关闭。
+    Encoders Encoders
 }
 
 // App 持有 ServeMux、配置与生命周期方法；注册面见 Router。
@@ -35,17 +39,6 @@ type App struct {
     *Router
     mux    *http.ServeMux
     config Config
-}
-
-// defaultErrorHandler 原样放行，真正的响应由 writeError 写出。
-func defaultErrorHandler(_ *Ctx, err error) error {
-    return err
-}
-
-// defaultRecoverHandler 记录 Panic 并返回 500 错误。
-func defaultRecoverHandler(c *Ctx, info *Panic) error {
-    c.LogError("PANIC RECOVERED", "detail", info.Text())
-    return Status500InternalServerError()
 }
 
 // New 创建 App；最多一个 Config，多传会 panic。panic 的恢复见 handlePanic。
@@ -69,6 +62,14 @@ func New(cfg ...Config) *App {
 
     if c.Logger == nil {
         c.Logger = logger
+    }
+
+    if c.Encoders.JSON == nil {
+        c.Encoders.JSON = jsonEncode
+    }
+
+    if c.Encoders.XML == nil {
+        c.Encoders.XML = xmlEncode
     }
 
     a := &App{mux: http.NewServeMux(), config: c}
@@ -161,4 +162,28 @@ func (a *App) handlePanic(c *Ctx, p any) {
 
     // 响应还没写：恢复器给出的错误交 finish 写响应并收尾（默认 500）。
     c.finish(err)
+}
+
+// encoder 返回媒体类型对应的编码器；默认实现由 New 填入 Config.Encoders。
+// 媒体类型去掉参数并忽略大小写：application/json; charset=utf-8 与 Application/JSON 都算 JSON。
+func (a *App) encoder(media string) (Encoder, bool) {
+    base, _, _ := strings.Cut(media, ";")
+    switch strings.ToLower(strings.TrimSpace(base)) {
+    case MIMEAppJSON:
+        return a.config.Encoders.JSON, true
+    case MIMEAppXML:
+        return a.config.Encoders.XML, true
+    }
+    return nil, false
+}
+
+// defaultErrorHandler 原样放行，真正的响应由 writeError 写出。
+func defaultErrorHandler(_ *Ctx, err error) error {
+    return err
+}
+
+// defaultRecoverHandler 记录 Panic 并返回 500 错误。
+func defaultRecoverHandler(c *Ctx, info *Panic) error {
+    c.LogError("PANIC RECOVERED", "detail", info.Text())
+    return Status500InternalServerError()
 }

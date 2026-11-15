@@ -35,7 +35,9 @@
 ## 4. 输出与错误
 
 - error 非 nil 时忽略 OUT；OUT 为 nil 不写 body（中间件 `return nil, nil` 即放行），状态取 `c.Status`，未设置则 200。
-- 输出：`Renderer` 自己渲染（`JSON(x)` 显式覆盖 Accept）；其余按 `Accept` 选：`application/json` 时任何值 JSON 编码（`[]byte` 变 base64）；`application/*` 先看值能否原样出字节，能就写原字节，否则 JSON；其它项只在覆盖值自身类型时命中——string 是 `text/plain`，`[]byte` 是嗅探结果，完全相等（大小写不敏感）或 `type/*` 同族才算覆盖，`Content-Type` 用值自身类型，不按客户端改名。`Accept` 缺失或 `*/*` 时直接取值自身类型：string → `text/plain; charset=utf-8`，`[]byte` 原样写，其余 JSON。无法满足时 406，响应带 `Vary: Accept`。
+- 输出：`Renderer` 只声明格式（`Format() (media, value)`），框架必须用该格式的编码器编码，缺了报错（`JSON(v)`/`XML(v)` 是忽略 `Accept` 的捷径）。
+- 裸值：处理器事先设了 `Content-Type` 时以它为准、不协商；否则按 `Accept` 选格式，缺失或 `*/*` 时用值自身的默认类型（string → `text/plain; charset=utf-8`，`[]byte` 嗅探结果，其余 JSON）。有编码器就编码，没有编码器时 string/`[]byte` 按原字节写、其余报错。
+- `Config.Encoders` 的 `JSON`/`XML` 字段定义格式（格式名由框架定义，`New` 把 nil 填成内置 `json.Marshal`/`xml.Marshal`），`Content-Type` 取格式对应的媒体类型。无法满足时 406，响应带 `Vary: Accept`。
 - handler error、bind error 都交给 `Config.ErrorHandler`，最终由 `writeError` 写响应（唯一错误出口）。
 - bind 错误：来源绑定与解码失败 400；`http.MaxBytesReader` 超限由 `Ctx.Body()` 映射 413；其它读取错误（连接中断等）500。
 - panic 走 `Config.RecoverHandler`。

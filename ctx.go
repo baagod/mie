@@ -18,11 +18,11 @@ import (
 )
 
 type (
-    // ctxKey 是请求 context 中存放 *Ctx 的键。
+    // ctxKey 是请求 context 中存放 *Ctx 的键
     ctxKey struct{}
-    // bodyKey 是请求 context 中缓存 Body 读取结果的键。
+    // bodyKey 是请求 context 中缓存 Body 读取结果的键
     bodyKey struct{}
-    // bindInKey 是请求 context 中缓存已绑定 IN 的键。
+    // bindInKey 是请求 context 中缓存已绑定 IN 的键
     bindInKey struct{}
 )
 
@@ -108,8 +108,8 @@ func (c *Ctx) IsCanceled() bool { return errors.Is(c.R.Context().Err(), context.
 // Param 返回路径参数的值。
 func (c *Ctx) Param(name string) string { return c.R.PathValue(name) }
 
-// GetHeader 读取请求头；为空时返回第一个默认值。
-func (c *Ctx) GetHeader(name string, or ...string) string {
+// HeaderGet 读取请求头；为空时返回第一个默认值。
+func (c *Ctx) HeaderGet(name string, or ...string) string {
     h := c.R.Header.Get(name)
     if h == "" && len(or) > 0 {
         h = or[0]
@@ -119,7 +119,7 @@ func (c *Ctx) GetHeader(name string, or ...string) string {
 
 // ContentType 返回请求头的内容类型
 func (c *Ctx) ContentType() string {
-    return c.GetHeader(HeaderContentType)
+    return c.HeaderGet(HeaderContentType)
 }
 
 // RemoteIP 取 RemoteAddr 的主机部分；解析失败时返回原值。
@@ -157,34 +157,55 @@ func (c *Ctx) StatusCode() int {
     return c.W.StatusCode()
 }
 
-// Send 按 Accept 输出 v：Renderer 显式渲染；string/[]byte 可原样写字节；
-// 其余值只能 JSON 编码；无法满足时 406。Accept 缺失或 */* 时按值取默认。
-// 提交由请求收尾负责，返回的错误当作 handler 返回值交给 ErrorHandler。
-func (c *Ctx) Send(v any) (err error) {
+// Send 输出 v：Renderer 显式声明格式，必须有对应编码器；处理器事先设了 Content-Type 时以它为准；
+// 裸值交给编码器（内置 JSON，可在 Config.Encoders 扩展），没有编码器时 string/[]byte 按原字节写出。
+// 无法满足时 406；提交由请求收尾负责，返回的错误交给 ErrorHandler。
+func (c *Ctx) Send(v any) error {
     if v == nil {
-        return // 无 body：收尾时由 finish 按 c.Status 提交
+        return nil // 无 body：收尾时由 finish 按 c.Status 提交
     }
 
     if r, ok := v.(Renderer); ok {
-        return r.Render(c) // 显式渲染覆盖 Accept，不设 Vary。
+        media, value := r.Format()
+        return c.sendFormat(value, media) // 显式格式覆盖 Accept，不设 Vary。
     }
 
-    // 要在任何 return 之前设：406 也要带，否则缓存会把一次 406 当成对所有 Accept 都成立。
-    c.W.Header().Add(HeaderVary, HeaderAccept)
-    switch media := negotiate(c.GetHeader(HeaderAccept), v); media {
-    case "":
-        return Status406NotAcceptable() // 唯一表示「没有可满足类型」的信号
-    case MIMEAppJSON:
-        return JSON(v).Render(c)
-    default: // 能原样写出的只有 string/[]byte
-        c.Type(media)
-        if s, ok := v.(string); ok {
-            _, err = c.W.WriteString(s)
-            return
+    // 处理器自己设了响应 Content-Type：它就是声明的格式，不再按 Accept 协商。
+    media := c.W.Header().Get(HeaderContentType)
+    if media == "" {
+        // 要在任何 return 之前设：406 也要带，否则缓存会把一次 406 当成对所有 Accept 都成立。
+        c.W.Header().Add(HeaderVary, HeaderAccept)
+        if media = c.negotiate(valueMedia(v)); media == "" {
+            return Status406NotAcceptable() // 唯一表示「没有可满足类型」的信号
         }
-        _, err = c.W.Write(v.([]byte))
-        return err
     }
+
+    // 裸值没有对应编码器时，string/[]byte 本身就是响应体；其余交给 sendFormat 报错。
+    if _, ok := c.app.encoder(media); !ok {
+        switch x := v.(type) {
+        case string:
+            return c.Type(media).writeString(x)
+        case []byte:
+            return c.Type(media).writeBytes(x)
+        }
+    }
+
+    return c.sendFormat(v, media)
+}
+
+// sendFormat 用 media 的编码器编码 v；没有编码器时报错。
+func (c *Ctx) sendFormat(v any, media string) error {
+    enc, ok := c.app.encoder(media)
+    if !ok {
+        return errors.New("mie: no encoder for " + media)
+    }
+
+    b, err := enc(v)
+    if err == nil {
+        _, err = c.Type(media).W.Write(b)
+    }
+
+    return err
 }
 
 // Next 把游标推进到下一个链元素并调用它；越过链尾后再调用返回错误。
@@ -299,4 +320,16 @@ func (c *Ctx) writeError(err error) {
     if _, e := c.W.WriteString(err.Error()); e != nil {
         c.LogWarn("mie: write error response", "error", e)
     }
+}
+
+// ======== Ctx 辅助方法 ========
+
+func (c *Ctx) writeBytes(b []byte) (err error) {
+    _, err = c.W.Write(b)
+    return
+}
+
+func (c *Ctx) writeString(s string) (err error) {
+    _, err = c.W.WriteString(s)
+    return
 }
