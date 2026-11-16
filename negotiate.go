@@ -6,7 +6,7 @@ import (
 )
 
 // negotiate 按 Accept 的书写顺序选出第一个能产出的媒体类型，q 值不参与排序。
-// 能产出的是：值自身的类型（ownMedia），以及 offers 里的格式；
+// 能产出的是：值自身的类型（ownMedia），以及 offers 里已注册格式的媒体类型；
 // Accept 只能选择，不能把值改标成别的类型。
 func negotiate(accept, ownMedia string, offers []string) string {
     if accept == "" || accept == MIMEAny {
@@ -16,8 +16,7 @@ func negotiate(accept, ownMedia string, offers []string) string {
     base, _, _ := strings.Cut(ownMedia, ";")
 
     for part := range strings.SplitSeq(accept, ",") {
-        media, _, _ := strings.Cut(part, ";")
-        media = strings.ToLower(strings.TrimSpace(media))
+        media := baseMedia(part)
 
         if covers(media, base) {
             return ownMedia
@@ -31,6 +30,12 @@ func negotiate(accept, ownMedia string, offers []string) string {
     }
 
     return ""
+}
+
+// baseMedia 取媒体类型本身：去掉 ; 后的参数，忽略大小写与首尾空白。
+func baseMedia(media string) string {
+    base, _, _ := strings.Cut(media, ";")
+    return strings.ToLower(strings.TrimSpace(base))
 }
 
 // covers 报告 Accept 项是否覆盖基类型 base：完全相等、*/*，或 type/* 覆盖同族。

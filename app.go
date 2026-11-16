@@ -7,7 +7,6 @@ import (
     "net/http"
     "os"
     "os/signal"
-    "strings"
     "syscall"
     "time"
 )
@@ -30,8 +29,8 @@ type Config struct {
     // 需要按请求过滤或附加字段时，请包一层 slog.Handler。
     Logger *slog.Logger
 
-    // Encoders 为框架定义的格式提供编码器；nil 字段由 New 填成内置实现（JSON、XML），格式无法关闭。
-    Encoders Encoders
+    // Formats 声明可提供的响应格式与优先级；零值只提供内置 JSON、XML。
+    Formats Formats
 }
 
 // App 持有 ServeMux、配置与生命周期方法；注册面见 Router。
@@ -64,13 +63,7 @@ func New(cfg ...Config) *App {
         c.Logger = logger
     }
 
-    if c.Encoders.JSON == nil {
-        c.Encoders.JSON = jsonEncode
-    }
-
-    if c.Encoders.XML == nil {
-        c.Encoders.XML = xmlEncode
-    }
+    c.Formats.resolve()
 
     a := &App{mux: http.NewServeMux(), config: c}
     a.Router = &Router{app: a}
@@ -164,17 +157,10 @@ func (a *App) handlePanic(c *Ctx, p any) {
     c.finish(err)
 }
 
-// encoder 返回媒体类型对应的编码器；默认实现由 New 填入 Config.Encoders。
-// 媒体类型去掉参数并忽略大小写：application/json; charset=utf-8 与 Application/JSON 都算 JSON。
+// encoder 查归一化后的编码器表；媒体类型去掉参数并忽略大小写，application/json; charset=utf-8 与 Application/JSON 都算 JSON。
 func (a *App) encoder(media string) (Encoder, bool) {
-    base, _, _ := strings.Cut(media, ";")
-    switch strings.ToLower(strings.TrimSpace(base)) {
-    case MIMEAppJSON:
-        return a.config.Encoders.JSON, true
-    case MIMEAppXML:
-        return a.config.Encoders.XML, true
-    }
-    return nil, false
+    enc, ok := a.config.Formats.Encoders[baseMedia(media)]
+    return enc, ok
 }
 
 // defaultErrorHandler 原样放行，真正的响应由 writeError 写出。

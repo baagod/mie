@@ -6,6 +6,7 @@ import (
     "errors"
     "net/http"
     "net/http/httptest"
+    "slices"
     "strings"
     "testing"
 )
@@ -65,20 +66,20 @@ func TestSendJSONMarshalError(t *testing.T) {
     }
 }
 
-type customRenderer struct {
+type customFormatted struct {
     media string
     value any
 }
 
-func (r customRenderer) Format() (string, any) { return r.media, r.value }
+func (r customFormatted) Format() (string, any) { return r.media, r.value }
 
 type xmlUser struct{ Name string }
 
 // 自定义渲染器只声明格式：框架用该格式的编码器编码，Accept 被忽略，也不设 Vary。
-func TestSendRendererDeclaresFormat(t *testing.T) {
+func TestSendFormattedDeclaresFormat(t *testing.T) {
     r := New()
-    r.Get("/user", func(c *Ctx, _ struct{}) (Renderer, error) {
-        return customRenderer{media: MIMEAppXML, value: xmlUser{Name: "bob"}}, nil
+    r.Get("/user", func(c *Ctx, _ struct{}) (Formatted, error) {
+        return customFormatted{media: MIMEAppXML, value: xmlUser{Name: "bob"}}, nil
     })
 
     req := httptest.NewRequest(http.MethodGet, "/user", nil)
@@ -101,10 +102,10 @@ func TestSendRendererDeclaresFormat(t *testing.T) {
 }
 
 // 声明的格式没有编码器、值也不是字节：这是代码写错了，报错而不是悄悄换个格式。
-func TestSendRendererWithoutEncoderFails(t *testing.T) {
+func TestSendFormattedWithoutEncoderFails(t *testing.T) {
     r := New()
-    r.Get("/raw", func(c *Ctx, _ struct{}) (Renderer, error) {
-        return customRenderer{media: "application/x-unknown", value: struct{ A int }{1}}, nil
+    r.Get("/raw", func(c *Ctx, _ struct{}) (Formatted, error) {
+        return customFormatted{media: "application/x-unknown", value: struct{ A int }{1}}, nil
     })
 
     rec := httptest.NewRecorder()
@@ -119,15 +120,15 @@ func TestSendRendererWithoutEncoderFails(t *testing.T) {
 }
 
 // 渲染器声明了没有编码器的格式时，string/[]byte 也不回落：回落只属于裸值。
-func TestSendRendererBytesWithoutEncoderFails(t *testing.T) {
+func TestSendFormattedBytesWithoutEncoderFails(t *testing.T) {
     for name, value := range map[string]any{
         "string": "a,b",
         "bytes":  []byte("a,b"),
     } {
         t.Run(name, func(t *testing.T) {
             r := New()
-            r.Get("/raw", func(c *Ctx, _ struct{}) (Renderer, error) {
-                return customRenderer{media: "text/csv", value: value}, nil
+            r.Get("/raw", func(c *Ctx, _ struct{}) (Formatted, error) {
+                return customFormatted{media: "text/csv", value: value}, nil
             })
 
             rec := httptest.NewRecorder()
@@ -329,7 +330,7 @@ func TestSendKeepsExistingVary(t *testing.T) {
 func xmlEncoder(any) ([]byte, error) { return []byte("<user>bob</user>"), nil }
 
 func TestSendUsesConfiguredEncoder(t *testing.T) {
-    r := New(Config{Encoders: Encoders{XML: xmlEncoder}})
+    r := New(Config{Formats: Formats{Encoders: Encoders{MIMEAppXML: xmlEncoder}}})
     r.Get("/user", func(c *Ctx, _ struct{}) (map[string]string, error) {
         return map[string]string{"name": "bob"}, nil
     })
@@ -365,10 +366,162 @@ func TestSendUsesConfiguredEncoder(t *testing.T) {
     }
 }
 
-func TestSendEncoderOverridesBuiltinJSON(t *testing.T) {
-    r := New(Config{Encoders: Encoders{JSON: func(any) ([]byte, error) {
-        return []byte(`{"custom":true}`), nil
+// 注册即新增格式：协商与编码都用这张表，框架不需要认识这个媒体类型。
+func TestSendRegisteredCustomFormat(t *testing.T) {
+    r := New(Config{Formats: Formats{Encoders: Encoders{MIMEAppMsgPack: func(any) ([]byte, error) {
+        return []byte("msgpack"), nil
+    }}}})
+    r.Get("/user", func(c *Ctx, _ struct{}) (map[string]string, error) {
+        return map[string]string{"name": "bob"}, nil
+    })
+
+    req := httptest.NewRequest(http.MethodGet, "/user", nil)
+    req.Header.Set(HeaderAccept, MIMEAppMsgPack)
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, req)
+
+    if rec.Code != http.StatusOK {
+        t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+    }
+    if got := rec.Header().Get(HeaderContentType); got != MIMEAppMsgPack {
+        t.Fatalf("Content-Type = %q, want %q", got, MIMEAppMsgPack)
+    }
+    if got := rec.Body.String(); got != "msgpack" {
+        t.Fatalf("body = %q, want msgpack", got)
+    }
+}
+
+// Formatted 声明的媒体类型同样走注册表编码，与 Accept 无关。
+func TestSendFormattedUsesRegisteredCustomEncoder(t *testing.T) {
+    r := New(Config{Formats: Formats{Encoders: Encoders{MIMEAppMsgPack: func(any) ([]byte, error) {
+        return []byte("msgpack"), nil
+    }}}})
+    r.Get("/user", func(c *Ctx, _ struct{}) (Formatted, error) {
+        return customFormatted{media: MIMEAppMsgPack, value: map[string]string{"name": "bob"}}, nil
+    })
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/user", nil))
+
+    if rec.Code != http.StatusOK {
+        t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+    }
+    if got := rec.Header().Get(HeaderContentType); got != MIMEAppMsgPack {
+        t.Fatalf("Content-Type = %q, want %q", got, MIMEAppMsgPack)
+    }
+    if got := rec.Body.String(); got != "msgpack" {
+        t.Fatalf("body = %q, want msgpack", got)
+    }
+}
+
+// Order 决定通配符下谁先命中。
+func TestEncodersOrderControlsPriority(t *testing.T) {
+    first := func(any) ([]byte, error) { return []byte("first"), nil }
+    second := func(any) ([]byte, error) { return []byte("second"), nil }
+    r := New(Config{Formats: Formats{
+        Encoders: Encoders{"application/first": first, "application/second": second},
+        Order:    []string{"application/second", "application/first"},
+    }})
+    png := []byte("\x89PNG\r\n\x1a\nraw-bytes")
+    r.Get("/png", func(c *Ctx, _ struct{}) ([]byte, error) { return png, nil })
+
+    req := httptest.NewRequest(http.MethodGet, "/png", nil)
+    req.Header.Set(HeaderAccept, MIMEAppAny)
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, req)
+
+    if got := rec.Header().Get(HeaderContentType); got != "application/second" {
+        t.Fatalf("Content-Type = %q, want application/second", got)
+    }
+    if got := rec.Body.String(); got != "second" {
+        t.Fatalf("body = %q, want second", got)
+    }
+}
+
+// resolve 的优先级：Order 里列出的在前，其余按内置默认序（JSON、XML、媒体名字典序）。
+func TestEncodersResolveOrder(t *testing.T) {
+    msgpack := Encoder(func(any) ([]byte, error) { return nil, nil })
+
+    tests := []struct {
+        name string
+        enc  Encoders
+        ord  []string
+        want []string
+    }{
+        {"default", nil, nil, []string{MIMEAppJSON, MIMEAppXML}},
+        {"custom appended", Encoders{MIMEAppMsgPack: msgpack}, nil, []string{MIMEAppJSON, MIMEAppXML, MIMEAppMsgPack}},
+        {"override keeps position", Encoders{MIMEAppJSON: xmlEncoder}, nil, []string{MIMEAppJSON, MIMEAppXML}},
+        {"order pulls custom forward", Encoders{MIMEAppMsgPack: msgpack}, []string{MIMEAppMsgPack}, []string{MIMEAppMsgPack, MIMEAppJSON, MIMEAppXML}},
+        {"order reorders builtins", nil, []string{MIMEAppXML, MIMEAppJSON}, []string{MIMEAppXML, MIMEAppJSON}},
+        {"keys normalized", Encoders{"Application/MsgPack": msgpack}, nil, []string{MIMEAppJSON, MIMEAppXML, MIMEAppMsgPack}},
+        {"customs sorted", Encoders{"text/c": msgpack, "text/a": msgpack, "text/b": msgpack}, nil, []string{MIMEAppJSON, MIMEAppXML, "text/a", "text/b", "text/c"}},
+    }
+
+    for _, tc := range tests {
+        t.Run(tc.name, func(t *testing.T) {
+            f := Formats{Encoders: tc.enc, Order: tc.ord}
+            f.resolve()
+            if !slices.Equal(f.parsed, tc.want) {
+                t.Fatalf("media = %v, want %v", f.parsed, tc.want)
+            }
+        })
+    }
+}
+
+// Order 引用未注册或重复的媒体是配置错误，构造时就 panic。
+func TestEncodersOrderRejectsBadInput(t *testing.T) {
+    for _, tc := range []struct {
+        name string
+        cfg  Config
+    }{
+        {"unknown media", Config{Formats: Formats{Order: []string{"application/x-unknown"}}}},
+        {"duplicate media", Config{Formats: Formats{Order: []string{MIMEAppJSON, "Application/JSON"}}}},
+    } {
+        t.Run(tc.name, func(t *testing.T) {
+            defer func() {
+                if recover() == nil {
+                    t.Fatalf("New(%+v) did not panic", tc.cfg)
+                }
+            }()
+            New(tc.cfg)
+        })
+    }
+}
+
+// 同一个媒体写成两种形式（大小写不同）等于给同一格式两个实现，构造时就 panic。
+func TestEncodersRejectsDuplicateMedia(t *testing.T) {
+    defer func() {
+        if recover() == nil {
+            t.Fatal("New did not panic")
+        }
+    }()
+    New(Config{Formats: Formats{Encoders: Encoders{
+        "Application/JSON": jsonEncode,
+        MIMEAppJSON:        xmlEncoder,
     }}})
+}
+
+// 编码器为 nil 或媒体名为空都是配置错误，构造时就 panic，避免「配了却永远 406」。
+func TestEncodersRejectsBadEntries(t *testing.T) {
+    for name, enc := range map[string]Encoders{
+        "nil encoder": {MIMEAppMsgPack: nil},
+        "empty media": {"  ": jsonEncode},
+    } {
+        t.Run(name, func(t *testing.T) {
+            defer func() {
+                if recover() == nil {
+                    t.Fatalf("New(%v) did not panic", enc)
+                }
+            }()
+            New(Config{Formats: Formats{Encoders: enc}})
+        })
+    }
+}
+
+func TestSendEncoderOverridesBuiltinJSON(t *testing.T) {
+    r := New(Config{Formats: Formats{Encoders: Encoders{MIMEAppJSON: func(any) ([]byte, error) {
+        return []byte(`{"custom":true}`), nil
+    }}}})
     r.Get("/user", func(c *Ctx, _ struct{}) (map[string]string, error) {
         return map[string]string{"name": "bob"}, nil
     })
@@ -402,7 +555,7 @@ func TestSendUnregisteredFormatIs406(t *testing.T) {
 
 func TestJSONForcesJSON(t *testing.T) {
     r := New()
-    r.Get("/user", func(c *Ctx, _ struct{}) (Renderer, error) {
+    r.Get("/user", func(c *Ctx, _ struct{}) (Formatted, error) {
         return JSON(map[string]string{"name": "bob"}), nil
     })
 
@@ -426,10 +579,10 @@ func TestJSONForcesJSON(t *testing.T) {
 }
 
 func TestJSONUsesConfiguredEncoder(t *testing.T) {
-    r := New(Config{Encoders: Encoders{JSON: func(any) ([]byte, error) {
+    r := New(Config{Formats: Formats{Encoders: Encoders{MIMEAppJSON: func(any) ([]byte, error) {
         return []byte(`custom`), nil
-    }}})
-    r.Get("/user", func(c *Ctx, _ struct{}) (Renderer, error) {
+    }}}})
+    r.Get("/user", func(c *Ctx, _ struct{}) (Formatted, error) {
         return JSON(struct{}{}), nil
     })
 
@@ -446,7 +599,7 @@ func TestJSONUsesConfiguredEncoder(t *testing.T) {
 
 func TestXMLForcesXML(t *testing.T) {
     r := New()
-    r.Get("/user", func(c *Ctx, _ struct{}) (Renderer, error) {
+    r.Get("/user", func(c *Ctx, _ struct{}) (Formatted, error) {
         return XML(xmlUser{Name: "bob"}), nil
     })
 
@@ -464,10 +617,10 @@ func TestXMLForcesXML(t *testing.T) {
 }
 
 func TestXMLUsesConfiguredEncoder(t *testing.T) {
-    r := New(Config{Encoders: Encoders{XML: func(any) ([]byte, error) {
+    r := New(Config{Formats: Formats{Encoders: Encoders{MIMEAppXML: func(any) ([]byte, error) {
         return []byte("<custom/>"), nil
-    }}})
-    r.Get("/user", func(c *Ctx, _ struct{}) (Renderer, error) {
+    }}}})
+    r.Get("/user", func(c *Ctx, _ struct{}) (Formatted, error) {
         return XML(xmlUser{Name: "bob"}), nil
     })
 
@@ -605,11 +758,11 @@ func TestSendPresetContentTypeWithoutEncoderFails(t *testing.T) {
     }
 }
 
-// 只配一个格式不会清掉另一个：New 把 nil 字段填成默认实现。
+// 只配一个格式不会清掉另一个：内置格式始终存在。
 func TestNewKeepsDefaultJSONWhenOnlyXMLConfigured(t *testing.T) {
-    r := New(Config{Encoders: Encoders{XML: func(any) ([]byte, error) {
+    r := New(Config{Formats: Formats{Encoders: Encoders{MIMEAppXML: func(any) ([]byte, error) {
         return []byte("<x/>"), nil
-    }}})
+    }}}})
     r.Get("/u", func(c *Ctx, _ struct{}) (xmlUser, error) { return xmlUser{Name: "bob"}, nil })
 
     rec := httptest.NewRecorder()

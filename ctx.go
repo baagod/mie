@@ -157,17 +157,17 @@ func (c *Ctx) StatusCode() int {
     return c.W.StatusCode()
 }
 
-// Send 输出 v：Renderer 显式声明格式，必须有对应编码器；处理器事先设了 Content-Type 时以它为准；
-// 裸值交给编码器（内置 JSON，可在 Config.Encoders 扩展），没有编码器时 string/[]byte 按原字节写出。
+// Send 输出 v：Formatted 显式声明格式，必须有对应编码器；处理器事先设了 Content-Type 时以它为准；
+// 裸值交给已注册的编码器（内置 JSON），没有编码器时 string/[]byte 按原字节写出。
 // 无法满足时 406；提交由请求收尾负责，返回的错误交给 ErrorHandler。
 func (c *Ctx) Send(v any) error {
     if v == nil {
         return nil // 无 body：收尾时由 finish 按 c.Status 提交
     }
 
-    if r, ok := v.(Renderer); ok {
+    if r, ok := v.(Formatted); ok {
         media, value := r.Format()
-        return c.sendFormat(value, media) // 显式格式覆盖 Accept，不设 Vary。
+        return c.sendFormat(value, media, false) // 显式格式覆盖 Accept，不设 Vary。
     }
 
     // 处理器自己设了响应 Content-Type：它就是声明的格式，不再按 Accept 协商。
@@ -175,14 +175,25 @@ func (c *Ctx) Send(v any) error {
     if media == "" {
         // 要在任何 return 之前设：406 也要带，否则缓存会把一次 406 当成对所有 Accept 都成立。
         c.W.Header().Add(HeaderVary, HeaderAccept)
-        formats := []string{MIMEAppJSON, MIMEAppXML}
-        if media = negotiate(c.HeaderGet(HeaderAccept), mediaOf(v), formats); media == "" {
+        if media = negotiate(c.HeaderGet(HeaderAccept), mediaOf(v), c.app.config.Formats.parsed); media == "" {
             return Status406NotAcceptable() // 唯一表示「没有可满足类型」的信号
         }
     }
 
-    // 裸值没有对应编码器时，string/[]byte 本身就是响应体；其余交给 sendFormat 报错。
-    if _, ok := c.app.encoder(media); !ok {
+    return c.sendFormat(v, media, true)
+}
+
+// sendFormat 用 media 的编码器编码 v；没有编码器时，raw 允许 string/[]byte 原样写出，其余报错。
+func (c *Ctx) sendFormat(v any, media string, raw bool) error {
+    if enc, ok := c.app.encoder(media); ok {
+        b, err := enc(v)
+        if err == nil {
+            _, err = c.Type(media).W.Write(b)
+        }
+        return err
+    }
+
+    if raw {
         switch x := v.(type) {
         case string:
             return c.Type(media).writeString(x)
@@ -191,22 +202,7 @@ func (c *Ctx) Send(v any) error {
         }
     }
 
-    return c.sendFormat(v, media)
-}
-
-// sendFormat 用 media 的编码器编码 v；没有编码器时报错。
-func (c *Ctx) sendFormat(v any, media string) error {
-    enc, ok := c.app.encoder(media)
-    if !ok {
-        return errors.New("mie: no encoder for " + media)
-    }
-
-    b, err := enc(v)
-    if err == nil {
-        _, err = c.Type(media).W.Write(b)
-    }
-
-    return err
+    return errors.New("mie: no encoder for " + media)
 }
 
 // Next 把游标推进到下一个链元素并调用它；越过链尾后再调用返回错误。

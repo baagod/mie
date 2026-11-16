@@ -35,9 +35,9 @@
 ## 4. 输出与错误
 
 - error 非 nil 时忽略 OUT；OUT 为 nil 不写 body（中间件 `return nil, nil` 即放行），状态取 `c.Status`，未设置则 200。
-- 输出：`Renderer` 只声明格式（`Format() (media, value)`），框架必须用该格式的编码器编码，缺了报错（`JSON(v)`/`XML(v)` 是忽略 `Accept` 的捷径）。
+- 输出：`Formatted` 只声明格式（`Format() (media, value)`），框架必须用该格式的编码器编码，缺了报错（`JSON(v)`/`XML(v)` 是忽略 `Accept` 的捷径）。
 - 裸值：处理器事先设了 `Content-Type` 时以它为准、不协商；否则按 `Accept` 选格式，缺失或 `*/*` 时用值自身的默认类型（string → `text/plain; charset=utf-8`，`[]byte` 嗅探结果，其余 JSON）。有编码器就编码，没有编码器时 string/`[]byte` 按原字节写、其余报错。
-- `Config.Encoders` 的 `JSON`/`XML` 字段定义格式（格式名由框架定义，`New` 把 nil 填成内置 `json.Marshal`/`xml.Marshal`），`Content-Type` 取格式对应的媒体类型。无法满足时 406，响应带 `Vary: Accept`。
+- 编码器：`Config.Formats.Encoders` 是媒体类型到编码器的映射，内置 `application/json`、`application/xml` 始终可用，同名键覆盖实现、新键即新增格式；同一媒体写成两种形式（大小写或参数不同）视为重复，编码器为 nil 或媒体名为空同样 `New` panic。`Config.Formats.Order` 决定 `type/*` 被请求且值自身类型未被覆盖时的优先级：列出的媒体按给定顺序在前，其余按内置默认序（JSON、XML、媒体名字典序）追加；引用未注册或重复的媒体时 `New` panic。注意 `Order` 只影响通配命中：把非 JSON 格式排到前面后，其它裸值在 `Accept: application/*` 下会落到该格式的编码器（例如 `[]byte` 命中 XML 编码器后编码失败）。`New` 把声明展开成有序表供 `Formatted` 与 `Accept` 协商共用，`Content-Type` 取协商出的媒体类型。无法满足时 406，响应带 `Vary: Accept`。
 - handler error、bind error 都交给 `Config.ErrorHandler`，最终由 `writeError` 写响应（唯一错误出口）。
 - bind 错误：来源绑定与解码失败 400；`http.MaxBytesReader` 超限由 `Ctx.Body()` 映射 413；其它读取错误（连接中断等）500。
 - panic 走 `Config.RecoverHandler`。
