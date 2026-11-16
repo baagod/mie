@@ -27,7 +27,7 @@
 - 未导出字段、空 tag 一律跳过；非标量（指针/切片/数组取元素后仍非标量）是声明错误，注册时报 panic。
 - 多值来源：切片写全部、数组按序填充（超出丢弃、不足补零）、标量只取第一个。
 - 参数来源调用一次 `ParseForm`；它决定是否读 urlencoded body，框架不还原 `c.R.Body`。
-- body：非 GET/HEAD 且 `Content-Type` 有已注册解码器时，读 `c.Body()` 解码（默认只注册 `application/json`，应用可注册其它，后注册的覆盖先注册的）；`+json` 后缀（如 `application/vnd.api+json`）回退到 JSON 解码器；CT 缺失/畸形/未注册时不读、不报错。空 body 跳过；无内置上限，超限由 `Ctx.Body()` 映射 413；解码失败 400。
+- body：非 GET/HEAD 且 `Content-Type` 有已注册解码器时，读 `c.Body()` 解码（默认只注册 `application/json`，应用可注册其它，后注册的覆盖先注册的）；`+json`/`+xml` 这类结构化后缀（如 `application/vnd.api+json`）回退到同 top-level 的基类型解码器（`+json` 回退到 `application/json`，`+xml` 需应用自行注册 `application/xml`）；CT 缺失/畸形/未注册时不读、不报错。空 body 跳过；无内置上限，超限由 `Ctx.Body()` 映射 413；解码失败 400。
 - `struct{}` 不绑不读 body；`*T` 由框架分配，handler 通常拿到非 nil（body 为 `null` 例外）。
 - 绑定结果按值缓存：值类型 IN 的每层拿到独立副本，改字段不影响下游（切片/map 的底层数据仍共享，改元素可见）；`*T` 的各层指向同一对象，改对象内容下游可见。
 - 参数/头部只扫顶层字段，不展开匿名嵌入；body 的嵌入按解码器规则处理。
@@ -36,8 +36,8 @@
 
 - error 非 nil 时忽略 OUT；OUT 为 nil 不写 body（中间件 `return nil, nil` 即放行），状态取 `c.Status`，未设置则 200。
 - 输出：`Formatted` 只声明格式（`Format() (media, value)`），框架必须用该格式的编码器编码，缺了报错（`JSON(v)`/`XML(v)` 是忽略 `Accept` 的捷径）。
-- 裸值：处理器事先设了 `Content-Type` 时以它为准、不协商；否则按 `Accept` 选格式，缺失或 `*/*` 时用值自身的默认类型（string → `text/plain; charset=utf-8`，`[]byte` 嗅探结果，其余 JSON）。有编码器就编码，没有编码器时 string/`[]byte` 按原字节写、其余报错。
-- 编码器：`Config.Formats.Encoders` 是媒体类型到编码器的映射，内置 `application/json`、`application/xml` 始终可用，同名键覆盖实现、新键即新增格式；同一媒体写成两种形式（大小写或参数不同）视为重复，编码器为 nil 或媒体名为空同样 `New` panic。`Config.Formats.Order` 决定 `type/*` 被请求且值自身类型未被覆盖时的优先级：列出的媒体按给定顺序在前，其余按内置默认序（JSON、XML、媒体名字典序）追加；引用未注册或重复的媒体时 `New` panic。注意 `Order` 只影响通配命中：把非 JSON 格式排到前面后，其它裸值在 `Accept: application/*` 下会落到该格式的编码器（例如 `[]byte` 命中 XML 编码器后编码失败）。`New` 把声明展开成有序表供 `Formatted` 与 `Accept` 协商共用，`Content-Type` 取协商出的媒体类型。无法满足时 406，响应带 `Vary: Accept`。
+- 裸值：处理器事先设了 `Content-Type` 时以它为准、不协商；否则按 `Accept` 选格式。只有 string 与 `[]byte` 有天然类型（`text/plain`、嗅探结果），天然类型能覆盖请求时优先；其余裸值没有天然类型，按 `Config.Formats.Order` 选（未配时即 JSON）。`Accept` 里的 `+json`/`+xml` 后缀按同 top-level 的基类型匹配（`application/vnd.api+json` → `application/json`），响应仍写基类型而非 vendor 类型；但该 vendor 类型本身已注册编码器时精确命中它，不会被后缀规则让给基类型。有编码器就编码，没有编码器时 string/`[]byte` 按原字节写、其余报错。
+- 编码器：`Config.Formats.Encoders` 是媒体类型到编码器的映射，内置 `application/json`、`application/xml` 始终可用，同名键覆盖实现、新键即新增格式；同一媒体写成两种形式（大小写或参数不同）视为重复，编码器为 nil 或媒体名为空同样 `New` panic。`Config.Formats.Order` 决定通配请求（`type/*`、`*/*`、缺失 `Accept`）的优先级：列出的媒体按给定顺序在前，其余按内置默认序（JSON、XML、媒体名字典序）追加；引用未注册或重复的媒体时 `New` panic。注意 string/`[]byte` 的天然类型仍优先于 `Order`；其余裸值把非 JSON 格式排到前面后，`Accept: */*` 也会落到该格式（例如结构体命中 XML 编码器后可能编码失败）。`New` 把声明展开成有序表供 `Formatted` 与 `Accept` 协商共用，`Content-Type` 取协商出的媒体类型。无法满足时 406，响应带 `Vary: Accept`。
 - handler error、bind error 都交给 `Config.ErrorHandler`，最终由 `writeError` 写响应（唯一错误出口）。
 - bind 错误：来源绑定与解码失败 400；`http.MaxBytesReader` 超限由 `Ctx.Body()` 映射 413；其它读取错误（连接中断等）500。
 - panic 走 `Config.RecoverHandler`。

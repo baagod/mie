@@ -157,7 +157,8 @@ func (a *App) handlePanic(c *Ctx, p any) {
     c.finish(err)
 }
 
-// encoder 查归一化后的编码器表；媒体类型去掉参数并忽略大小写，application/json; charset=utf-8 与 Application/JSON 都算 JSON。
+// encoder 查归一化后的编码器表；媒体类型去掉参数并忽略大小写，application/json;
+// charset=utf-8 与 Application/JSON 都算 JSON。
 func (a *App) encoder(media string) (Encoder, bool) {
     enc, ok := a.config.Formats.Encoders[baseMedia(media)]
     return enc, ok

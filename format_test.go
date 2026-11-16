@@ -261,6 +261,111 @@ func TestSendNegotiatesStructByAccept(t *testing.T) {
     }
 }
 
+// 结构体没有天然类型：通配符按 Order 的优先级选，未配 Order 时仍是 JSON。
+func TestSendBareValueFollowsOrder(t *testing.T) {
+    type user struct{ Name string }
+
+    ordered := New(Config{Formats: Formats{Order: []string{MIMEAppXML, MIMEAppJSON}}})
+    ordered.Get("/user", func(c *Ctx, _ struct{}) (user, error) { return user{Name: "alice"}, nil })
+
+    plain := New()
+    plain.Get("/user", func(c *Ctx, _ struct{}) (user, error) { return user{Name: "alice"}, nil })
+
+    cases := []struct {
+        name   string
+        app    *App
+        accept string
+        wantCT string
+    }{
+        {"ordered missing", ordered, "", MIMEAppXML},
+        {"ordered any", ordered, MIMEAny, MIMEAppXML},
+        {"ordered application wildcard", ordered, "application/*", MIMEAppXML},
+        {"ordered exact json", ordered, MIMEAppJSON, MIMEAppJSON},
+        {"plain missing", plain, "", MIMEAppJSON},
+        {"plain any", plain, MIMEAny, MIMEAppJSON},
+        {"plain application wildcard", plain, "application/*", MIMEAppJSON},
+    }
+
+    for _, tc := range cases {
+        t.Run(tc.name, func(t *testing.T) {
+            req := httptest.NewRequest(http.MethodGet, "/user", nil)
+            if tc.accept != "" {
+                req.Header.Set("Accept", tc.accept)
+            }
+            rec := httptest.NewRecorder()
+            tc.app.ServeHTTP(rec, req)
+
+            if rec.Code != http.StatusOK {
+                t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+            }
+            if got := rec.Header().Get(HeaderContentType); got != tc.wantCT {
+                t.Fatalf("Content-Type = %q, want %q", got, tc.wantCT)
+            }
+        })
+    }
+}
+
+// +json/+xml 后缀按同 top-level 的基类型满足，响应仍写基类型；不同 top-level 不匹配。
+func TestSendStructuredSuffixAccept(t *testing.T) {
+    type user struct{ Name string }
+
+    r := New()
+    r.Get("/user", func(c *Ctx, _ struct{}) (user, error) { return user{Name: "alice"}, nil })
+
+    cases := []struct {
+        accept string
+        want   int
+        wantCT string
+    }{
+        {"application/vnd.api+json", http.StatusOK, MIMEAppJSON},
+        {"application/problem+json", http.StatusOK, MIMEAppJSON},
+        {"application/atom+xml", http.StatusOK, MIMEAppXML},
+        {"image/svg+xml", http.StatusNotAcceptable, MIMETextPlainUTF8},
+        {"application/x-ndjson", http.StatusNotAcceptable, MIMETextPlainUTF8},
+    }
+
+    for _, tc := range cases {
+        t.Run(tc.accept, func(t *testing.T) {
+            req := httptest.NewRequest(http.MethodGet, "/user", nil)
+            req.Header.Set("Accept", tc.accept)
+            rec := httptest.NewRecorder()
+            r.ServeHTTP(rec, req)
+
+            if rec.Code != tc.want {
+                t.Fatalf("status = %d, want %d", rec.Code, tc.want)
+            }
+            if got := rec.Header().Get(HeaderContentType); got != tc.wantCT {
+                t.Fatalf("Content-Type = %q, want %q", got, tc.wantCT)
+            }
+        })
+    }
+}
+
+// 注册了具体媒体类型时，Accept 精确命中它，不被结构化后缀规则让给基类型。
+func TestSendRegisteredVendorFormatWins(t *testing.T) {
+    type user struct{ Name string }
+
+    r := New(Config{Formats: Formats{Encoders: Encoders{
+        "application/vnd.api+json": func(any) ([]byte, error) { return []byte(`{"vnd":1}`), nil },
+    }}})
+    r.Get("/user", func(c *Ctx, _ struct{}) (user, error) { return user{Name: "alice"}, nil })
+
+    req := httptest.NewRequest(http.MethodGet, "/user", nil)
+    req.Header.Set(HeaderAccept, "application/vnd.api+json")
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, req)
+
+    if rec.Code != http.StatusOK {
+        t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+    }
+    if got := rec.Header().Get(HeaderContentType); got != "application/vnd.api+json" {
+        t.Fatalf("Content-Type = %q, want application/vnd.api+json", got)
+    }
+    if got := rec.Body.String(); got != `{"vnd":1}` {
+        t.Fatalf("body = %q, want %q", got, `{"vnd":1}`)
+    }
+}
+
 // 值只能产出自己的类型：accept 只能接受或拒绝，不能把它改标成别的类型。
 func TestSendBytesFeedAccept(t *testing.T) {
     png := []byte("\x89PNG\r\n\x1a\nraw-bytes")

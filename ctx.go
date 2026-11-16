@@ -11,7 +11,6 @@ import (
     "net"
     "net/http"
     "reflect"
-    "strings"
     "time"
 
     "github.com/baagod/mie/bind"
@@ -158,7 +157,7 @@ func (c *Ctx) StatusCode() int {
 }
 
 // Send 输出 v：Formatted 显式声明格式，必须有对应编码器；处理器事先设了 Content-Type 时以它为准；
-// 裸值交给已注册的编码器（内置 JSON），没有编码器时 string/[]byte 按原字节写出。
+// 裸值按 Accept 从已注册格式里选（默认 JSON，可用 Formats.Order 改），没有编码器时 string/[]byte 按原字节写出。
 // 无法满足时 406；提交由请求收尾负责，返回的错误交给 ErrorHandler。
 func (c *Ctx) Send(v any) error {
     if v == nil {
@@ -246,7 +245,7 @@ func (c *Ctx) BindBody[IN any](in *IN) (err error) {
 
     ct, _, _ := mime.ParseMediaType(c.ContentType())
     dec, ok := bind.Lookup(ct)
-    if !ok && strings.HasSuffix(ct, "+json") { // vendor JSON（application/vnd.api+json 等）用 JSON 解码
+    if !ok && covers(ct, bind.MIMEAppJSON) { // vendor JSON（application/vnd.api+json 等）用 JSON 解码
         dec, ok = bind.Lookup(bind.MIMEAppJSON)
     }
 
