@@ -1,7 +1,5 @@
 package mie
 
-import "github.com/baagod/mie/bind"
-
 // 协议头名。
 const (
     HeaderVary                = "Vary"
@@ -15,10 +13,10 @@ const (
 const (
     MIMEAny                = "*/*"
     MIMEAppAny             = "application/*"
-    MIMEAppXML             = "application/xml"
-    MIMEAppJSON            = bind.MIMEAppJSON
-    MIMEAppTOML            = "application/toml"
-    MIMEAppYAML            = "application/yaml"
+    MIMEXML                = "application/xml"
+    MIMEJSON               = "application/json"
+    MIMETOML               = "application/toml"
+    MIMEYAML               = "application/yaml"
     MIMETextCSS            = "text/css"
     MIMETextCSV            = "text/csv"
     MIMEImagePNG           = "image/png"
@@ -27,14 +25,16 @@ const (
     MIMEImageJPEG          = "image/jpeg"
     MIMEImageWebP          = "image/webp"
     MIMETextPlain          = "text/plain"
-    MIMEAppMsgPack         = "application/msgpack"
-    MIMEAppProtobuf        = "application/x-protobuf"
+    MIMEMsgPack            = "application/msgpack"
+    MIMEProtobuf           = "application/x-protobuf"
+    MIMECBOR               = "application/cbor"
+    MIMEBSON               = "application/bson"
     MIMETextHTMLUTF8       = MIMETextHTML + "; charset=utf-8"
     MIMEMultipartForm      = "multipart/form-data"
     MIMETextPlainUTF8      = MIMETextPlain + "; charset=utf-8"
-    MIMEAppOctetStream     = "application/octet-stream"
+    MIMEOctetStream        = "application/octet-stream"
     MIMETextJavaScript     = "text/javascript"
     MIMETextEventStream    = "text/event-stream"
-    MIMEAppFormUrlencoded  = bind.MIMEAppFormUrlencoded
+    MIMEFormUrlencoded     = "application/x-www-form-urlencoded"
     MIMEContentTypeNosniff = "nosniff"
 )

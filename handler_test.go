@@ -8,8 +8,6 @@ import (
     "strings"
     "sync"
     "testing"
-
-    "github.com/baagod/mie/bind"
 )
 
 type bindSources struct {
@@ -76,7 +74,7 @@ func TestBindBodyOnlyExplicitJSONFields(t *testing.T) {
 
     // 只有 CT 明确是 JSON 才解 body；键名精确匹配：Extra 写字段，extra/unknown 忽略。
     req := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"alice","Extra":"hack","extra":"low","unknown":1}`))
-    req.Header.Set(HeaderContentType, MIMEAppJSON)
+    req.Header.Set(HeaderContentType, MIMEJSON)
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, req)
 
@@ -87,15 +85,15 @@ func TestBindBodyOnlyExplicitJSONFields(t *testing.T) {
         t.Fatalf("bound = %+v, want Name=alice、Extra=hack", got)
     }
 
-    // CT 不是 JSON：不读 body，字段保持零值。
+    // CT 没有解码器：返回 415，不读 body，字段保持零值。
     got = bodyIn{}
     req = httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"alice"}`))
     req.Header.Set(HeaderContentType, "text/plain")
     rec = httptest.NewRecorder()
     r.ServeHTTP(rec, req)
 
-    if rec.Code != http.StatusOK || got != (bodyIn{}) {
-        t.Fatalf("text/plain: status=%d in=%+v, want 200 且零值", rec.Code, got)
+    if rec.Code != http.StatusUnsupportedMediaType || got != (bodyIn{}) {
+        t.Fatalf("text/plain: status=%d in=%+v, want 415 且零值", rec.Code, got)
     }
 }
 
@@ -108,7 +106,7 @@ func TestBindBodyKeyIsCaseSensitive(t *testing.T) {
     })
 
     req := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"Name":"alice"}`))
-    req.Header.Set(HeaderContentType, MIMEAppJSON)
+    req.Header.Set(HeaderContentType, MIMEJSON)
     r.ServeHTTP(httptest.NewRecorder(), req)
 
     if got.Name != "" {
@@ -118,7 +116,7 @@ func TestBindBodyKeyIsCaseSensitive(t *testing.T) {
 
 func TestBindJSONContentTypeWithParams(t *testing.T) {
     for _, ct := range []string{
-        MIMEAppJSON + "; charset=utf-8",
+        MIMEJSON + "; charset=utf-8",
         "Application/JSON",
     } {
         t.Run(ct, func(t *testing.T) {
@@ -154,7 +152,7 @@ func TestBindBodyOverridesLocationTag(t *testing.T) {
         })
 
         req := httptest.NewRequest(http.MethodPost, "/items/7", strings.NewReader(`{"id":999}`))
-        req.Header.Set(HeaderContentType, MIMEAppJSON)
+        req.Header.Set(HeaderContentType, MIMEJSON)
         r.ServeHTTP(httptest.NewRecorder(), req)
 
         if got.ID != 999 {
@@ -171,7 +169,7 @@ func TestBindBodyOverridesLocationTag(t *testing.T) {
         })
 
         req := httptest.NewRequest(http.MethodPost, "/items/7", strings.NewReader(`{}`))
-        req.Header.Set(HeaderContentType, MIMEAppJSON)
+        req.Header.Set(HeaderContentType, MIMEJSON)
         r.ServeHTTP(httptest.NewRecorder(), req)
 
         if got.ID != 7 {
@@ -193,7 +191,7 @@ func TestBindPointerIN(t *testing.T) {
     })
 
     req := httptest.NewRequest(http.MethodPost, "/ptr", strings.NewReader(`{"name":"bob"}`))
-    req.Header.Set(HeaderContentType, MIMEAppJSON)
+    req.Header.Set(HeaderContentType, MIMEJSON)
     r.ServeHTTP(httptest.NewRecorder(), req)
 
     if got == nil || got.Name != "bob" {
@@ -214,7 +212,7 @@ func TestBindPointerINWithEmptyBodyIsAllocated(t *testing.T) {
     })
 
     req := httptest.NewRequest(http.MethodPost, "/ptr", nil)
-    req.Header.Set(HeaderContentType, MIMEAppJSON)
+    req.Header.Set(HeaderContentType, MIMEJSON)
     r.ServeHTTP(httptest.NewRecorder(), req)
 
     if got == nil {
@@ -237,14 +235,14 @@ func TestBindNonStructIN(t *testing.T) {
 
     rec := httptest.NewRecorder()
     req := httptest.NewRequest(http.MethodPost, "/sum", strings.NewReader(`[1,2,3]`))
-    req.Header.Set(HeaderContentType, MIMEAppJSON)
+    req.Header.Set(HeaderContentType, MIMEJSON)
     r.ServeHTTP(rec, req)
 
     if rec.Code != http.StatusOK || rec.Body.String() != "6" {
         t.Fatalf("status=%d body=%q, want 200 6", rec.Code, rec.Body.String())
     }
-    if got := rec.Header().Get(HeaderContentType); got != MIMEAppJSON {
-        t.Fatalf("Content-Type = %q, want %q", got, MIMEAppJSON)
+    if got := rec.Header().Get(HeaderContentType); got != MIMEJSON {
+        t.Fatalf("Content-Type = %q, want %q", got, MIMEJSON)
     }
 }
 
@@ -259,8 +257,8 @@ func TestBindNonStructINRequiresJSONContentType(t *testing.T) {
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, req)
 
-    if rec.Code != http.StatusOK || rec.Body.String() != "" {
-        t.Fatalf("status=%d body=%q, want 200 空字符串（CT 不是 JSON 不解析）", rec.Code, rec.Body.String())
+    if rec.Code != http.StatusUnsupportedMediaType {
+        t.Fatalf("status=%d, want 415（CT 不是 JSON 不解析）", rec.Code)
     }
 }
 
@@ -276,7 +274,7 @@ func TestBindPointerNonStructIN(t *testing.T) {
 
     rec := httptest.NewRecorder()
     req := httptest.NewRequest(http.MethodPost, "/sum", strings.NewReader(`[1,2,3]`))
-    req.Header.Set(HeaderContentType, MIMEAppJSON)
+    req.Header.Set(HeaderContentType, MIMEJSON)
     r.ServeHTTP(rec, req)
 
     if rec.Code != http.StatusOK || rec.Body.String() != "6" {
@@ -293,7 +291,7 @@ func TestBindEmptyBodyKeepsZero(t *testing.T) {
     })
 
     req := httptest.NewRequest(http.MethodPost, "/empty", nil)
-    req.Header.Set(HeaderContentType, MIMEAppJSON)
+    req.Header.Set(HeaderContentType, MIMEJSON)
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, req)
 
@@ -311,7 +309,7 @@ func TestEmptyStructInputSkipsBody(t *testing.T) {
     })
 
     req := httptest.NewRequest(http.MethodPost, "/noin", strings.NewReader("not json"))
-    req.Header.Set(HeaderContentType, MIMEAppJSON)
+    req.Header.Set(HeaderContentType, MIMEJSON)
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, req)
 
@@ -330,7 +328,7 @@ func TestBindBodyNonObjectAndNull(t *testing.T) {
 
     // 数组不是对象：解进 map 失败，仍然是 400。
     req := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`[1,2]`))
-    req.Header.Set(HeaderContentType, MIMEAppJSON)
+    req.Header.Set(HeaderContentType, MIMEJSON)
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, req)
     if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "bind body") {
@@ -340,7 +338,7 @@ func TestBindBodyNonObjectAndNull(t *testing.T) {
     // null 等同空 body：handler 拿到零值 IN。
     got = bodyIn{}
     req = httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`null`))
-    req.Header.Set(HeaderContentType, MIMEAppJSON)
+    req.Header.Set(HeaderContentType, MIMEJSON)
     rec = httptest.NewRecorder()
     r.ServeHTTP(rec, req)
     if rec.Code != http.StatusOK || got != (bodyIn{}) {
@@ -363,7 +361,7 @@ func TestBindNestedStructBody(t *testing.T) {
     })
 
     req := httptest.NewRequest(http.MethodPost, "/nested", strings.NewReader(`{"profile":{"name":"alice"},"tags":["a","b"]}`))
-    req.Header.Set(HeaderContentType, MIMEAppJSON)
+    req.Header.Set(HeaderContentType, MIMEJSON)
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, req)
 
@@ -383,7 +381,7 @@ func TestBindBodyTooLargeByMiddleware(t *testing.T) {
     })
 
     req := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"0123456789"}`))
-    req.Header.Set(HeaderContentType, MIMEAppJSON)
+    req.Header.Set(HeaderContentType, MIMEJSON)
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, req)
 
@@ -403,7 +401,7 @@ func TestBindBodyReadErrorIs500(t *testing.T) {
     })
 
     req := httptest.NewRequest(http.MethodPost, "/users", bodyErrorReader{})
-    req.Header.Set(HeaderContentType, MIMEAppJSON)
+    req.Header.Set(HeaderContentType, MIMEJSON)
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, req)
 
@@ -467,7 +465,7 @@ func TestBindFormPOSTUsesBody(t *testing.T) {
     })
 
     req := httptest.NewRequest(http.MethodPost, "/form?q=url", strings.NewReader("name=alice&page=3"))
-    req.Header.Set(HeaderContentType, MIMEAppFormUrlencoded)
+    req.Header.Set(HeaderContentType, MIMEFormUrlencoded)
     r.ServeHTTP(httptest.NewRecorder(), req)
 
     if got.Name != "alice" || got.Page != 3 || got.Q != "url" {
@@ -484,7 +482,7 @@ func TestBindFormBodyWinsOverQuery(t *testing.T) {
     })
 
     req := httptest.NewRequest(http.MethodPost, "/form?name=query", strings.NewReader("name=body"))
-    req.Header.Set(HeaderContentType, MIMEAppFormUrlencoded)
+    req.Header.Set(HeaderContentType, MIMEFormUrlencoded)
     r.ServeHTTP(httptest.NewRecorder(), req)
 
     if got.Name != "body" {
@@ -501,7 +499,7 @@ func TestBindFormQueryFallback(t *testing.T) {
     })
 
     req := httptest.NewRequest(http.MethodPost, "/form?name=alice", strings.NewReader("page=3"))
-    req.Header.Set(HeaderContentType, MIMEAppFormUrlencoded+"; charset=utf-8")
+    req.Header.Set(HeaderContentType, MIMEFormUrlencoded+"; charset=utf-8")
     r.ServeHTTP(httptest.NewRecorder(), req)
 
     if got.Name != "alice" || got.Page != 3 {
@@ -520,7 +518,7 @@ func TestBindFormContentTypeMismatchIsIgnored(t *testing.T) {
     })
 
     req := httptest.NewRequest(http.MethodPost, "/form", strings.NewReader(`{"name":"json"}`))
-    req.Header.Set(HeaderContentType, MIMEAppJSON)
+    req.Header.Set(HeaderContentType, MIMEJSON)
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, req)
 
@@ -597,9 +595,9 @@ func TestOUTRules(t *testing.T) {
         body   string
         ctype  string
     }{
-        {"/zero", http.StatusOK, "0", MIMEAppJSON},
-        {"/nil", http.StatusOK, "null", MIMEAppJSON},
-        {"/none", http.StatusOK, "{}", MIMEAppJSON},
+        {"/zero", http.StatusOK, "0", MIMEJSON},
+        {"/nil", http.StatusOK, "null", MIMEJSON},
+        {"/none", http.StatusOK, "{}", MIMEJSON},
         {"/bad", http.StatusInternalServerError, "", MIMETextPlainUTF8},
     }
 
@@ -724,7 +722,7 @@ func TestBindSourceOrder(t *testing.T) {
         r.Post("/q", func(c *Ctx, v in) (string, error) { return v.Name, nil })
 
         req := httptest.NewRequest(http.MethodPost, "/q?name=query", strings.NewReader("name=form"))
-        req.Header.Set("Content-Type", MIMEAppFormUrlencoded)
+        req.Header.Set("Content-Type", MIMEFormUrlencoded)
         rec := httptest.NewRecorder()
         r.ServeHTTP(rec, req)
 
@@ -741,7 +739,7 @@ func TestBindSourceOrder(t *testing.T) {
         r.Post("/q", func(c *Ctx, v in) (string, error) { return v.Name, nil })
 
         req := httptest.NewRequest(http.MethodPost, "/q?name=query", strings.NewReader("x=1"))
-        req.Header.Set("Content-Type", MIMEAppFormUrlencoded)
+        req.Header.Set("Content-Type", MIMEFormUrlencoded)
         rec := httptest.NewRecorder()
         r.ServeHTTP(rec, req)
 
@@ -758,7 +756,7 @@ func TestBindSourceOrder(t *testing.T) {
         r.Post("/f", func(c *Ctx, v in) (string, error) { return v.Name, nil })
 
         req := httptest.NewRequest(http.MethodPost, "/f?name=query", strings.NewReader(`{"name":"json"}`))
-        req.Header.Set(HeaderContentType, MIMEAppJSON)
+        req.Header.Set(HeaderContentType, MIMEJSON)
         rec := httptest.NewRecorder()
         r.ServeHTTP(rec, req)
 
@@ -784,7 +782,7 @@ func TestBindSkipsUnexportedAndEmptyTags(t *testing.T) {
     })
 
     req := httptest.NewRequest(http.MethodPost, "/items/7?Empty=9", strings.NewReader(`{"name":"alice"}`))
-    req.Header.Set(HeaderContentType, MIMEAppJSON)
+    req.Header.Set(HeaderContentType, MIMEJSON)
     r.ServeHTTP(httptest.NewRecorder(), req)
 
     if got.ID != 7 || got.id != 0 || got.Empty != 0 || got.Name != "alice" {
@@ -940,12 +938,11 @@ func TestBindBodyByContentType(t *testing.T) {
         ct     string
         want   string
     }{
-        {http.MethodPost, MIMEAppJSON, "alice"},
-        {http.MethodPut, MIMEAppJSON, "alice"},
-        {http.MethodPatch, MIMEAppJSON, "alice"},
-        {http.MethodGet, MIMEAppJSON, ""}, // GET 没有 body 可绑
+        {http.MethodPost, MIMEJSON, "alice"},
+        {http.MethodPut, MIMEJSON, "alice"},
+        {http.MethodPatch, MIMEJSON, "alice"},
+        {http.MethodGet, MIMEJSON, ""}, // GET 没有 body 可绑
         {http.MethodPost, "application/vnd.api+json", "alice"},
-        {http.MethodPost, MIMETextPlainUTF8, ""}, // 未注册的 CT 不读 body
     }
     for _, tc := range cases {
         rec := httptest.NewRecorder()
@@ -958,6 +955,102 @@ func TestBindBodyByContentType(t *testing.T) {
     }
 }
 
+// 有 body 但该 Content-Type 没有解码器时报 415，而不是静默丢弃。
+func TestBindBodyUnregisteredContentTypeIsUnsupported(t *testing.T) {
+    type in struct {
+        Name string `json:"name"`
+    }
+
+    r := New()
+    r.Post("/p", func(c *Ctx, v in) (string, error) { return v.Name, nil })
+
+    req := httptest.NewRequest(http.MethodPost, "/p", strings.NewReader("alice"))
+    req.Header.Set(HeaderContentType, MIMETextPlainUTF8)
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, req)
+
+    if rec.Code != http.StatusUnsupportedMediaType {
+        t.Fatalf("status = %d, want 415", rec.Code)
+    }
+}
+
+// XML 也内置解码：application/xml 的 body 默认按 XML 解析。
+func TestBindBodyDecodesXMLByDefault(t *testing.T) {
+    type in struct {
+        Name string
+    }
+
+    r := New()
+    r.Post("/p", func(c *Ctx, v in) (string, error) { return v.Name, nil })
+
+    req := httptest.NewRequest(http.MethodPost, "/p", strings.NewReader("<in><Name>alice</Name></in>"))
+    req.Header.Set(HeaderContentType, MIMEXML)
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, req)
+
+    if rec.Code != http.StatusOK || rec.Body.String() != "alice" {
+        t.Fatalf("status/body = %d/%q, want 200/alice", rec.Code, rec.Body.String())
+    }
+}
+
+// multipart 归 Bind，BindBody 直接跳过：不读 body，也不报 415。
+func TestBindBodySkipsMultipart(t *testing.T) {
+    type in struct {
+        Name string
+    }
+
+    r := New()
+    r.Post("/p", func(c *Ctx, v in) (string, error) { return v.Name, nil })
+
+    req := httptest.NewRequest(http.MethodPost, "/p", strings.NewReader("--x--"))
+    req.Header.Set(HeaderContentType, MIMEMultipartForm+"; boundary=x")
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, req)
+
+    if rec.Code != http.StatusOK || rec.Body.String() != "" {
+        t.Fatalf("status/body = %d/%q, want 200/empty", rec.Code, rec.Body.String())
+    }
+}
+
+// 有 body 但 Content-Type 缺失：没有解码器，415。
+func TestBindBodyMissingContentTypeIsUnsupported(t *testing.T) {
+    type in struct {
+        Name string
+    }
+
+    r := New()
+    r.Post("/p", func(c *Ctx, v in) (string, error) { return v.Name, nil })
+
+    req := httptest.NewRequest(http.MethodPost, "/p", strings.NewReader(`{"name":"alice"}`))
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, req)
+
+    if rec.Code != http.StatusUnsupportedMediaType {
+        t.Fatalf("status = %d, want 415", rec.Code)
+    }
+}
+
+func TestBindBodyStructuredSuffixUsesBaseDecoder(t *testing.T) {
+    type in struct {
+        Name string
+    }
+
+    decode := func(b []byte, v any) error {
+        v.(*in).Name = strings.TrimSpace(string(b))
+        return nil
+    }
+    r := New(Config{Codecs: Codecs{XML: Codec{Decode: decode}}})
+    r.Post("/s", func(c *Ctx, v in) (string, error) { return v.Name, nil })
+
+    rec := httptest.NewRecorder()
+    req := httptest.NewRequest(http.MethodPost, "/s", strings.NewReader("alice"))
+    req.Header.Set(HeaderContentType, "application/atom+xml")
+    r.ServeHTTP(rec, req)
+    if rec.Code != http.StatusOK || rec.Body.String() != "alice" {
+        t.Fatalf("status/body = %d/%q, want 200/alice", rec.Code, rec.Body.String())
+    }
+}
+
 func TestBindParseFormError(t *testing.T) {
     type in struct {
         Page int `query:"page"`
@@ -967,7 +1060,7 @@ func TestBindParseFormError(t *testing.T) {
     r.Post("/f", func(c *Ctx, v in) (int, error) { return v.Page, nil })
 
     req := httptest.NewRequest(http.MethodPost, "/f", strings.NewReader("a=%zz"))
-    req.Header.Set(HeaderContentType, MIMEAppFormUrlencoded)
+    req.Header.Set(HeaderContentType, MIMEFormUrlencoded)
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, req)
     if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "bind params:") {
@@ -1070,7 +1163,7 @@ func TestBindSliceBody(t *testing.T) {
     r.Post("/b", func(c *Ctx, v in) ([]string, error) { return v.Tags, nil })
 
     req := httptest.NewRequest(http.MethodPost, "/b", strings.NewReader(`{"tags":["a","b"]}`))
-    req.Header.Set(HeaderContentType, MIMEAppJSON)
+    req.Header.Set(HeaderContentType, MIMEJSON)
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, req)
     if rec.Code != http.StatusOK || rec.Body.String() != `["a","b"]` {
@@ -1093,28 +1186,21 @@ func TestBindSliceConversionError(t *testing.T) {
     }
 }
 
-type prefixDecoder struct{}
-
-func (prefixDecoder) Decode(b []byte, in any) error {
-    p, ok := in.(*string)
-    if !ok {
-        return errors.New("prefixDecoder: want *string")
-    }
-    *p = "decoded:" + string(b)
-    return nil
-}
-
-var registerTestDecoder sync.Once
-
-func TestBindBodyUsesRegisteredDecoder(t *testing.T) {
-    const ct = "application/x-mie-test"
-    registerTestDecoder.Do(func() { bind.Register(ct, prefixDecoder{}) })
-
-    r := New()
+func TestBindBodyUsesConfiguredDecoder(t *testing.T) {
+    r := New(Config{Codecs: Codecs{MsgPack: Codec{
+        Decode: func(b []byte, in any) error {
+            p, ok := in.(*string)
+            if !ok {
+                return errors.New("decoder: want *string")
+            }
+            *p = "decoded:" + string(b)
+            return nil
+        },
+    }}})
     r.Post("/decode", func(c *Ctx, in string) (string, error) { return in, nil })
 
     req := httptest.NewRequest(http.MethodPost, "/decode", strings.NewReader("raw"))
-    req.Header.Set(HeaderContentType, ct)
+    req.Header.Set(HeaderContentType, MIMEMsgPack)
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, req)
 

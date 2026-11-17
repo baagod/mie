@@ -6,6 +6,7 @@ import (
     "errors"
     "net/http"
     "net/http/httptest"
+    "reflect"
     "slices"
     "strings"
     "testing"
@@ -23,8 +24,8 @@ func TestSendJSON(t *testing.T) {
     if rec.Code != http.StatusOK {
         t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
     }
-    if got := rec.Header().Get(HeaderContentType); got != MIMEAppJSON {
-        t.Fatalf("Content-Type = %q, want %q", got, MIMEAppJSON)
+    if got := rec.Header().Get(HeaderContentType); got != MIMEJSON {
+        t.Fatalf("Content-Type = %q, want %q", got, MIMEJSON)
     }
     if got := rec.Body.String(); got != `{"name":"alice"}` {
         t.Fatalf("body = %q", got)
@@ -79,7 +80,7 @@ type xmlUser struct{ Name string }
 func TestSendFormattedDeclaresFormat(t *testing.T) {
     r := New()
     r.Get("/user", func(c *Ctx, _ struct{}) (Formatted, error) {
-        return customFormatted{media: MIMEAppXML, value: xmlUser{Name: "bob"}}, nil
+        return customFormatted{media: MIMEXML, value: xmlUser{Name: "bob"}}, nil
     })
 
     req := httptest.NewRequest(http.MethodGet, "/user", nil)
@@ -90,8 +91,8 @@ func TestSendFormattedDeclaresFormat(t *testing.T) {
     if rec.Code != http.StatusOK {
         t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
     }
-    if got := rec.Header().Get(HeaderContentType); got != MIMEAppXML {
-        t.Fatalf("Content-Type = %q, want %q", got, MIMEAppXML)
+    if got := rec.Header().Get(HeaderContentType); got != MIMEXML {
+        t.Fatalf("Content-Type = %q, want %q", got, MIMEXML)
     }
     if got := rec.Header().Get(HeaderVary); got != "" {
         t.Fatalf("Vary = %q, want empty", got)
@@ -226,15 +227,15 @@ func TestSendNegotiatesStructByAccept(t *testing.T) {
         want   int
         wantCT string
     }{
-        {"missing", "", http.StatusOK, MIMEAppJSON},
-        {"any", "*/*", http.StatusOK, MIMEAppJSON},
-        {"json", "application/json", http.StatusOK, MIMEAppJSON},
-        {"json uppercase", "Application/JSON", http.StatusOK, MIMEAppJSON},
-        {"json with q", "application/json;q=0.8", http.StatusOK, MIMEAppJSON},
-        {"json after miss with q", "text/html, application/json;q=0.9", http.StatusOK, MIMEAppJSON},
-        {"xml", MIMEAppXML, http.StatusOK, MIMEAppXML},
-        {"mixed", "text/html, */*", http.StatusOK, MIMEAppJSON},
-        {"application wildcard", "application/*", http.StatusOK, MIMEAppJSON},
+        {"missing", "", http.StatusOK, MIMEJSON},
+        {"any", "*/*", http.StatusOK, MIMEJSON},
+        {"json", "application/json", http.StatusOK, MIMEJSON},
+        {"json uppercase", "Application/JSON", http.StatusOK, MIMEJSON},
+        {"json with q", "application/json;q=0.8", http.StatusOK, MIMEJSON},
+        {"json after miss with q", "text/html, application/json;q=0.9", http.StatusOK, MIMEJSON},
+        {"xml", MIMEXML, http.StatusOK, MIMEXML},
+        {"mixed", "text/html, */*", http.StatusOK, MIMEJSON},
+        {"application wildcard", "application/*", http.StatusOK, MIMEJSON},
         {"text wildcard", "text/*", http.StatusNotAcceptable, MIMETextPlainUTF8},
         {"html only", "text/html", http.StatusNotAcceptable, MIMETextPlainUTF8},
         {"other type", "text/csv", http.StatusNotAcceptable, MIMETextPlainUTF8},
@@ -265,7 +266,7 @@ func TestSendNegotiatesStructByAccept(t *testing.T) {
 func TestSendBareValueFollowsOrder(t *testing.T) {
     type user struct{ Name string }
 
-    ordered := New(Config{Formats: Formats{Order: []string{MIMEAppXML, MIMEAppJSON}}})
+    ordered := New(Config{Codecs: Codecs{Order: []Media{MediaXML, MediaJSON}}})
     ordered.Get("/user", func(c *Ctx, _ struct{}) (user, error) { return user{Name: "alice"}, nil })
 
     plain := New()
@@ -277,13 +278,13 @@ func TestSendBareValueFollowsOrder(t *testing.T) {
         accept string
         wantCT string
     }{
-        {"ordered missing", ordered, "", MIMEAppXML},
-        {"ordered any", ordered, MIMEAny, MIMEAppXML},
-        {"ordered application wildcard", ordered, "application/*", MIMEAppXML},
-        {"ordered exact json", ordered, MIMEAppJSON, MIMEAppJSON},
-        {"plain missing", plain, "", MIMEAppJSON},
-        {"plain any", plain, MIMEAny, MIMEAppJSON},
-        {"plain application wildcard", plain, "application/*", MIMEAppJSON},
+        {"ordered missing", ordered, "", MIMEXML},
+        {"ordered any", ordered, MIMEAny, MIMEXML},
+        {"ordered application wildcard", ordered, "application/*", MIMEXML},
+        {"ordered exact json", ordered, MIMEJSON, MIMEJSON},
+        {"plain missing", plain, "", MIMEJSON},
+        {"plain any", plain, MIMEAny, MIMEJSON},
+        {"plain application wildcard", plain, "application/*", MIMEJSON},
     }
 
     for _, tc := range cases {
@@ -317,9 +318,9 @@ func TestSendStructuredSuffixAccept(t *testing.T) {
         want   int
         wantCT string
     }{
-        {"application/vnd.api+json", http.StatusOK, MIMEAppJSON},
-        {"application/problem+json", http.StatusOK, MIMEAppJSON},
-        {"application/atom+xml", http.StatusOK, MIMEAppXML},
+        {"application/vnd.api+json", http.StatusOK, MIMEJSON},
+        {"application/problem+json", http.StatusOK, MIMEJSON},
+        {"application/atom+xml", http.StatusOK, MIMEXML},
         {"image/svg+xml", http.StatusNotAcceptable, MIMETextPlainUTF8},
         {"application/x-ndjson", http.StatusNotAcceptable, MIMETextPlainUTF8},
     }
@@ -341,31 +342,6 @@ func TestSendStructuredSuffixAccept(t *testing.T) {
     }
 }
 
-// 注册了具体媒体类型时，Accept 精确命中它，不被结构化后缀规则让给基类型。
-func TestSendRegisteredVendorFormatWins(t *testing.T) {
-    type user struct{ Name string }
-
-    r := New(Config{Formats: Formats{Encoders: Encoders{
-        "application/vnd.api+json": func(any) ([]byte, error) { return []byte(`{"vnd":1}`), nil },
-    }}})
-    r.Get("/user", func(c *Ctx, _ struct{}) (user, error) { return user{Name: "alice"}, nil })
-
-    req := httptest.NewRequest(http.MethodGet, "/user", nil)
-    req.Header.Set(HeaderAccept, "application/vnd.api+json")
-    rec := httptest.NewRecorder()
-    r.ServeHTTP(rec, req)
-
-    if rec.Code != http.StatusOK {
-        t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-    }
-    if got := rec.Header().Get(HeaderContentType); got != "application/vnd.api+json" {
-        t.Fatalf("Content-Type = %q, want application/vnd.api+json", got)
-    }
-    if got := rec.Body.String(); got != `{"vnd":1}` {
-        t.Fatalf("body = %q, want %q", got, `{"vnd":1}`)
-    }
-}
-
 // 值只能产出自己的类型：accept 只能接受或拒绝，不能把它改标成别的类型。
 func TestSendBytesFeedAccept(t *testing.T) {
     png := []byte("\x89PNG\r\n\x1a\nraw-bytes")
@@ -384,8 +360,8 @@ func TestSendBytesFeedAccept(t *testing.T) {
         wantCT   string
         wantBody string
     }{
-        {"json bytes", "/b", MIMEAppJSON, http.StatusOK, MIMEAppJSON, `"aGVsbG8="`},
-        {"json string", "/s", MIMEAppJSON, http.StatusOK, MIMEAppJSON, `"ok"`},
+        {"json bytes", "/b", MIMEJSON, http.StatusOK, MIMEJSON, `"aGVsbG8="`},
+        {"json string", "/s", MIMEJSON, http.StatusOK, MIMEJSON, `"ok"`},
         {"png exact", "/png", "image/png", http.StatusOK, "image/png", string(png)},
         {"png wildcard", "/png", "image/*", http.StatusOK, "image/png", string(png)},
         {"png mismatched", "/png", "image/webp", http.StatusNotAcceptable, MIMETextPlainUTF8, ""},
@@ -435,7 +411,7 @@ func TestSendKeepsExistingVary(t *testing.T) {
 func xmlEncoder(any) ([]byte, error) { return []byte("<user>bob</user>"), nil }
 
 func TestSendUsesConfiguredEncoder(t *testing.T) {
-    r := New(Config{Formats: Formats{Encoders: Encoders{MIMEAppXML: xmlEncoder}}})
+    r := New(Config{Codecs: Codecs{XML: Codec{Encode: xmlEncoder}}})
     r.Get("/user", func(c *Ctx, _ struct{}) (map[string]string, error) {
         return map[string]string{"name": "bob"}, nil
     })
@@ -446,9 +422,9 @@ func TestSendUsesConfiguredEncoder(t *testing.T) {
         wantCT   string
         wantBody string
     }{
-        {"exact", MIMEAppXML, MIMEAppXML, "<user>bob</user>"},
-        {"uppercase", "Application/XML", MIMEAppXML, "<user>bob</user>"},
-        {"wildcard keeps json", MIMEAny, MIMEAppJSON, `{"name":"bob"}`},
+        {"exact", MIMEXML, MIMEXML, "<user>bob</user>"},
+        {"uppercase", "Application/XML", MIMEXML, "<user>bob</user>"},
+        {"wildcard keeps json", MIMEAny, MIMEJSON, `{"name":"bob"}`},
     }
 
     for _, tc := range tests {
@@ -471,9 +447,9 @@ func TestSendUsesConfiguredEncoder(t *testing.T) {
     }
 }
 
-// 注册即新增格式：协商与编码都用这张表，框架不需要认识这个媒体类型。
-func TestSendRegisteredCustomFormat(t *testing.T) {
-    r := New(Config{Formats: Formats{Encoders: Encoders{MIMEAppMsgPack: func(any) ([]byte, error) {
+// 媒体填了编码器即提供该格式：协商与编码都用这张表。
+func TestSendConfiguredMedia(t *testing.T) {
+    r := New(Config{Codecs: Codecs{MsgPack: Codec{Encode: func(any) ([]byte, error) {
         return []byte("msgpack"), nil
     }}}})
     r.Get("/user", func(c *Ctx, _ struct{}) (map[string]string, error) {
@@ -481,28 +457,28 @@ func TestSendRegisteredCustomFormat(t *testing.T) {
     })
 
     req := httptest.NewRequest(http.MethodGet, "/user", nil)
-    req.Header.Set(HeaderAccept, MIMEAppMsgPack)
+    req.Header.Set(HeaderAccept, MIMEMsgPack)
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, req)
 
     if rec.Code != http.StatusOK {
         t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
     }
-    if got := rec.Header().Get(HeaderContentType); got != MIMEAppMsgPack {
-        t.Fatalf("Content-Type = %q, want %q", got, MIMEAppMsgPack)
+    if got := rec.Header().Get(HeaderContentType); got != MIMEMsgPack {
+        t.Fatalf("Content-Type = %q, want %q", got, MIMEMsgPack)
     }
     if got := rec.Body.String(); got != "msgpack" {
         t.Fatalf("body = %q, want msgpack", got)
     }
 }
 
-// Formatted 声明的媒体类型同样走注册表编码，与 Accept 无关。
-func TestSendFormattedUsesRegisteredCustomEncoder(t *testing.T) {
-    r := New(Config{Formats: Formats{Encoders: Encoders{MIMEAppMsgPack: func(any) ([]byte, error) {
+// Formatted 声明的媒体类型同样走该媒体的编码器，与 Accept 无关。
+func TestSendFormattedUsesConfiguredEncoder(t *testing.T) {
+    r := New(Config{Codecs: Codecs{MsgPack: Codec{Encode: func(any) ([]byte, error) {
         return []byte("msgpack"), nil
     }}}})
     r.Get("/user", func(c *Ctx, _ struct{}) (Formatted, error) {
-        return customFormatted{media: MIMEAppMsgPack, value: map[string]string{"name": "bob"}}, nil
+        return customFormatted{media: MIMEMsgPack, value: map[string]string{"name": "bob"}}, nil
     })
 
     rec := httptest.NewRecorder()
@@ -511,8 +487,8 @@ func TestSendFormattedUsesRegisteredCustomEncoder(t *testing.T) {
     if rec.Code != http.StatusOK {
         t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
     }
-    if got := rec.Header().Get(HeaderContentType); got != MIMEAppMsgPack {
-        t.Fatalf("Content-Type = %q, want %q", got, MIMEAppMsgPack)
+    if got := rec.Header().Get(HeaderContentType); got != MIMEMsgPack {
+        t.Fatalf("Content-Type = %q, want %q", got, MIMEMsgPack)
     }
     if got := rec.Body.String(); got != "msgpack" {
         t.Fatalf("body = %q, want msgpack", got)
@@ -520,12 +496,11 @@ func TestSendFormattedUsesRegisteredCustomEncoder(t *testing.T) {
 }
 
 // Order 决定通配符下谁先命中。
-func TestEncodersOrderControlsPriority(t *testing.T) {
-    first := func(any) ([]byte, error) { return []byte("first"), nil }
-    second := func(any) ([]byte, error) { return []byte("second"), nil }
-    r := New(Config{Formats: Formats{
-        Encoders: Encoders{"application/first": first, "application/second": second},
-        Order:    []string{"application/second", "application/first"},
+func TestCodecsOrderControlsPriority(t *testing.T) {
+    r := New(Config{Codecs: Codecs{
+        TOML:    Codec{Encode: func(any) ([]byte, error) { return []byte("toml"), nil }},
+        MsgPack: Codec{Encode: func(any) ([]byte, error) { return []byte("msgpack"), nil }},
+        Order:   []Media{MediaMsgPack, MediaTOML},
     }})
     png := []byte("\x89PNG\r\n\x1a\nraw-bytes")
     r.Get("/png", func(c *Ctx, _ struct{}) ([]byte, error) { return png, nil })
@@ -535,36 +510,38 @@ func TestEncodersOrderControlsPriority(t *testing.T) {
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, req)
 
-    if got := rec.Header().Get(HeaderContentType); got != "application/second" {
-        t.Fatalf("Content-Type = %q, want application/second", got)
+    if got := rec.Header().Get(HeaderContentType); got != MIMEMsgPack {
+        t.Fatalf("Content-Type = %q, want %q", got, MIMEMsgPack)
     }
-    if got := rec.Body.String(); got != "second" {
-        t.Fatalf("body = %q, want second", got)
+    if got := rec.Body.String(); got != "msgpack" {
+        t.Fatalf("body = %q, want msgpack", got)
     }
 }
 
-// resolve 的优先级：Order 里列出的在前，其余按内置默认序（JSON、XML、媒体名字典序）。
-func TestEncodersResolveOrder(t *testing.T) {
-    msgpack := Encoder(func(any) ([]byte, error) { return nil, nil })
+// resolve 的优先级：Order 里列出的在前，其余按声明序（JSON、XML、TOML、YAML、MsgPack、Protobuf、CBOR、BSON）。
+func TestCodecsResolveOrder(t *testing.T) {
+    enc := Encoder(func(any) ([]byte, error) { return nil, nil })
 
     tests := []struct {
         name string
-        enc  Encoders
-        ord  []string
+        cfg  Codecs
+        ord  []Media
         want []string
     }{
-        {"default", nil, nil, []string{MIMEAppJSON, MIMEAppXML}},
-        {"custom appended", Encoders{MIMEAppMsgPack: msgpack}, nil, []string{MIMEAppJSON, MIMEAppXML, MIMEAppMsgPack}},
-        {"override keeps position", Encoders{MIMEAppJSON: xmlEncoder}, nil, []string{MIMEAppJSON, MIMEAppXML}},
-        {"order pulls custom forward", Encoders{MIMEAppMsgPack: msgpack}, []string{MIMEAppMsgPack}, []string{MIMEAppMsgPack, MIMEAppJSON, MIMEAppXML}},
-        {"order reorders builtins", nil, []string{MIMEAppXML, MIMEAppJSON}, []string{MIMEAppXML, MIMEAppJSON}},
-        {"keys normalized", Encoders{"Application/MsgPack": msgpack}, nil, []string{MIMEAppJSON, MIMEAppXML, MIMEAppMsgPack}},
-        {"customs sorted", Encoders{"text/c": msgpack, "text/a": msgpack, "text/b": msgpack}, nil, []string{MIMEAppJSON, MIMEAppXML, "text/a", "text/b", "text/c"}},
+        {"default", Codecs{}, nil, []string{MIMEJSON, MIMEXML}},
+        {"media appended", Codecs{MsgPack: Codec{Encode: enc}}, nil, []string{MIMEJSON, MIMEXML, MIMEMsgPack}},
+        {"declaration order", Codecs{YAML: Codec{Encode: enc}, TOML: Codec{Encode: enc}}, nil, []string{MIMEJSON, MIMEXML, MIMETOML, MIMEYAML}},
+        {"order pulls media forward", Codecs{MsgPack: Codec{Encode: enc}}, []Media{MediaMsgPack}, []string{MIMEMsgPack, MIMEJSON, MIMEXML}},
+        {"order reorders builtins", Codecs{}, []Media{MediaXML, MediaJSON}, []string{MIMEXML, MIMEJSON}},
+        {"order skips unimplemented", Codecs{}, []Media{MediaMsgPack}, []string{MIMEJSON, MIMEXML}},
+        {"decode-only media not offered", Codecs{MsgPack: Codec{Decode: func([]byte, any) error { return nil }}}, nil, []string{MIMEJSON, MIMEXML}},
+        {"all media", Codecs{TOML: Codec{Encode: enc}, YAML: Codec{Encode: enc}, MsgPack: Codec{Encode: enc}, Protobuf: Codec{Encode: enc}, CBOR: Codec{Encode: enc}, BSON: Codec{Encode: enc}}, nil, []string{MIMEJSON, MIMEXML, MIMETOML, MIMEYAML, MIMEMsgPack, MIMEProtobuf, MIMECBOR, MIMEBSON}},
     }
 
     for _, tc := range tests {
         t.Run(tc.name, func(t *testing.T) {
-            f := Formats{Encoders: tc.enc, Order: tc.ord}
+            f := tc.cfg
+            f.Order = tc.ord
             f.resolve()
             if !slices.Equal(f.parsed, tc.want) {
                 t.Fatalf("media = %v, want %v", f.parsed, tc.want)
@@ -573,14 +550,14 @@ func TestEncodersResolveOrder(t *testing.T) {
     }
 }
 
-// Order 引用未注册或重复的媒体是配置错误，构造时就 panic。
-func TestEncodersOrderRejectsBadInput(t *testing.T) {
+// Order 引用未知媒体或重复媒体是配置错误，构造时就 panic。
+func TestCodecsOrderRejectsBadInput(t *testing.T) {
     for _, tc := range []struct {
         name string
         cfg  Config
     }{
-        {"unknown media", Config{Formats: Formats{Order: []string{"application/x-unknown"}}}},
-        {"duplicate media", Config{Formats: Formats{Order: []string{MIMEAppJSON, "Application/JSON"}}}},
+        {"unknown media", Config{Codecs: Codecs{Order: []Media{"application/x-unknown"}}}},
+        {"duplicate media", Config{Codecs: Codecs{Order: []Media{MediaJSON, MediaJSON}}}},
     } {
         t.Run(tc.name, func(t *testing.T) {
             defer func() {
@@ -593,38 +570,8 @@ func TestEncodersOrderRejectsBadInput(t *testing.T) {
     }
 }
 
-// 同一个媒体写成两种形式（大小写不同）等于给同一格式两个实现，构造时就 panic。
-func TestEncodersRejectsDuplicateMedia(t *testing.T) {
-    defer func() {
-        if recover() == nil {
-            t.Fatal("New did not panic")
-        }
-    }()
-    New(Config{Formats: Formats{Encoders: Encoders{
-        "Application/JSON": jsonEncode,
-        MIMEAppJSON:        xmlEncoder,
-    }}})
-}
-
-// 编码器为 nil 或媒体名为空都是配置错误，构造时就 panic，避免「配了却永远 406」。
-func TestEncodersRejectsBadEntries(t *testing.T) {
-    for name, enc := range map[string]Encoders{
-        "nil encoder": {MIMEAppMsgPack: nil},
-        "empty media": {"  ": jsonEncode},
-    } {
-        t.Run(name, func(t *testing.T) {
-            defer func() {
-                if recover() == nil {
-                    t.Fatalf("New(%v) did not panic", enc)
-                }
-            }()
-            New(Config{Formats: Formats{Encoders: enc}})
-        })
-    }
-}
-
 func TestSendEncoderOverridesBuiltinJSON(t *testing.T) {
-    r := New(Config{Formats: Formats{Encoders: Encoders{MIMEAppJSON: func(any) ([]byte, error) {
+    r := New(Config{Codecs: Codecs{JSON: Codec{Encode: func(any) ([]byte, error) {
         return []byte(`{"custom":true}`), nil
     }}}})
     r.Get("/user", func(c *Ctx, _ struct{}) (map[string]string, error) {
@@ -634,8 +581,8 @@ func TestSendEncoderOverridesBuiltinJSON(t *testing.T) {
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/user", nil))
 
-    if got := rec.Header().Get(HeaderContentType); got != MIMEAppJSON {
-        t.Fatalf("Content-Type = %q, want %q", got, MIMEAppJSON)
+    if got := rec.Header().Get(HeaderContentType); got != MIMEJSON {
+        t.Fatalf("Content-Type = %q, want %q", got, MIMEJSON)
     }
     if got := rec.Body.String(); got != `{"custom":true}` {
         t.Fatalf("body = %q", got)
@@ -672,8 +619,8 @@ func TestJSONForcesJSON(t *testing.T) {
     if rec.Code != http.StatusOK {
         t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
     }
-    if got := rec.Header().Get(HeaderContentType); got != MIMEAppJSON {
-        t.Fatalf("Content-Type = %q, want %q", got, MIMEAppJSON)
+    if got := rec.Header().Get(HeaderContentType); got != MIMEJSON {
+        t.Fatalf("Content-Type = %q, want %q", got, MIMEJSON)
     }
     if got := rec.Header().Get(HeaderVary); got != "" {
         t.Fatalf("Vary = %q, want empty", got)
@@ -684,7 +631,7 @@ func TestJSONForcesJSON(t *testing.T) {
 }
 
 func TestJSONUsesConfiguredEncoder(t *testing.T) {
-    r := New(Config{Formats: Formats{Encoders: Encoders{MIMEAppJSON: func(any) ([]byte, error) {
+    r := New(Config{Codecs: Codecs{JSON: Codec{Encode: func(any) ([]byte, error) {
         return []byte(`custom`), nil
     }}}})
     r.Get("/user", func(c *Ctx, _ struct{}) (Formatted, error) {
@@ -694,8 +641,8 @@ func TestJSONUsesConfiguredEncoder(t *testing.T) {
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/user", nil))
 
-    if got := rec.Header().Get(HeaderContentType); got != MIMEAppJSON {
-        t.Fatalf("Content-Type = %q, want %q", got, MIMEAppJSON)
+    if got := rec.Header().Get(HeaderContentType); got != MIMEJSON {
+        t.Fatalf("Content-Type = %q, want %q", got, MIMEJSON)
     }
     if got := rec.Body.String(); got != "custom" {
         t.Fatalf("body = %q, want custom", got)
@@ -709,12 +656,12 @@ func TestXMLForcesXML(t *testing.T) {
     })
 
     req := httptest.NewRequest(http.MethodGet, "/user", nil)
-    req.Header.Set("Accept", MIMEAppJSON)
+    req.Header.Set("Accept", MIMEJSON)
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, req)
 
-    if got := rec.Header().Get(HeaderContentType); got != MIMEAppXML {
-        t.Fatalf("Content-Type = %q, want %q", got, MIMEAppXML)
+    if got := rec.Header().Get(HeaderContentType); got != MIMEXML {
+        t.Fatalf("Content-Type = %q, want %q", got, MIMEXML)
     }
     if got := rec.Body.String(); got != "<xmlUser><Name>bob</Name></xmlUser>" {
         t.Fatalf("body = %q", got)
@@ -722,7 +669,7 @@ func TestXMLForcesXML(t *testing.T) {
 }
 
 func TestXMLUsesConfiguredEncoder(t *testing.T) {
-    r := New(Config{Formats: Formats{Encoders: Encoders{MIMEAppXML: func(any) ([]byte, error) {
+    r := New(Config{Codecs: Codecs{XML: Codec{Encode: func(any) ([]byte, error) {
         return []byte("<custom/>"), nil
     }}}})
     r.Get("/user", func(c *Ctx, _ struct{}) (Formatted, error) {
@@ -732,8 +679,8 @@ func TestXMLUsesConfiguredEncoder(t *testing.T) {
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/user", nil))
 
-    if got := rec.Header().Get(HeaderContentType); got != MIMEAppXML {
-        t.Fatalf("Content-Type = %q, want %q", got, MIMEAppXML)
+    if got := rec.Header().Get(HeaderContentType); got != MIMEXML {
+        t.Fatalf("Content-Type = %q, want %q", got, MIMEXML)
     }
     if got := rec.Body.String(); got != "<custom/>" {
         t.Fatalf("body = %q, want <custom/>", got)
@@ -754,8 +701,8 @@ func TestSendBytesOutsideFamilyGetJSON(t *testing.T) {
     if rec.Code != http.StatusOK {
         t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
     }
-    if got := rec.Header().Get(HeaderContentType); got != MIMEAppJSON {
-        t.Fatalf("Content-Type = %q, want %q", got, MIMEAppJSON)
+    if got := rec.Header().Get(HeaderContentType); got != MIMEJSON {
+        t.Fatalf("Content-Type = %q, want %q", got, MIMEJSON)
     }
     want := `"` + base64.StdEncoding.EncodeToString(png) + `"`
     if got := rec.Body.String(); got != want {
@@ -782,8 +729,8 @@ func TestSendRespectsPresetContentType(t *testing.T) {
         },
         {
             name:   "json keeps encoder",
-            send:   func(c *Ctx) error { c.Type(MIMEAppJSON); return c.Send("ok") },
-            wantCT: MIMEAppJSON,
+            send:   func(c *Ctx) error { c.Type(MIMEJSON); return c.Send("ok") },
+            wantCT: MIMEJSON,
             body:   `"ok"`,
         },
         {
@@ -794,8 +741,8 @@ func TestSendRespectsPresetContentType(t *testing.T) {
         },
         {
             name:   "json with parameters",
-            send:   func(c *Ctx) error { c.Type(MIMEAppJSON + "; charset=utf-8"); return c.Send(struct{ Name string }{"bob"}) },
-            wantCT: MIMEAppJSON + "; charset=utf-8",
+            send:   func(c *Ctx) error { c.Type(MIMEJSON + "; charset=utf-8"); return c.Send(struct{ Name string }{"bob"}) },
+            wantCT: MIMEJSON + "; charset=utf-8",
             body:   `{"Name":"bob"}`,
         },
         {
@@ -806,7 +753,7 @@ func TestSendRespectsPresetContentType(t *testing.T) {
         },
         {
             name:   "preset wins over accept",
-            accept: MIMEAppJSON,
+            accept: MIMEJSON,
             send:   func(c *Ctx) error { c.Type(MIMETextHTMLUTF8); return c.Send("<b>x</b>") },
             wantCT: MIMETextHTMLUTF8,
             body:   "<b>x</b>",
@@ -865,7 +812,7 @@ func TestSendPresetContentTypeWithoutEncoderFails(t *testing.T) {
 
 // 只配一个格式不会清掉另一个：内置格式始终存在。
 func TestNewKeepsDefaultJSONWhenOnlyXMLConfigured(t *testing.T) {
-    r := New(Config{Formats: Formats{Encoders: Encoders{MIMEAppXML: func(any) ([]byte, error) {
+    r := New(Config{Codecs: Codecs{XML: Codec{Encode: func(any) ([]byte, error) {
         return []byte("<x/>"), nil
     }}}})
     r.Get("/u", func(c *Ctx, _ struct{}) (xmlUser, error) { return xmlUser{Name: "bob"}, nil })
@@ -873,10 +820,59 @@ func TestNewKeepsDefaultJSONWhenOnlyXMLConfigured(t *testing.T) {
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/u", nil))
 
-    if got := rec.Header().Get(HeaderContentType); got != MIMEAppJSON {
-        t.Fatalf("Content-Type = %q, want %q", got, MIMEAppJSON)
+    if got := rec.Header().Get(HeaderContentType); got != MIMEJSON {
+        t.Fatalf("Content-Type = %q, want %q", got, MIMEJSON)
     }
     if got := rec.Body.String(); got != `{"Name":"bob"}` {
         t.Fatalf("body = %q", got)
+    }
+}
+
+// 每个 Codecs 字段都必须在 resolve() 的表里出现且映射到正确的媒体名：新增字段漏了映射行会在这里失败。
+func TestCodecsEntriesCoversEveryMedia(t *testing.T) {
+    typ := reflect.TypeFor[Codecs]()
+    codecType := reflect.TypeFor[Codec]()
+    marker := func(any) ([]byte, error) { return []byte("marker"), nil }
+    want := map[string]string{
+        "JSON": MIMEJSON, "XML": MIMEXML, "TOML": MIMETOML, "YAML": MIMEYAML,
+        "MsgPack": MIMEMsgPack, "Protobuf": MIMEProtobuf, "CBOR": MIMECBOR, "BSON": MIMEBSON,
+    }
+    seen := make(map[string]bool)
+
+    fields := 0
+    for i := range typ.NumField() {
+        if typ.Field(i).Type != codecType {
+            continue
+        }
+        fields++
+        name := typ.Field(i).Name
+
+        var f Codecs
+        reflect.ValueOf(&f).Elem().Field(i).Set(reflect.ValueOf(Codec{Encode: marker}))
+        f.resolve()
+
+        found := ""
+        for media, codec := range f.entries {
+            if codec.Encode == nil {
+                continue
+            }
+            if b, err := codec.Encode(nil); err == nil && string(b) == "marker" {
+                found = media
+            }
+        }
+        if found != want[name] {
+            t.Fatalf("field %s maps to %q, want %q", name, found, want[name])
+        }
+        if seen[found] {
+            t.Fatalf("field %s reuses media %q", name, found)
+        }
+        seen[found] = true
+    }
+
+    if fields != len(want) {
+        t.Fatalf("Codecs has %d Codec fields, test covers %d", fields, len(want))
+    }
+    if fields != len(mediaOffers) {
+        t.Fatalf("Codecs has %d Codec fields, mediaOffers lists %d", fields, len(mediaOffers))
     }
 }

@@ -37,3 +37,7 @@ func Status400BadRequest(text ...string) *Error {
 func Status406NotAcceptable(text ...string) *Error {
     return NewError(http.StatusNotAcceptable, text...)
 }
+
+func Status415UnsupportedMediaType(text ...string) *Error {
+    return NewError(http.StatusUnsupportedMediaType, text...)
+}

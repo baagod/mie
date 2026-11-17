@@ -157,7 +157,7 @@ func (c *Ctx) StatusCode() int {
 }
 
 // Send 输出 v：Formatted 显式声明格式，必须有对应编码器；处理器事先设了 Content-Type 时以它为准；
-// 裸值按 Accept 从已注册格式里选（默认 JSON，可用 Formats.Order 改），没有编码器时 string/[]byte 按原字节写出。
+// 裸值按 Accept 从已注册格式里选（默认 JSON，可用 Codecs.Order 改），没有编码器时 string/[]byte 按原字节写出。
 // 无法满足时 406；提交由请求收尾负责，返回的错误交给 ErrorHandler。
 func (c *Ctx) Send(v any) error {
     if v == nil {
@@ -174,7 +174,7 @@ func (c *Ctx) Send(v any) error {
     if media == "" {
         // 要在任何 return 之前设：406 也要带，否则缓存会把一次 406 当成对所有 Accept 都成立。
         c.W.Header().Add(HeaderVary, HeaderAccept)
-        if media = negotiate(c.HeaderGet(HeaderAccept), mediaOf(v), c.app.config.Formats.parsed); media == "" {
+        if media = negotiate(c.HeaderGet(HeaderAccept), mediaOf(v), c.app.config.Codecs.parsed); media == "" {
             return Status406NotAcceptable() // 唯一表示「没有可满足类型」的信号
         }
     }
@@ -184,7 +184,7 @@ func (c *Ctx) Send(v any) error {
 
 // sendFormat 用 media 的编码器编码 v；没有编码器时，raw 允许 string/[]byte 原样写出，其余报错。
 func (c *Ctx) sendFormat(v any, media string, raw bool) error {
-    if enc, ok := c.app.encoder(media); ok {
+    if enc, ok := c.app.config.Codecs.encoder(media); ok {
         b, err := enc(v)
         if err == nil {
             _, err = c.Type(media).W.Write(b)
@@ -244,23 +244,22 @@ func (c *Ctx) BindBody[IN any](in *IN) (err error) {
     }
 
     ct, _, _ := mime.ParseMediaType(c.ContentType())
-    dec, ok := bind.Lookup(ct)
-    if !ok && covers(ct, bind.MIMEAppJSON) { // vendor JSON（application/vnd.api+json 等）用 JSON 解码
-        dec, ok = bind.Lookup(bind.MIMEAppJSON)
+    if ct == MIMEFormUrlencoded || ct == MIMEMultipartForm {
+        return
     }
 
-    if ok {
-        var b []byte
-        if b, err = c.Body(); err != nil {
-            return fmt.Errorf("bind body: %w", err)
-        }
-        if len(b) > 0 {
-            err = dec.Decode(b, in)
-        }
+    dec, ok := c.app.config.Codecs.decoder(ct)
+    if !ok {
+        return Status415UnsupportedMediaType()
     }
 
-    if err != nil {
-        if _, ok := errors.AsType[*Error](err); !ok {
+    var b []byte
+    if b, err = c.Body(); err != nil {
+        return fmt.Errorf("bind body: %w", err)
+    }
+
+    if err = dec(b, in); err != nil {
+        if _, ok = errors.AsType[*Error](err); !ok {
             return Status400BadRequest("bind body: " + err.Error())
         }
     }

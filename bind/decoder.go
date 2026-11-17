@@ -1,44 +1,10 @@
 package bind
 
 import (
-    "encoding/json/v2"
     "errors"
     "net/http"
     "reflect"
-    "strings"
-
-    "github.com/baagod/mie/internal/xsync"
 )
-
-const (
-    MIMEAppJSON           = "application/json"
-    MIMEAppFormUrlencoded = "application/x-www-form-urlencoded"
-)
-
-type Decoder interface {
-    Decode(b []byte, in any) error
-}
-
-var decoders xsync.Map[string, Decoder]
-
-type jsonDecoder struct{}
-
-func init() {
-    Register(MIMEAppJSON, jsonDecoder{})
-}
-
-// Register 注册 Content-Type 的解码器；后注册的覆盖先注册的，包括默认的 JSON。
-func Register(ct string, d Decoder) {
-    decoders.Store(strings.ToLower(ct), d)
-}
-
-func Lookup(ct string) (Decoder, bool) {
-    return decoders.Load(strings.ToLower(ct))
-}
-
-func (jsonDecoder) Decode(b []byte, in any) error {
-    return json.Unmarshal(b, in)
-}
 
 // Decode 把请求里的位置来源写进 in；in 必须是 *IN，body 由调用方处理。
 func Decode[IN any](r *http.Request, in *IN) (err error) {

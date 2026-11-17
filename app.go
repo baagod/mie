@@ -29,8 +29,8 @@ type Config struct {
     // 需要按请求过滤或附加字段时，请包一层 slog.Handler。
     Logger *slog.Logger
 
-    // Formats 声明可提供的响应格式与优先级；零值只提供内置 JSON、XML。
-    Formats Formats
+    // Codecs 声明可提供的格式与优先级；零值只提供内置 JSON、XML。
+    Codecs Codecs
 }
 
 // App 持有 ServeMux、配置与生命周期方法；注册面见 Router。
@@ -63,7 +63,7 @@ func New(cfg ...Config) *App {
         c.Logger = logger
     }
 
-    c.Formats.resolve()
+    c.Codecs.resolve()
 
     a := &App{mux: http.NewServeMux(), config: c}
     a.Router = &Router{app: a}
@@ -155,13 +155,6 @@ func (a *App) handlePanic(c *Ctx, p any) {
 
     // 响应还没写：恢复器给出的错误交 finish 写响应并收尾（默认 500）。
     c.finish(err)
-}
-
-// encoder 查归一化后的编码器表；媒体类型去掉参数并忽略大小写，application/json;
-// charset=utf-8 与 Application/JSON 都算 JSON。
-func (a *App) encoder(media string) (Encoder, bool) {
-    enc, ok := a.config.Formats.Encoders[baseMedia(media)]
-    return enc, ok
 }
 
 // defaultErrorHandler 原样放行，真正的响应由 writeError 写出。
