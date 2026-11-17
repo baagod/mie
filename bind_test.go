@@ -4,6 +4,7 @@ import (
     "errors"
     "net/http"
     "net/http/httptest"
+    "reflect"
     "strings"
     "sync"
     "testing"
@@ -164,6 +165,59 @@ func TestBindPointerINWithEmptyBodyIsAllocated(t *testing.T) {
     }
     if got.Name != "" {
         t.Fatalf("Name = %q, want 空", got.Name)
+    }
+}
+
+func TestBindBodyDecoderReceivesPointer(t *testing.T) {
+    type in struct {
+        Name string `json:"name"`
+    }
+
+    var got *in
+    var target reflect.Type
+    r := New(Config{Codecs: Codecs{JSON: Codec{Decode: func(b []byte, v any) error {
+        target = reflect.TypeOf(v)
+        return nil
+    }}}})
+    r.Post("/ptr", func(c *Ctx, v *in) (struct{}, error) {
+        got = v
+        return struct{}{}, nil
+    })
+
+    req := httptest.NewRequest(http.MethodPost, "/ptr", strings.NewReader(`null`))
+    req.Header.Set(HeaderContentType, MIMEJSON)
+    r.ServeHTTP(httptest.NewRecorder(), req)
+
+    if want := reflect.TypeOf((*in)(nil)); target != want {
+        t.Fatalf("decoder in = %v, want %v", target, want)
+    }
+    if got == nil {
+        t.Fatal("null body 时 *IN 仍应分配")
+    }
+}
+
+func TestBindPointerINWithNullBodyIsAllocated(t *testing.T) {
+    type in struct {
+        Name string `json:"name"`
+    }
+
+    var got *in
+    r := New()
+    r.Post("/ptr", func(c *Ctx, v *in) (struct{}, error) {
+        got = v
+        return struct{}{}, nil
+    })
+
+    req := httptest.NewRequest(http.MethodPost, "/ptr", strings.NewReader(`null`))
+    req.Header.Set(HeaderContentType, MIMEJSON)
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, req)
+
+    if rec.Code != http.StatusOK {
+        t.Fatalf("status = %d, want 200", rec.Code)
+    }
+    if got == nil || got.Name != "" {
+        t.Fatalf("got = %+v, want 非 nil 零值", got)
     }
 }
 
@@ -679,6 +733,23 @@ func TestBindParseFormError(t *testing.T) {
     req.Header.Set(HeaderContentType, MIMEFormUrlencoded)
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, req)
+    if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "bind params:") {
+        t.Fatalf("status/body = %d/%q, want 400 with bind params:", rec.Code, rec.Body.String())
+    }
+}
+
+func TestBindQueryParseError(t *testing.T) {
+    type in struct {
+        Page int `query:"page"`
+    }
+
+    r := New()
+    r.Get("/f", func(c *Ctx, v in) (int, error) { return v.Page, nil })
+
+    req := httptest.NewRequest(http.MethodGet, "/f?page=%zz", nil)
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, req)
+
     if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "bind params:") {
         t.Fatalf("status/body = %d/%q, want 400 with bind params:", rec.Code, rec.Body.String())
     }

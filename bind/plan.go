@@ -33,7 +33,7 @@ type field struct {
 // plan 是 IN 类型的绑定方案，存入后不再修改。
 type plan struct {
     fields  []field
-    hasForm bool
+    hasParams bool // 存在 query/form 来源：都要 ParseForm
     err     error
 }
 
@@ -86,7 +86,7 @@ func scan(t reflect.Type) *plan {
 
             p.fields = append(p.fields, field{index: i, name: sf.Name, source: tag, key: v})
             if tag == bindQuery || tag == bindForm {
-                p.hasForm = true
+                p.hasParams = true
             }
         }
     }

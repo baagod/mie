@@ -36,9 +36,10 @@ func Decode[IN any](r *http.Request, in *IN) (err error) {
     }
 
     // 只有存在参数来源时才 ParseForm，避免多读/多解析 body。
-    // query 单独取 URL 参数：r.Form 把 body 参数排在前面，query 直接读它会被 body 覆盖。
+    // query 单独取 URL 参数：r.Form 把 body 参数排在前面，直接读它会被 body 覆盖。
+    // ParseForm 已校验过 query，这里的解析错误忽略即可。
     var query url.Values
-    if p.hasForm {
+    if p.hasParams {
         if err = r.ParseForm(); err != nil {
             return fmt.Errorf("bind params: %w", err)
         }

@@ -116,3 +116,20 @@ func TestBindConcurrentFirstUse(t *testing.T) {
         }
     }
 }
+
+func TestBindFormReadsBodyAndQueryWins(t *testing.T) {
+    r := httptest.NewRequest(http.MethodPost, "/?name=from-query&page=3", strings.NewReader("name=from-form&city=Paris"))
+    r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+    var v struct {
+        Name string `form:"name"`
+        Page int    `form:"page"`
+        City string `form:"city"`
+    }
+    if err := bind.Decode(r, &v); err != nil {
+        t.Fatalf("Bind: %v", err)
+    }
+    if v.Name != "from-query" || v.Page != 3 || v.City != "Paris" {
+        t.Fatalf("v = %+v, want query over form and body-only field", v)
+    }
+}

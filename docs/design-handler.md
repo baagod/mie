@@ -26,11 +26,12 @@
 - 顺序：body（按 `Content-Type` 解码，权重最低，见下）→ `form` → `query` → `header` → `path`，后写覆盖先写；来源缺失跳过，来源存在但值为空串则清零字段。
 - 未导出字段、空 tag 一律跳过；非标量（指针/切片/数组取元素后仍非标量）是声明错误，注册时报 panic。
 - 多值来源：切片写全部、数组按序填充（超出丢弃、不足补零）、标量只取第一个。
-- 参数来源调用一次 `ParseForm`；它决定是否读 urlencoded body，框架不还原 `c.R.Body`。
+- 存在参数来源（`query`/`form`）时调用一次 `ParseForm`；urlencoded 请求会因此读掉 body（框架不还原 `c.R.Body`），两种来源的解析错误都在这里统一返回 400；`query` 的值仍只从 URL 取。
 - body：非 GET/HEAD 且有 body 时，先按 `Content-Type` 找解码器：`form-urlencoded` 归参数绑定、multipart 归 `Bind`（尚未实现），两者直接跳过；找不到解码器返回 415 且不读 body，`Content-Type` 缺失、畸形同样 415。
 - 内置解码器只有 `application/json` 与 `application/xml`，其余媒体由应用填 `Decode`；`+json`/`+xml` 这类结构化后缀（如 `application/vnd.api+json`）回退到同 top-level 的基类型解码器。
+- body 的键名语义由解码器决定：内置 JSON 走 `encoding/json/v2`，无 tag 字段按 Go 字段名参与，键名精确匹配（大小写敏感）；未知键默认忽略，需要严格拒绝时替换 `Config.Codecs.JSON.Decode`。
 - 找到解码器才读 `c.Body()` 解码；body 默认上限 1 MiB（`Config.MaxBodyBytes`，负值关闭，multipart 不适用），超限 413；解码失败 400。
-- `struct{}` 不绑不读 body；`*T` 由框架分配，handler 通常拿到非 nil（body 为 `null` 例外）。
+- `struct{}` 不绑不读 body；`*T` 由框架在解码 body 前分配，handler 拿到非 nil（含 `null` body）。
 - 绑定结果按值缓存：值类型 IN 的每层拿到独立副本，改字段不影响下游（切片/map 的底层数据仍共享，改元素可见）；`*T` 的各层指向同一对象，改对象内容下游可见。
 - 参数/头部只扫顶层字段，不展开匿名嵌入；body 的嵌入按解码器规则处理。
 

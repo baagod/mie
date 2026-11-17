@@ -10,6 +10,7 @@ import (
     "mime"
     "net"
     "net/http"
+    "reflect"
     "time"
 
     "github.com/baagod/mie/bind"
@@ -277,11 +278,21 @@ func (c *Ctx) BindBody[IN any](in *IN) (err error) {
 
     // chunked 请求的 ContentLength 是 -1，早退判断拦不住零字节 body；
     // 读完为空视同无 body，不交给解码器。
-    if len(b) > 0 {
+    if len(b) == 0 {
         return
     }
 
-    if err = dec(b, in); err != nil {
+    // IN 为指针时 in 是 **T，而解码器只该收到可写的 *T：先分配内层指针再脱一层；
+    // 值类型 IN 的 in 已是 *T，原样传入。
+    var target any = in
+    if rv := reflect.ValueOf(in).Elem(); rv.Kind() == reflect.Pointer {
+        if rv.IsNil() {
+            rv.Set(reflect.New(rv.Type().Elem()))
+        }
+        target = rv.Interface()
+    }
+
+    if err = dec(b, target); err != nil {
         if _, ok = errors.AsType[*Error](err); !ok {
             return Status400BadRequest("bind body: " + err.Error())
         }
