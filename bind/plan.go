@@ -18,9 +18,9 @@ const (
 // plans 按 IN 的元素类型缓存方案：类型集合编译期固定，条目有界，不淘汰。
 var plans xsync.Map[reflect.Type, *plan] // map[reflect.Type]*plan
 
-// posTags 是位置来源的 tag 名，顺序即绑定顺序，后写覆盖先写。
-// query 与 form 都从 ParseForm 后的参数表取值。
-var posTags = [...]string{bindPath, bindHeader, bindQuery, bindForm}
+// posTags 是位置来源的 tag 名，顺序即绑定顺序，后写覆盖先写：
+// path 权重最高（路由参数不容 body 篡改）；query 与 form 同读 ParseForm 后的参数表。
+var posTags = [...]string{bindForm, bindQuery, bindHeader, bindPath}
 
 // field 是 struct IN 的一个取值项；同一字段声明多个来源时会有多项。
 type field struct {

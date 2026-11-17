@@ -227,19 +227,19 @@ func (c *Ctx) Next() error {
     return c.chain[c.index](c)
 }
 
-// Bind 绑定 IN：先位置来源，再按 Content-Type 解码 body 覆盖；同一请求同一 IN 类型只绑一次。
+// Bind 绑定 IN：先按 Content-Type 解码 body（权重最低），再由位置来源覆盖；同一请求同一 IN 类型只绑一次。
 func (c *Ctx) Bind[IN any](in *IN) (err error) {
     if v, ok := c.store[bindKey[IN]{}]; ok {
         *in = v.(IN)
         return
     }
 
-    if err = bind.Decode(c.R, in); err != nil {
-        return Status400BadRequest(err.Error())
-    }
-
     if err = c.BindBody(in); err != nil {
         return err
+    }
+
+    if err = bind.Decode(c.R, in); err != nil {
+        return Status400BadRequest(err.Error())
     }
 
     c.Set(bindKey[IN]{}, *in)

@@ -138,12 +138,12 @@ func TestBindJSONContentTypeWithParams(t *testing.T) {
     }
 }
 
-func TestBindBodyOverridesLocationTag(t *testing.T) {
+func TestBindLocationOverridesBody(t *testing.T) {
     type in struct {
         ID int `path:"id" json:"id"`
     }
 
-    t.Run("body last", func(t *testing.T) {
+    t.Run("location last", func(t *testing.T) {
         var got in
         r := New()
         r.Post("/items/{id}", func(c *Ctx, v in) (struct{}, error) {
@@ -155,8 +155,8 @@ func TestBindBodyOverridesLocationTag(t *testing.T) {
         req.Header.Set(HeaderContentType, MIMEJSON)
         r.ServeHTTP(httptest.NewRecorder(), req)
 
-        if got.ID != 999 {
-            t.Fatalf("ID = %d, want 999（body 最后绑定）", got.ID)
+        if got.ID != 7 {
+            t.Fatalf("ID = %d, want 7（位置来源最后绑定，覆盖 body）", got.ID)
         }
     })
 
@@ -682,7 +682,7 @@ func TestHeAsNoInputHandler(t *testing.T) {
 }
 
 func TestBindSourceOrder(t *testing.T) {
-    t.Run("query overrides path", func(t *testing.T) {
+    t.Run("path overrides query", func(t *testing.T) {
         type in struct {
             ID int `path:"id" query:"id"`
         }
@@ -692,8 +692,8 @@ func TestBindSourceOrder(t *testing.T) {
         rec := httptest.NewRecorder()
         r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/p/7?id=9", nil))
 
-        if rec.Code != http.StatusOK || rec.Body.String() != "9" {
-            t.Fatalf("status/body = %d/%q, want 200/\"9\"", rec.Code, rec.Body.String())
+        if rec.Code != http.StatusOK || rec.Body.String() != "7" {
+            t.Fatalf("status/body = %d/%q, want 200/\"7\"", rec.Code, rec.Body.String())
         }
     })
 
@@ -712,7 +712,7 @@ func TestBindSourceOrder(t *testing.T) {
         }
     })
 
-    t.Run("query overrides header", func(t *testing.T) {
+    t.Run("header overrides query", func(t *testing.T) {
         type in struct {
             ID int `header:"X-Id" query:"id"`
         }
@@ -724,8 +724,8 @@ func TestBindSourceOrder(t *testing.T) {
         rec := httptest.NewRecorder()
         r.ServeHTTP(rec, req)
 
-        if rec.Code != http.StatusOK || rec.Body.String() != "9" {
-            t.Fatalf("status/body = %d/%q, want 200/\"9\"", rec.Code, rec.Body.String())
+        if rec.Code != http.StatusOK || rec.Body.String() != "7" {
+            t.Fatalf("status/body = %d/%q, want 200/\"7\"", rec.Code, rec.Body.String())
         }
     })
 
@@ -763,7 +763,7 @@ func TestBindSourceOrder(t *testing.T) {
         }
     })
 
-    t.Run("body overrides form", func(t *testing.T) {
+    t.Run("location overrides body", func(t *testing.T) {
         type in struct {
             Name string `form:"name" json:"name"`
         }
@@ -775,8 +775,8 @@ func TestBindSourceOrder(t *testing.T) {
         rec := httptest.NewRecorder()
         r.ServeHTTP(rec, req)
 
-        if rec.Code != http.StatusOK || rec.Body.String() != "json" {
-            t.Fatalf("status/body = %d/%q, want 200/json", rec.Code, rec.Body.String())
+        if rec.Code != http.StatusOK || rec.Body.String() != "query" {
+            t.Fatalf("status/body = %d/%q, want 200/query", rec.Code, rec.Body.String())
         }
     })
 }
@@ -921,22 +921,24 @@ func TestConcurrentFirstRequest(t *testing.T) {
 
 func TestBindExplicitEmptyClearsValue(t *testing.T) {
     type in struct {
-        Name string `path:"name" query:"name"`
+        Name string `query:"name" header:"X-Name"`
     }
 
     r := New()
-    r.Get("/x/{name}", func(c *Ctx, v in) (string, error) { return v.Name, nil })
+    r.Get("/x", func(c *Ctx, v in) (string, error) { return v.Name, nil })
 
-    // 显式空值：query 覆盖 path，字段被清零。
+    // 显式空值：后写来源的清零语义不变，空 header 覆盖 query。
+    req := httptest.NewRequest(http.MethodGet, "/x?name=abc", nil)
+    req.Header.Set("X-Name", "")
     rec := httptest.NewRecorder()
-    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x/abc?name=", nil))
+    r.ServeHTTP(rec, req)
     if rec.Code != http.StatusOK || rec.Body.String() != "" {
         t.Fatalf("explicit empty status/body = %d/%q, want 200 empty", rec.Code, rec.Body.String())
     }
 
-    // 缺失：保留 path 写入的值。
+    // 缺失：保留前面来源写入的值。
     rec = httptest.NewRecorder()
-    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x/abc", nil))
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x?name=abc", nil))
     if rec.Code != http.StatusOK || rec.Body.String() != "abc" {
         t.Fatalf("missing status/body = %d/%q, want 200/abc", rec.Code, rec.Body.String())
     }
@@ -1171,8 +1173,8 @@ func TestBindArrayMultiSourceClearsTail(t *testing.T) {
     req.Header.Add("X-P", "2")
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, req)
-    if rec.Code != http.StatusOK || rec.Body.String() != "[9,0]" {
-        t.Fatalf("status/body = %d/%q, want 200/[9,0]", rec.Code, rec.Body.String())
+    if rec.Code != http.StatusOK || rec.Body.String() != "[1,2]" {
+        t.Fatalf("status/body = %d/%q, want 200/[1,2]", rec.Code, rec.Body.String())
     }
 }
 
