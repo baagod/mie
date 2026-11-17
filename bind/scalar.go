@@ -8,9 +8,9 @@ import (
     "strconv"
 )
 
-// bindValue 把该字段来源的值写进去：缺失（没有该参数/头）跳过，保留前面来源的值；
+// bindValue 把该字段来源的值写进去：缺失（没有该参数/头/cookie）跳过，保留前面来源的值；
 // 存在但首个值为空串（?x=、空 header）则清零字段。切片/数组写入全部值，标量取第一个。
-func bindValue(r *http.Request, query url.Values, v reflect.Value, f field) (err error) {
+func bindValue(r *http.Request, query url.Values, cookies []*http.Cookie, v reflect.Value, f field) (err error) {
     var s []string
     switch f.source {
     case bindPath:
@@ -26,6 +26,12 @@ func bindValue(r *http.Request, query url.Values, v reflect.Value, f field) (err
         s = r.PostForm[f.key]
         if q, ok := query[f.key]; ok {
             s = q
+        }
+    case bindCookie:
+        for _, c := range cookies {
+            if c.Name == f.key {
+                s = append(s, c.Value)
+            }
         }
     }
 

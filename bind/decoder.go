@@ -39,6 +39,7 @@ func Decode[IN any](r *http.Request, in *IN) (err error) {
     // query 单独取 URL 参数：r.Form 把 body 参数排在前面，直接读它会被 body 覆盖。
     // ParseForm 已校验过 query，这里的解析错误忽略即可。
     var query url.Values
+    var cookies []*http.Cookie
     if p.hasParams {
         if err = r.ParseForm(); err != nil {
             return fmt.Errorf("bind params: %w", err)
@@ -46,8 +47,12 @@ func Decode[IN any](r *http.Request, in *IN) (err error) {
         query = r.URL.Query()
     }
 
+    if p.hasCookie {
+        cookies = r.Cookies()
+    }
+
     for _, f := range p.fields {
-        if err = bindValue(r, query, v.Field(f.index), f); err != nil {
+        if err = bindValue(r, query, cookies, v.Field(f.index), f); err != nil {
             return
         }
     }

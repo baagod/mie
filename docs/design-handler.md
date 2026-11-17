@@ -22,8 +22,9 @@
 
 绑定发生在链上第一个声明 IN 的元素处，一个请求只绑一次并缓存。
 
-- 位置来源只认显式 tag：`path:"id"`、`header:"X-Trace-Id"`、`query:"page"`、`form:"page"`。`query` 只读 URL 参数；`form` 先读表单参数，同名查询参数后写覆盖（含空值）。没写 tag 的字段不会被位置来源写入。
-- 顺序：body（按 `Content-Type` 解码，权重最低，见下）→ `form` → `query` → `header` → `path`，后写覆盖先写；来源缺失跳过，来源存在但值为空串则清零字段。
+- 位置来源只认显式 tag：`path:"id"`、`header:"X-Trace-Id"`、`query:"page"`、`form:"page"`、`cookie:"sid"`。`query` 只读 URL 参数；`form` 先读表单参数，同名查询参数后写覆盖（含空值）。没写 tag 的字段不会被位置来源写入。
+- 顺序：body（按 `Content-Type` 解码，权重最低，见下）→ `form` → `query` → `cookie` → `header` → `path`，后写覆盖先写，即信任等级从低到高；`cookie` 压过 `query` 是为了让 URL 参数顶不掉 HttpOnly 会话 cookie，`header` 再压过 `cookie` 是因为网关注入的身份头、显式 `Authorization` 比浏览器长期驻留的 cookie 更代表当前请求的意图。来源缺失跳过，来源存在但值为空串则清零字段。
+- `cookie` 只按字符串读，非法值 400；cookie 头本身格式坏掉时 `net/http` 静默丢弃，不会 400。
 - 未导出字段、空 tag 一律跳过；非标量（指针/切片/数组取元素后仍非标量）是声明错误，注册时报 panic。
 - 多值来源：切片写全部、数组按序填充（超出丢弃、不足补零）、标量只取第一个。
 - 存在参数来源（`query`/`form`）时调用一次 `ParseForm`；urlencoded 请求会因此读掉 body（框架不还原 `c.R.Body`），两种来源的解析错误都在这里统一返回 400；`query` 的值仍只从 URL 取。

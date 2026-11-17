@@ -755,6 +755,30 @@ func TestBindQueryParseError(t *testing.T) {
     }
 }
 
+func TestBindCookieOnlyPOSTLeavesBody(t *testing.T) {
+    type in struct {
+        SID string `cookie:"sid"`
+    }
+
+    r := New()
+    var got, gotSID string
+    r.Post("/c", func(c *Ctx, v in) (struct{}, error) {
+        b, err := c.Body()
+        got, gotSID = string(b), v.SID
+        return struct{}{}, err
+    })
+
+    req := httptest.NewRequest(http.MethodPost, "/c", strings.NewReader("raw=body"))
+    req.Header.Set(HeaderContentType, MIMEFormUrlencoded)
+    req.AddCookie(&http.Cookie{Name: "sid", Value: "abc"})
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, req)
+
+    if rec.Code != http.StatusOK || got != "raw=body" || gotSID != "abc" {
+        t.Fatalf("status/body/cookie = %d/%q/%q, want 200/raw=body/abc", rec.Code, got, gotSID)
+    }
+}
+
 func TestBindSliceValues(t *testing.T) {
     type in struct {
         Tags []string `query:"tag"`

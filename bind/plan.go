@@ -7,20 +7,21 @@ import (
     "github.com/baagod/mie/internal/xsync"
 )
 
-// Decode 按显式 tag 把 path/header/参数写进 IN；body 由调用方按 Content-Type 整块解码。
+// Decode 按显式 tag 把位置来源（form → query → cookie → header → path）写进 IN；body 由调用方按 Content-Type 整块解码。
 const (
     bindPath   = "path"
     bindHeader = "header"
     bindQuery  = "query"
     bindForm   = "form"
+    bindCookie = "cookie"
 )
 
 // plans 按 IN 的元素类型缓存方案：类型集合编译期固定，条目有界，不淘汰。
 var plans xsync.Map[reflect.Type, *plan] // map[reflect.Type]*plan
 
-// posTags 是位置来源的 tag 名，顺序即绑定顺序，后写覆盖先写：
-// path 权重最高（路由参数不容 body 篡改）；form 先取表单参数，同名查询参数后写覆盖；query 只读 URL 参数。
-var posTags = [...]string{bindForm, bindQuery, bindHeader, bindPath}
+// posTags 是位置来源的 tag 名，顺序即绑定顺序，后写覆盖先写，信任等级从低到高：
+// form（表单）< query（URL 参数）< cookie（HttpOnly 会话 cookie 不能被诱导链接的 ?sid= 顶掉）< header（网关注入的身份头、显式 Authorization）< path（路由参数）。
+var posTags = [...]string{bindForm, bindQuery, bindCookie, bindHeader, bindPath}
 
 // field 是 struct IN 的一个取值项；同一字段声明多个来源时会有多项。
 type field struct {
@@ -32,9 +33,10 @@ type field struct {
 
 // plan 是 IN 类型的绑定方案，存入后不再修改。
 type plan struct {
-    fields  []field
+    fields    []field
     hasParams bool // 存在 query/form 来源：都要 ParseForm
-    err     error
+    hasCookie bool // 存在 cookie 来源：Cookie 头只解析一次
+    err       error
 }
 
 // planFor 取类型的方案；指针按元素类型规划，并发首批请求可能各自扫描一次，结果一致。
@@ -72,7 +74,7 @@ func scan(t reflect.Type) *plan {
             continue
         }
 
-        // 同一字段的多来源生成多项：按 form → query → header → path 的顺序，后写覆盖先写。
+        // 同一字段的多来源生成多项：按 form → query → cookie → header → path 的顺序，后写覆盖先写。
         for _, tag := range posTags {
             v, _ := sf.Tag.Lookup(tag)
             if v == "" {
@@ -85,8 +87,11 @@ func scan(t reflect.Type) *plan {
             }
 
             p.fields = append(p.fields, field{index: i, name: sf.Name, source: tag, key: v})
-            if tag == bindQuery || tag == bindForm {
+            switch tag {
+            case bindQuery, bindForm:
                 p.hasParams = true
+            case bindCookie:
+                p.hasCookie = true
             }
         }
     }

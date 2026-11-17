@@ -117,6 +117,70 @@ func TestBindConcurrentFirstUse(t *testing.T) {
     }
 }
 
+func TestBindCookie(t *testing.T) {
+    type in struct {
+        Session string   `cookie:"sid"`
+        Codes   []string `cookie:"code"`
+        Missing string   `cookie:"none"`
+        Cleared string   `cookie:"clear"`
+    }
+
+    r := httptest.NewRequest(http.MethodGet, "/", nil)
+    r.AddCookie(&http.Cookie{Name: "sid", Value: "abc"})
+    r.AddCookie(&http.Cookie{Name: "code", Value: "a"})
+    r.AddCookie(&http.Cookie{Name: "code", Value: "b"})
+    r.AddCookie(&http.Cookie{Name: "clear", Value: ""})
+
+    v := in{Cleared: "old"}
+    if err := bind.Decode(r, &v); err != nil {
+        t.Fatalf("Bind: %v", err)
+    }
+    if v.Session != "abc" {
+        t.Fatalf("Session = %q, want abc", v.Session)
+    }
+    if len(v.Codes) != 2 || v.Codes[0] != "a" || v.Codes[1] != "b" {
+        t.Fatalf("Codes = %q, want [a b]", v.Codes)
+    }
+    if v.Missing != "" {
+        t.Fatalf("Missing = %q, want empty", v.Missing)
+    }
+    if v.Cleared != "" {
+        t.Fatalf("Cleared = %q, want empty", v.Cleared)
+    }
+}
+
+func TestBindCookieInvalidValue(t *testing.T) {
+    type in struct {
+        N int `cookie:"n"`
+    }
+
+    r := httptest.NewRequest(http.MethodGet, "/", nil)
+    r.AddCookie(&http.Cookie{Name: "n", Value: "abc"})
+
+    var v in
+    err := bind.Decode(r, &v)
+    if err == nil || !strings.Contains(err.Error(), "bind: cookie.N") {
+        t.Fatalf("err = %v, want bind: cookie.N", err)
+    }
+}
+
+func TestBindCookieOverridesQuery(t *testing.T) {
+    type in struct {
+        ID string `cookie:"id" query:"id"`
+    }
+
+    r := httptest.NewRequest(http.MethodGet, "/?id=from-query", nil)
+    r.AddCookie(&http.Cookie{Name: "id", Value: "from-cookie"})
+
+    var v in
+    if err := bind.Decode(r, &v); err != nil {
+        t.Fatalf("Bind: %v", err)
+    }
+    if v.ID != "from-cookie" {
+        t.Fatalf("ID = %q, want from-cookie", v.ID)
+    }
+}
+
 func TestBindFormReadsBodyAndQueryWins(t *testing.T) {
     r := httptest.NewRequest(http.MethodPost, "/?name=from-query&page=3", strings.NewReader("name=from-form&city=Paris"))
     r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
