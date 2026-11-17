@@ -23,10 +23,11 @@
 绑定发生在链上第一个声明 IN 的元素处，一个请求只绑一次并缓存。
 
 - 位置来源只认显式 tag：`path:"id"`、`header:"X-Trace-Id"`、`query:"page"`、`form:"page"`、`cookie:"sid"`。`query` 只读 URL 参数；`form` 先读表单参数，同名查询参数后写覆盖（含空值）。没写 tag 的字段不会被位置来源写入。
-- 顺序：body（按 `Content-Type` 解码，权重最低，见下）→ `form` → `query` → `cookie` → `header` → `path`，后写覆盖先写，即信任等级从低到高；`cookie` 压过 `query` 是为了让 URL 参数顶不掉 HttpOnly 会话 cookie，`header` 再压过 `cookie` 是因为网关注入的身份头、显式 `Authorization` 比浏览器长期驻留的 cookie 更代表当前请求的意图。来源缺失跳过，来源存在但值为空串则清零字段。
+- 顺序：body（按 `Content-Type` 解码，权重最低，见下）→ `form` → `query` → `cookie` → `header` → `path`，后写覆盖先写，即信任等级从低到高；`cookie` 压过 `query` 是为了让 URL 参数顶不掉 HttpOnly 会话 cookie，`header` 再压过 `cookie` 是因为网关注入的身份头、显式 `Authorization` 比浏览器长期驻留的 cookie 更代表当前请求的意图。来源缺失跳过；值为空串时按元素级零值写入，不解析、不报错。
 - `cookie` 只按字符串读，非法值 400；cookie 头本身格式坏掉时 `net/http` 静默丢弃，不会 400。
-- 未导出字段、空 tag 一律跳过；非标量（指针/切片/数组取元素后仍非标量）是声明错误，注册时报 panic。
-- 多值来源：切片写全部、数组按序填充（超出丢弃、不足补零）、标量只取第一个。
+- 未导出字段、空 tag 一律跳过；标量，或指针实现 `encoding.TextUnmarshaler` 的类型（`time.Time`、`netip.Addr`、`net.IP` 等）才能绑定，字符串交给该接口解析、解析失败 400；其余（指针/切片/数组取元素后仍不满足）是声明错误，注册时报 panic。
+- 字段可加一层指针（`*int`、`*time.Time`、`*[]int`）：来源缺失保持 nil；值为空串得到指向零值的指针（集合类型为等长零值元素，如 `?tags=` → `[""]`），解析失败返回 400 且保持 nil；只支持一层，`**T`、`[]*T` 是声明错误，注册期 panic。
+- 多值来源：切片写全部、数组按序填充（超出丢弃、不足补零）、标量只取第一个；命名切片/数组本身实现 `TextUnmarshaler` 时（如 `net.IP`）按一个值整体解析、多余值丢弃（空值也算第一个值，不会被跳过，如 `?ip=&ip=::1` 得到零值），`[]time.Time`、`[2]time.Time` 这类则逐元素解析。
 - 存在参数来源（`query`/`form`）时调用一次 `ParseForm`；urlencoded 请求会因此读掉 body（框架不还原 `c.R.Body`），两种来源的解析错误都在这里统一返回 400；`query` 的值仍只从 URL 取。
 - body：非 GET/HEAD 且有 body 时，先按 `Content-Type` 找解码器：`form-urlencoded` 归参数绑定、multipart 归 `Bind`（尚未实现），两者直接跳过；找不到解码器返回 415 且不读 body，`Content-Type` 缺失、畸形同样 415。
 - 内置解码器只有 `application/json` 与 `application/xml`，其余媒体由应用填 `Decode`；`+json`/`+xml` 这类结构化后缀（如 `application/vnd.api+json`）回退到同 top-level 的基类型解码器。

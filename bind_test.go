@@ -791,7 +791,7 @@ func TestBindSliceValues(t *testing.T) {
     cases := []struct{ name, url, want string }{
         {"all", "/s?tag=a&tag=b&id=1&id=2", `{"Tags":["a","b"],"IDs":[1,2]}`},
         {"missing", "/s", `{"Tags":[],"IDs":[]}`},
-        {"empty first clears", "/s?tag=&tag=b", `{"Tags":[],"IDs":[]}`},
+        {"empty first is zero element", "/s?tag=&tag=b", `{"Tags":["","b"],"IDs":[]}`},
     }
     for _, tc := range cases {
         t.Run(tc.name, func(t *testing.T) {
