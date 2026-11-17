@@ -57,11 +57,6 @@ func setValues(v reflect.Value, s []string) (err error) {
     // 内置类型没有方法集，PkgPath 为空先挡掉，省掉每值一次 Implements。
     if v.Type().PkgPath() != "" && (v.Kind() == reflect.Slice || v.Kind() == reflect.Array) &&
         v.CanAddr() && v.Addr().Type().Implements(textUnmarshaler) {
-        if s[0] == "" { // 空串按零值，不解析
-            v.SetZero()
-            return nil
-        }
-
         return v.Addr().Interface().(encoding.TextUnmarshaler).UnmarshalText([]byte(s[0]))
     }
 
@@ -99,11 +94,6 @@ func setValues(v reflect.Value, s []string) (err error) {
 
 // setScalar 把字符串解析成标量写入；解析失败不写。
 func setScalar(v reflect.Value, s string) (err error) {
-    if s == "" { // 空串不解析：直接零值
-        v.SetZero()
-        return nil
-    }
-
     // 逐元素路径（[]time.Time 等）：元素指针实现 TextUnmarshaler 时交给它解析。
     // 内置类型没有方法集，PkgPath 为空先挡掉，省掉每值一次 Implements。
     if v.Type().PkgPath() != "" && v.CanAddr() && v.Addr().Type().Implements(textUnmarshaler) {

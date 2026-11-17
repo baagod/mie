@@ -316,14 +316,16 @@ func TestBindTextUnmarshalerArray(t *testing.T) {
     }
 }
 
-func TestBindEmptyValueBindsZero(t *testing.T) {
+// 空串没有特殊语法：能否绑定由目标类型自己的解析器决定。
+func TestBindEmptyValueFollowsTypeParser(t *testing.T) {
     type in struct {
-        Page int      `query:"page"`
-        Ptr  *int     `query:"p"`
-        Nums []int    `query:"n"`
-        Tags []string `query:"tags"`
-        IP   net.IP   `query:"ip"`
-        MAC  macAddr  `query:"mac"`
+        Page int       `query:"page"`
+        Ptr  *int      `query:"p"`
+        Nums []int     `query:"n"`
+        Tags []string  `query:"tags"`
+        At   time.Time `query:"at"`
+        IP   net.IP    `query:"ip"`
+        MAC  macAddr   `query:"mac"`
     }
 
     decode := func(q string) (in, error) {
@@ -332,36 +334,24 @@ func TestBindEmptyValueBindsZero(t *testing.T) {
         return v, err
     }
 
-    // 标量：空串按零值绑定，不报错；后面的值不再生效（标量只取第一个）。
-    if v, err := decode("?page=&page=7"); err != nil || v.Page != 0 {
-        t.Fatalf("scalar empty = %v/%d, want nil/0", err, v.Page)
+    for _, q := range []string{"?page=", "?page=&page=7", "?p=", "?n=", "?at=", "?mac="} {
+        if _, err := decode(q); err == nil {
+            t.Fatalf("%s: want 400, got nil", q)
+        }
     }
 
-    // 切片：空值就是一个零值元素，既不被丢弃，也不整体清零。
-    if v, err := decode("?n=&n=5"); err != nil || len(v.Nums) != 2 || v.Nums[0] != 0 || v.Nums[1] != 5 {
-        t.Fatalf("slice mixed = %v/%v, want nil/[0 5]", err, v.Nums)
+    // 解析失败不分配指针。
+    if v, err := decode("?p="); err == nil || v.Ptr != nil {
+        t.Fatalf("pointer empty = %v/%v, want error/nil", err, v.Ptr)
     }
+
+    // 空串是合法 string，切片保留空元素。
     if v, err := decode("?tags="); err != nil || len(v.Tags) != 1 || v.Tags[0] != "" {
-        t.Fatalf("slice single empty = %v/%q, want nil/[\"\"]", err, v.Tags)
+        t.Fatalf("string slice empty = %v/%q, want nil/[\"\"]", err, v.Tags)
     }
 
-    // 指针：空串得到指向零值的指针，而不是 nil。
-    if v, err := decode("?p="); err != nil || v.Ptr == nil || *v.Ptr != 0 {
-        t.Fatalf("pointer empty = %v/%v, want nil/&0", err, v.Ptr)
-    }
-
-    // 整体解析的类型（net.IP）：空串同样得到零值，而不是交给 UnmarshalText 报错。
-    if v, err := decode("?ip="); err != nil || v.IP != nil {
-        t.Fatalf("named slice empty = %v/%v, want nil/nil", err, v.IP)
-    }
-
-    // 空值算第一个 text：后面的值不会生效（文档承诺）。
+    // net.IP 的 UnmarshalText 把空串解析成零值，这是类型自己的决定。
     if v, err := decode("?ip=&ip=::1"); err != nil || v.IP != nil {
-        t.Fatalf("whole empty first = %v/%v, want nil/nil", err, v.IP)
-    }
-
-    // 实现 TextUnmarshaler 但拒绝空串的类型（如 macAddr）同样得到零值，而不是 400。
-    if v, err := decode("?mac="); err != nil || v.MAC != (macAddr{}) {
-        t.Fatalf("whole empty = %v/%v, want nil/zero", err, v.MAC)
+        t.Fatalf("net.IP empty = %v/%v, want nil/nil", err, v.IP)
     }
 }
