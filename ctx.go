@@ -275,6 +275,12 @@ func (c *Ctx) BindBody[IN any](in *IN) (err error) {
         return fmt.Errorf("bind body: %w", err)
     }
 
+    // chunked 请求的 ContentLength 是 -1，早退判断拦不住零字节 body；
+    // 读完为空视同无 body，不交给解码器。
+    if len(b) > 0 {
+        return
+    }
+
     if err = dec(b, in); err != nil {
         if _, ok = errors.AsType[*Error](err); !ok {
             return Status400BadRequest("bind body: " + err.Error())

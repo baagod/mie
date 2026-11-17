@@ -389,6 +389,36 @@ func TestBindBodyMissingContentTypeIsUnsupported(t *testing.T) {
     }
 }
 
+// chunked 请求的 ContentLength 是 -1，零字节 body 不能被当成非法 JSON。
+func TestBindBodyEmptyChunkedIsIgnored(t *testing.T) {
+    r := New()
+    r.Post("/p", func(c *Ctx, v bodyIn) (struct{}, error) { return struct{}{}, nil })
+
+    cases := []struct {
+        name string
+        body string
+        want int
+    }{
+        {"empty", "", http.StatusOK},
+        {"blank", "  ", http.StatusBadRequest},
+    }
+
+    for _, c := range cases {
+        t.Run(c.name, func(t *testing.T) {
+            req := httptest.NewRequest(http.MethodPost, "/p", strings.NewReader(c.body))
+            req.Header.Set(HeaderContentType, MIMEJSON)
+            req.ContentLength = -1
+            req.TransferEncoding = []string{"chunked"}
+            rec := httptest.NewRecorder()
+            r.ServeHTTP(rec, req)
+
+            if rec.Code != c.want {
+                t.Fatalf("status = %d, want %d", rec.Code, c.want)
+            }
+        })
+    }
+}
+
 func TestBindBodyStructuredSuffixUsesBaseDecoder(t *testing.T) {
     type in struct {
         Name string
