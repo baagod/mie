@@ -10,7 +10,6 @@ import (
     "mime"
     "net"
     "net/http"
-    "reflect"
     "time"
 
     "github.com/baagod/mie/bind"
@@ -19,10 +18,10 @@ import (
 type (
     // ctxKey 是请求 context 中存放 *Ctx 的键
     ctxKey struct{}
-    // bodyKey 是请求 context 中缓存 Body 读取结果的键
+    // bodyKey 是 store 中缓存 Body 读取结果的键
     bodyKey struct{}
-    // bindInKey 是请求 context 中缓存已绑定 IN 的键
-    bindInKey struct{}
+    // bindKey 是 store 中缓存已绑定 IN 的键；按 IN 类型分别缓存
+    bindKey[IN any] struct{}
 )
 
 // reqBody 缓存 Body 的读取结果：字节与错误一起保存，保证重复调用语义一致。
@@ -32,6 +31,7 @@ type reqBody struct {
 }
 
 // Ctx 是一次请求的上下文，包装响应写入器与请求，并承载中间件游标。
+// Ctx 只在处理本次请求的 goroutine 内使用，不要跨 goroutine 共享。
 type Ctx struct {
     W *ResponseWriter // 响应写入器
     R *http.Request   // 带 Ctx 的请求副本
@@ -41,6 +41,7 @@ type Ctx struct {
     index   int
     traceid string
     start   time.Time
+    store   map[any]any // 请求级键值：Body/Bind 缓存与 Set 写入的值
 }
 
 // newCtx 创建请求上下文，并把 *Ctx 放进请求 context。
@@ -48,6 +49,7 @@ type Ctx struct {
 func newCtx(w http.ResponseWriter, req *http.Request, a *App) *Ctx {
     c := &Ctx{
         index:   -1,
+        store:   map[any]any{},
         traceid: req.Header.Get(HeaderXRequestID),
         start:   time.Now(),
         app:     a,
@@ -69,8 +71,9 @@ func newCtx(w http.ResponseWriter, req *http.Request, a *App) *Ctx {
 
 // Body 返回请求体：首次调用读取并缓存，后续调用返回同一份结果（包括读取错误）。
 func (c *Ctx) Body() (b []byte, err error) {
-    if cached, ok := c.Value(bodyKey{}).(reqBody); ok {
-        return cached.b, cached.err
+    if v, ok := c.store[bodyKey{}]; ok {
+        rb := v.(reqBody)
+        return rb.b, rb.err
     }
 
     if b, err = io.ReadAll(c.R.Body); err != nil {
@@ -83,10 +86,16 @@ func (c *Ctx) Body() (b []byte, err error) {
     return
 }
 
-// Set 把请求级键值写入请求 context；之后用 c.Value 读取。
+// Set 把请求级键值写入 Ctx 的容器，不替换 c.R；c.R.Context() 里读不到这些值。
 func (c *Ctx) Set(key, value any) *Ctx {
-    c.R = c.R.WithContext(context.WithValue(c.R.Context(), key, value))
+    c.store[key] = value
     return c
+}
+
+// Get 读取 Set 存入的 key 值；未设置或类型不符时返回零值。
+func (c *Ctx) Get[T any](key any) T {
+    v, _ := c.Value(key).(T)
+    return v
 }
 
 // Deadline 转发请求 context 的截止时间。
@@ -98,8 +107,13 @@ func (c *Ctx) Done() <-chan struct{} { return c.R.Context().Done() }
 // Err 返回请求 context 的错误。
 func (c *Ctx) Err() error { return c.R.Context().Err() }
 
-// Value 读取请求 context 中的值。
-func (c *Ctx) Value(key any) any { return c.R.Context().Value(key) }
+// Value 先读 Ctx 的容器，再回退到请求 context；实现 context.Context 契约。
+func (c *Ctx) Value(key any) any {
+    if v, ok := c.store[key]; ok {
+        return v
+    }
+    return c.R.Context().Value(key)
+}
 
 // IsCanceled 判断请求是否因客户端取消而结束；不覆盖 deadline 超时。
 func (c *Ctx) IsCanceled() bool { return errors.Is(c.R.Context().Err(), context.Canceled) }
@@ -213,15 +227,10 @@ func (c *Ctx) Next() error {
     return c.chain[c.index](c)
 }
 
-// Bind 绑定 IN：先位置来源，再按 Content-Type 解码 body 覆盖；同一请求只绑一次。
+// Bind 绑定 IN：先位置来源，再按 Content-Type 解码 body 覆盖；同一请求同一 IN 类型只绑一次。
 func (c *Ctx) Bind[IN any](in *IN) (err error) {
-    if v := c.Value(bindInKey{}); v != nil {
-        cached, ok := v.(IN)
-        if !ok {
-            return errors.New("mie: bound input is " + reflect.TypeOf(v).String() +
-                ", not " + reflect.TypeFor[IN]().String())
-        }
-        *in = cached
+    if v, ok := c.store[bindKey[IN]{}]; ok {
+        *in = v.(IN)
         return
     }
 
@@ -233,7 +242,7 @@ func (c *Ctx) Bind[IN any](in *IN) (err error) {
         return err
     }
 
-    c.Set(bindInKey{}, *in)
+    c.Set(bindKey[IN]{}, *in)
     return
 }
 

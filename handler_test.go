@@ -435,6 +435,21 @@ func TestBodyIsCached(t *testing.T) {
     }
 }
 
+// 锁定：Body 读取失败也缓存，第二次调用返回同一个错误，不再读已耗尽的流。
+func TestBodyCachesReadError(t *testing.T) {
+    c := newTestCtx(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", bodyErrorReader{}))
+
+    _, first := c.Body()
+    if first == nil {
+        t.Fatal("第一次 Body 应返回读取错误")
+    }
+
+    second, err := c.Body()
+    if len(second) != 0 || err != first {
+        t.Fatalf("第二次 Body = %q / %v, want 缓存错误 %v", second, err, first)
+    }
+}
+
 type formIn struct {
     Name string `form:"name"`
     Page int    `form:"page"`
@@ -809,7 +824,8 @@ func TestRegisterRejectsUnbindableInput(t *testing.T) {
     })
 }
 
-func TestBindMismatchReportsBothTypes(t *testing.T) {
+// 锁定：不同 IN 类型各自缓存；同一类型重复绑定命中缓存。
+func TestBindIndependentInputsUseSeparateCache(t *testing.T) {
     type nameIn struct {
         Name string `query:"name"`
     }
@@ -818,17 +834,23 @@ func TestBindMismatchReportsBothTypes(t *testing.T) {
     }
 
     r := New()
-    r.Get("/mismatch", func(c *Ctx, v nameIn) (struct{}, error) {
-        var other idIn
-        return struct{}{}, c.Bind(&other)
+    r.Get("/multi", func(c *Ctx, _ nameIn) (int, error) {
+        var first idIn
+        if err := c.Bind(&first); err != nil {
+            return 0, err
+        }
+        var again idIn
+        if err := c.Bind(&again); err != nil {
+            return 0, err
+        }
+        return first.ID*10 + again.ID, nil
     })
 
     rec := httptest.NewRecorder()
-    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/mismatch?name=bob", nil))
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/multi?id=3", nil))
 
-    body := rec.Body.String()
-    if rec.Code != http.StatusInternalServerError || !strings.Contains(body, "idIn") || !strings.Contains(body, "nameIn") {
-        t.Fatalf("status/body = %d/%q, want 500 naming both types", rec.Code, body)
+    if rec.Code != http.StatusOK || rec.Body.String() != "33" {
+        t.Fatalf("status/body = %d/%q, want 200 with 33", rec.Code, rec.Body.String())
     }
 }
 

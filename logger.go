@@ -9,7 +9,7 @@ import (
     "time"
 )
 
-// logger 是包级兜底 Logger：New 用它填充 Config.Logger 的零值，手工构造的 Ctx（没有 App）也用它。
+// logger 是包级兜底 Logger：New 用它填充 Config.Logger 的零值，没有 App 的 Ctx 也用它。
 // 不跟随 slog.Default()，避免应用的全局配置影响框架输出。
 var logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 
@@ -45,7 +45,7 @@ func (c *Ctx) logAccess(err error) {
     c.app.config.Logger.LogAttrs(c, level, "access", attrs...)
 }
 
-// Log 是框架日志的统一出口，落到 Config.Logger；手工构造的 Ctx 退回包级 logger。
+// Log 是框架日志的统一出口，落到 Config.Logger；没有 App 的 Ctx 退回包级 logger。
 func (c *Ctx) Log(level slog.Level, msg string, args ...any) {
     if c.app == nil {
         logger.Log(c, level, msg, args...)
