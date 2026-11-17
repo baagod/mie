@@ -4,12 +4,16 @@ import (
     "context"
     "errors"
     "log/slog"
+    "mime"
     "net/http"
     "os"
     "os/signal"
     "syscall"
     "time"
 )
+
+// 未配置 MaxBodyBytes 时的请求 body 上限。
+const defaultMaxBodyBytes = 1 << 20
 
 // Config 零值即可使用；缺省项在 New 中补齐。
 type Config struct {
@@ -31,6 +35,10 @@ type Config struct {
 
     // Codecs 声明可提供的格式与优先级；零值只提供内置 JSON、XML。
     Codecs Codecs
+
+    // MaxBodyBytes 是非 multipart 请求的 body 上限，超出时读 body 返回 413。
+    // 零值在 New 中补 1MiB；负值关闭这层保护。multipart 不适用：上传大小由上传路由自行限制。
+    MaxBodyBytes int64
 }
 
 // App 持有 ServeMux、配置与生命周期方法；注册面见 Router。
@@ -63,6 +71,10 @@ func New(cfg ...Config) *App {
         c.Logger = logger
     }
 
+    if c.MaxBodyBytes == 0 {
+        c.MaxBodyBytes = defaultMaxBodyBytes
+    }
+
     c.Codecs.resolve()
 
     a := &App{mux: http.NewServeMux(), config: c}
@@ -70,8 +82,14 @@ func New(cfg ...Config) *App {
     return a
 }
 
-// ServeHTTP 创建 Ctx、安装 NoMatch 钩子、执行 ServeMux，并为未进入用户链的请求补收尾。
+// ServeHTTP 包装 body 上限、创建 Ctx、安装 NoMatch 钩子、执行 ServeMux，并为未进入用户链的请求补收尾。
 func (a *App) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+    if req.Body != nil && req.Body != http.NoBody && a.config.MaxBodyBytes > 0 {
+        if ct, _, _ := mime.ParseMediaType(req.Header.Get(HeaderContentType)); ct != MIMEMultipartForm {
+            req.Body = http.MaxBytesReader(w, req.Body, a.config.MaxBodyBytes)
+        }
+    }
+
     c := newCtx(w, req, a)
 
     defer func() {

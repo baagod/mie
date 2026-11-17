@@ -239,6 +239,9 @@ func (c *Ctx) Bind[IN any](in *IN) (err error) {
     }
 
     if err = bind.Decode(c.R, in); err != nil {
+        if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+            return Status413RequestEntityTooLarge()
+        }
         return Status400BadRequest(err.Error())
     }
 
@@ -252,7 +255,12 @@ func (c *Ctx) BindBody[IN any](in *IN) (err error) {
         return
     }
 
-    ct, _, _ := mime.ParseMediaType(c.ContentType())
+    ct := c.ContentType()
+    if ct == "" {
+        return Status415UnsupportedMediaType()
+    }
+
+    ct, _, _ = mime.ParseMediaType(ct)
     if ct == MIMEFormUrlencoded || ct == MIMEMultipartForm {
         return
     }

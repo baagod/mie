@@ -2,7 +2,9 @@ package bind
 
 import (
     "errors"
+    "fmt"
     "net/http"
+    "net/url"
     "reflect"
 )
 
@@ -34,14 +36,17 @@ func Decode[IN any](r *http.Request, in *IN) (err error) {
     }
 
     // 只有存在参数来源时才 ParseForm，避免多读/多解析 body。
+    // query 单独取 URL 参数：r.Form 把 body 参数排在前面，query 直接读它会被 body 覆盖。
+    var query url.Values
     if p.hasForm {
         if err = r.ParseForm(); err != nil {
-            return errors.New("bind params: " + err.Error())
+            return fmt.Errorf("bind params: %w", err)
         }
+        query = r.URL.Query()
     }
 
     for _, f := range p.fields {
-        if err = bindValue(r, v.Field(f.index), f); err != nil {
+        if err = bindValue(r, query, v.Field(f.index), f); err != nil {
             return
         }
     }

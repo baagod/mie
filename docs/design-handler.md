@@ -22,14 +22,14 @@
 
 绑定发生在链上第一个声明 IN 的元素处，一个请求只绑一次并缓存。
 
-- 位置来源只认显式 tag：`path:"id"`、`header:"X-Trace-Id"`、`query:"page"` / `form:"page"`（query 与 form 是同一个参数来源）。没写 tag 的字段不会被位置来源写入。
-- 顺序：`path` → `header` → `query`/`form` → body，后写覆盖先写；来源缺失跳过，来源存在但值为空串则清零字段。
+- 位置来源只认显式 tag：`path:"id"`、`header:"X-Trace-Id"`、`query:"page"`、`form:"page"`。`query` 只读 URL 参数；`form` 先读表单参数，同名查询参数后写覆盖（含空值）。没写 tag 的字段不会被位置来源写入。
+- 顺序：body（按 `Content-Type` 解码，权重最低，见下）→ `form` → `query` → `header` → `path`，后写覆盖先写；来源缺失跳过，来源存在但值为空串则清零字段。
 - 未导出字段、空 tag 一律跳过；非标量（指针/切片/数组取元素后仍非标量）是声明错误，注册时报 panic。
 - 多值来源：切片写全部、数组按序填充（超出丢弃、不足补零）、标量只取第一个。
 - 参数来源调用一次 `ParseForm`；它决定是否读 urlencoded body，框架不还原 `c.R.Body`。
 - body：非 GET/HEAD 且有 body 时，先按 `Content-Type` 找解码器：`form-urlencoded` 归参数绑定、multipart 归 `Bind`（尚未实现），两者直接跳过；找不到解码器返回 415 且不读 body，`Content-Type` 缺失、畸形同样 415。
 - 内置解码器只有 `application/json` 与 `application/xml`，其余媒体由应用填 `Decode`；`+json`/`+xml` 这类结构化后缀（如 `application/vnd.api+json`）回退到同 top-level 的基类型解码器。
-- 找到解码器才读 `c.Body()` 解码；无内置上限，超限由 `Ctx.Body()` 映射 413；解码失败 400。
+- 找到解码器才读 `c.Body()` 解码；body 默认上限 1 MiB（`Config.MaxBodyBytes`，负值关闭，multipart 不适用），超限 413；解码失败 400。
 - `struct{}` 不绑不读 body；`*T` 由框架分配，handler 通常拿到非 nil（body 为 `null` 例外）。
 - 绑定结果按值缓存：值类型 IN 的每层拿到独立副本，改字段不影响下游（切片/map 的底层数据仍共享，改元素可见）；`*T` 的各层指向同一对象，改对象内容下游可见。
 - 参数/头部只扫顶层字段，不展开匿名嵌入；body 的嵌入按解码器规则处理。

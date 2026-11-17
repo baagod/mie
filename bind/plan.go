@@ -19,7 +19,7 @@ const (
 var plans xsync.Map[reflect.Type, *plan] // map[reflect.Type]*plan
 
 // posTags 是位置来源的 tag 名，顺序即绑定顺序，后写覆盖先写：
-// path 权重最高（路由参数不容 body 篡改）；query 与 form 同读 ParseForm 后的参数表。
+// path 权重最高（路由参数不容 body 篡改）；form 先取表单参数，同名查询参数后写覆盖；query 只读 URL 参数。
 var posTags = [...]string{bindForm, bindQuery, bindHeader, bindPath}
 
 // field 是 struct IN 的一个取值项；同一字段声明多个来源时会有多项。
@@ -72,8 +72,7 @@ func scan(t reflect.Type) *plan {
             continue
         }
 
-        // 同一字段的多来源生成多项：按 path → header → 参数 的顺序，后写覆盖先写；
-        // query 与 form 同源，都读 ParseForm 后的参数表。
+        // 同一字段的多来源生成多项：按 form → query → header → path 的顺序，后写覆盖先写。
         for _, tag := range posTags {
             v, _ := sf.Tag.Lookup(tag)
             if v == "" {

@@ -3,13 +3,14 @@ package bind
 import (
     "errors"
     "net/http"
+    "net/url"
     "reflect"
     "strconv"
 )
 
 // bindValue 把该字段来源的值写进去：缺失（没有该参数/头）跳过，保留前面来源的值；
 // 存在但首个值为空串（?x=、空 header）则清零字段。切片/数组写入全部值，标量取第一个。
-func bindValue(r *http.Request, v reflect.Value, f field) (err error) {
+func bindValue(r *http.Request, query url.Values, v reflect.Value, f field) (err error) {
     var s []string
     switch f.source {
     case bindPath:
@@ -18,8 +19,14 @@ func bindValue(r *http.Request, v reflect.Value, f field) (err error) {
         }
     case bindHeader:
         s = r.Header.Values(f.key)
-    case bindQuery, bindForm:
-        s, _ = r.Form[f.key]
+    case bindQuery:
+        s = query[f.key]
+    case bindForm:
+        // form 同时接受表单参数和同名查询参数：查询权重更高，最后写覆盖表单值（含空值）。
+        s = r.PostForm[f.key]
+        if q, ok := query[f.key]; ok {
+            s = q
+        }
     }
 
     if len(s) == 0 {
