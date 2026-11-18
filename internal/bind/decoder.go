@@ -16,9 +16,9 @@ func Decode[IN any](r *http.Request, in *IN) error {
         return errors.New("bind: destination must be a non-nil pointer to IN")
     }
 
-    p := planFor(reflect.TypeFor[IN]())
-    if p.err != nil {
-        return p.err
+    p, err := planFor(reflect.TypeFor[IN]())
+    if err != nil {
+        return err
     }
 
     v := reflect.ValueOf(in).Elem() // IN

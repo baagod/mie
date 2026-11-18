@@ -30,8 +30,9 @@ func Parse[T any](s []string) (v T, err error) {
 }
 
 // Validate 报告 IN 的绑定声明是否可用；注册期调用，让写错的字段类型在启动时暴露。
-func Validate(t reflect.Type) error {
-    return planFor(t).err
+func Validate(t reflect.Type) (err error) {
+    _, err = planFor(t)
+    return
 }
 
 // setValues 把一组字符串写入 v：命名类型交给 TextUnmarshaler 整体解析、指针按需分配，

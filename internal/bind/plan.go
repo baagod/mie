@@ -43,19 +43,22 @@ type plan struct {
 }
 
 // planFor 取类型的方案；指针按元素类型规划，多层指针是声明错误。并发首批请求可能各自扫描一次，结果一致。
-func planFor(t reflect.Type) *plan {
+func planFor(t reflect.Type) (p *plan, err error) {
     if t.Kind() == reflect.Pointer {
         if t = t.Elem(); t.Kind() == reflect.Pointer {
-            return &plan{err: errors.New("bind: IN must not be a pointer to a pointer")}
+            return nil, errors.New("bind: IN must not be a pointer to a pointer")
         }
     }
 
-    if p, ok := plans.Load(t); ok {
-        return p
+    if p, _ = plans.Load(t); p == nil {
+        p, _ = plans.LoadOrStore(t, scan(t))
     }
 
-    p, _ := plans.LoadOrStore(t, scan(t))
-    return p
+    if p.err != nil {
+        return nil, p.err
+    }
+
+    return
 }
 
 // scan 检查 IN 的字段声明并生成方案；非法声明记入 err。
