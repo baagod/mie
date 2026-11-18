@@ -28,7 +28,7 @@
 
 | # | 问题 | 结论 | 理由 |
 |---|---|---|---|
-| D1 | 文件部分是否进公开 API | **走 D**：复用 `Bind`，字段类型写 `*multipart.FileHeader` / `[]*multipart.FileHeader`，不新增公开方法 | 用户：struct 里写了文件字段就是想要文件；只绑值而丢弃文件等于字段失效，用户还得自己解析一遍 |
+| D1 | 文件部分是否进公开 API | **走 D**：复用 `Bind`，字段类型写 `*multipart.FileHeader` / `[]*multipart.FileHeader`，不新增公开方法；文件只从 `form` tag 绑定，写到其它 tag 的声明被忽略（不报错，便于同一 IN 复用到多种来源） | 用户：struct 里写了文件字段就是想要文件；只绑值而丢弃文件等于字段失效，用户还得自己解析一遍。m01190 追加：非 form tag 报错会让 DTO 无法复用，改忽略 |
 | D2 | 字节上限归谁管 | 保持现状：multipart 继续豁免 `MaxBodyBytes`，`maxMemory` 用常量，不新增配置项 | 用户：普通 body 1MiB 够用，但 multipart 不能设上限；`BindBody` 与 multipart 是两类请求，此前的豁免是故意的 |
 | D3 | 解析失败语义 | `Bind` 遇 multipart 解析失败（缺 boundary、part 损坏、读 body 出错）→ 400，与 `bind` 现有其它解析错误一致；另：`form` 字段声明为非文件类型但请求携带同名文件 → 400（避免静默零值）；`Ctx.Form` 因 D4 不适用 | 用户：「错误保持一致」；静默失真比报错更贵 |
 | D4 | `Ctx.Form` 是否同步支持 | 本次不改，只动 `bind` | 用户：「先不管 Ctx.Form」。代价：`Bind` 能取 multipart、`Form` 取不到（已知且接受的不对称） |

@@ -2,9 +2,8 @@ package bind
 
 import (
     "errors"
-    "reflect"
-
     "github.com/baagod/mie/internal/xsync"
+    "reflect"
 )
 
 const (
@@ -22,8 +21,8 @@ var plans xsync.Map[reflect.Type, *plan] // map[reflect.Type]*plan
 // form（表单）< query（URL 参数）< cookie（HttpOnly 会话 cookie 不能被诱导链接的 ?sid= 顶掉）< header（网关注入的身份头、显式 Authorization）< path（路由参数）。
 var posTags = [...]string{bindForm, bindQuery, bindCookie, bindHeader, bindPath}
 
-// field 是 struct IN 的一个取值项；同一字段声明多个来源时会有多项。
-type field struct {
+// bindField 是 struct IN 的一个取值项；同一字段声明多个来源时会有多项。
+type bindField struct {
     index  int    // 字段下标
     name   string // 仅用于错误文案
     source string // 来自哪个 tag
@@ -32,10 +31,23 @@ type field struct {
 
 // plan 是 IN 类型的绑定方案，存入后不再修改。
 type plan struct {
-    fields    []field
-    hasParams bool // 存在 query/form 来源：都要 ParseForm
-    hasCookie bool // 存在 cookie 来源：Cookie 头只解析一次
-    err       error
+    forms, queries, cookies, headers, paths []bindField
+    err                                     error
+}
+
+func (p *plan) add(f bindField) {
+    switch f.source {
+    case bindForm:
+        p.forms = append(p.forms, f)
+    case bindQuery:
+        p.queries = append(p.queries, f)
+    case bindCookie:
+        p.cookies = append(p.cookies, f)
+    case bindHeader:
+        p.headers = append(p.headers, f)
+    case bindPath:
+        p.paths = append(p.paths, f)
+    }
 }
 
 // planFor 取类型的方案；指针按元素类型规划，并发首批请求可能各自扫描一次，结果一致。
@@ -53,11 +65,6 @@ func planFor(t reflect.Type) *plan {
     return actual
 }
 
-// Validate 报告 IN 的绑定声明是否可用；注册期调用，让写错的字段类型在启动时暴露。
-func Validate(t reflect.Type) error {
-    return planFor(t).err
-}
-
 // scan 检查 IN 的字段声明并生成方案；非法声明记入 err。
 func scan(t reflect.Type) *plan {
     p := new(plan)
@@ -69,7 +76,7 @@ func scan(t reflect.Type) *plan {
 
     for i := 0; i < t.NumField(); i++ {
         sf := t.Field(i)
-        if sf.PkgPath != "" { // 未导出字段
+        if !sf.IsExported() { // 未导出字段
             continue
         }
 
@@ -80,25 +87,24 @@ func scan(t reflect.Type) *plan {
                 continue
             }
 
-            if fileKind(sf.Type) {
-                if tag != bindForm {
-                    p.err = errors.New("field " + t.String() + "." + sf.Name + ": file field only supports form tag")
-                    return p
-                }
-            } else if !scalarKind(sf.Type) {
-                p.err = errors.New("field " + t.String() + "." + sf.Name + ": unsupported binding type " + sf.Type.String())
+            if fileKind(sf.Type) && tag != bindForm {
+                // 文件只从 multipart 的 form part 来；其它 tag 忽略，让同一个 IN 能复用到多种来源。
+                continue
+            }
+
+            if !fileKind(sf.Type) && !scalarKind(sf.Type) {
+                p.err = fieldDeclError(t, sf, "unsupported binding type "+sf.Type.String())
                 return p
             }
 
-            p.fields = append(p.fields, field{index: i, name: sf.Name, source: tag, key: v})
-            switch tag {
-            case bindQuery, bindForm:
-                p.hasParams = true
-            case bindCookie:
-                p.hasCookie = true
-            }
+            p.add(bindField{index: i, name: sf.Name, source: tag, key: v})
         }
     }
 
     return p
+}
+
+// fieldDeclError 标注 IN 字段的声明错误，注册期暴露。
+func fieldDeclError(t reflect.Type, sf reflect.StructField, msg string) error {
+    return errors.New("field " + t.String() + "." + sf.Name + ": " + msg)
 }

@@ -725,6 +725,41 @@ func TestBindExplicitEmptyClearsValue(t *testing.T) {
 
 func TestBindParseFormError(t *testing.T) {
     type in struct {
+        Page int `form:"page"`
+    }
+
+    r := New()
+    r.Post("/f", func(c *Ctx, v in) (int, error) { return v.Page, nil })
+
+    req := httptest.NewRequest(http.MethodPost, "/f", strings.NewReader("a=%zz"))
+    req.Header.Set(HeaderContentType, MIMEFormUrlencoded)
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, req)
+    if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid URL escape") {
+        t.Fatalf("status/body = %d/%q, want 400 with the parse error", rec.Code, rec.Body.String())
+    }
+}
+
+func TestBindFormParseQueryError(t *testing.T) {
+    type in struct {
+        Name string `form:"name"`
+    }
+
+    r := New()
+    r.Post("/f", func(c *Ctx, v in) (string, error) { return v.Name, nil })
+
+    req := httptest.NewRequest(http.MethodPost, "/f?x=%zz", strings.NewReader("name=alice"))
+    req.Header.Set(HeaderContentType, MIMEFormUrlencoded)
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, req)
+
+    if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid URL escape") {
+        t.Fatalf("status/body = %d/%q, want 400: form 覆盖也要暴露 query 的解析错误", rec.Code, rec.Body.String())
+    }
+}
+
+func TestBindQueryOnlySkipsBody(t *testing.T) {
+    type in struct {
         Page int `query:"page"`
     }
 
@@ -735,8 +770,10 @@ func TestBindParseFormError(t *testing.T) {
     req.Header.Set(HeaderContentType, MIMEFormUrlencoded)
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, req)
-    if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "bind params:") {
-        t.Fatalf("status/body = %d/%q, want 400 with bind params:", rec.Code, rec.Body.String())
+
+    // 没有 form 来源就不解析 body：畸形 body 不影响只读 query 的绑定。
+    if rec.Code != http.StatusOK || rec.Body.String() != "0" {
+        t.Fatalf("status/body = %d/%q, want 200/0", rec.Code, rec.Body.String())
     }
 }
 
@@ -752,8 +789,8 @@ func TestBindQueryParseError(t *testing.T) {
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, req)
 
-    if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "bind params:") {
-        t.Fatalf("status/body = %d/%q, want 400 with bind params:", rec.Code, rec.Body.String())
+    if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid URL escape") {
+        t.Fatalf("status/body = %d/%q, want 400 with the parse error", rec.Code, rec.Body.String())
     }
 }
 
@@ -917,9 +954,10 @@ func TestDuplicateBindingSharesValue(t *testing.T) {
 }
 
 func TestBindMultipartFileAndValue(t *testing.T) {
+    // 文件字段在前：若 form 绑定在文件成功后提前返回，后面的 Name 会漏绑。
     type in struct {
-        Name   string                `form:"name"`
         Avatar *multipart.FileHeader `form:"avatar"`
+        Name   string                `form:"name"`
     }
 
     var got in

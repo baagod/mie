@@ -185,6 +185,24 @@ func TestBindCookieOverridesQuery(t *testing.T) {
     }
 }
 
+func TestBindHeaderOverridesCookie(t *testing.T) {
+    type in struct {
+        User string `header:"X-User" cookie:"user"`
+    }
+
+    r := httptest.NewRequest(http.MethodGet, "/", nil)
+    r.Header.Set("X-User", "from-header")
+    r.AddCookie(&http.Cookie{Name: "user", Value: "from-cookie"})
+
+    var v in
+    if err := bind.Decode(r, &v); err != nil {
+        t.Fatalf("Bind: %v", err)
+    }
+    if v.User != "from-header" {
+        t.Fatalf("User = %q, want from-header", v.User)
+    }
+}
+
 func TestBindFormReadsBodyAndQueryWins(t *testing.T) {
     r := httptest.NewRequest(http.MethodPost, "/?name=from-query&page=3", strings.NewReader("name=from-form&city=Paris"))
     r.Header.Set("Content-Type", "application/x-www-form-urlencoded")

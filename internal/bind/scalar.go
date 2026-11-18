@@ -3,8 +3,6 @@ package bind
 import (
     "encoding"
     "errors"
-    "net/http"
-    "net/url"
     "reflect"
     "strconv"
 )
@@ -19,47 +17,6 @@ func Parse[T any](s []string) (v T, err error) {
         var zero T
         return zero, err
     }
-    return
-}
-
-// bindValue 把该字段来源的值写进去：缺失（没有该参数/头/cookie）跳过，保留前面来源的值；
-// 存在但首个值为空串（?x=、空 header）则清零字段。切片/数组写入全部值，标量取第一个。
-func bindValue(r *http.Request, query url.Values, cookies []*http.Cookie, v reflect.Value, f field) (err error) {
-    var s []string
-    switch f.source {
-    case bindPath:
-        if p := r.PathValue(f.key); p != "" {
-            s = []string{p}
-        }
-    case bindHeader:
-        s = r.Header.Values(f.key)
-    case bindQuery:
-        s = query[f.key]
-    case bindForm:
-        if fileKind(v.Type()) {
-            return bindFile(r, v, f)
-        }
-        // 文件 part 不进 PostForm，声明成非文件类型只会静默得到零值。
-        if mf := r.MultipartForm; mf != nil && len(mf.File[f.key]) > 0 {
-            return errors.New("bind: " + f.source + "." + f.name + ": file part must bind to *multipart.FileHeader")
-        }
-        // form 同时接受表单参数和同名查询参数：查询权重更高，最后写覆盖表单值（含空值）。
-        s = r.PostForm[f.key]
-        if q, ok := query[f.key]; ok {
-            s = q
-        }
-    case bindCookie:
-        for _, c := range cookies {
-            if c.Name == f.key {
-                s = append(s, c.Value)
-            }
-        }
-    }
-
-    if err = setValues(v, s); err != nil {
-        return errors.New("bind: " + f.source + "." + f.name + ": " + err.Error())
-    }
-
     return
 }
 

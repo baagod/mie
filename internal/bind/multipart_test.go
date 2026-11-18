@@ -196,14 +196,17 @@ func TestDecodeMultipartFileDeclaredAsString(t *testing.T) {
     }
 }
 
-func TestDecodeMultipartFileWithQueryTag(t *testing.T) {
+func TestDecodeMultipartFileWithQueryTagIgnored(t *testing.T) {
     type in struct {
         Avatar *multipart.FileHeader `query:"avatar"`
     }
 
     req := multipartWithFiles(t, "avatar", []string{"a.txt"})
     var got in
-    if err := Decode(req, &got); err == nil {
-        t.Fatal("want error for file field with query tag, got nil")
+    if err := Decode(req, &got); err != nil {
+        t.Fatalf("err = %v, want nil: query tag on file field is ignored", err)
+    }
+    if got.Avatar != nil {
+        t.Fatalf("Avatar = %+v, want nil", got.Avatar)
     }
 }
