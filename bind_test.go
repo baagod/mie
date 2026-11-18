@@ -777,6 +777,25 @@ func TestBindQueryOnlySkipsBody(t *testing.T) {
     }
 }
 
+// 没有 query/form 来源就不解析 URL 参数：畸形 query 不影响只读 header 的绑定。
+func TestBindHeaderOnlySkipsQueryParse(t *testing.T) {
+    type in struct {
+        User string `header:"X-User"`
+    }
+
+    r := New()
+    r.Get("/h", func(c *Ctx, v in) (string, error) { return v.User, nil })
+
+    req := httptest.NewRequest(http.MethodGet, "/h?bad=%zz", nil)
+    req.Header.Set("X-User", "u")
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, req)
+
+    if rec.Code != http.StatusOK || rec.Body.String() != "u" {
+        t.Fatalf("status/body = %d/%q, want 200/u", rec.Code, rec.Body.String())
+    }
+}
+
 func TestBindQueryParseError(t *testing.T) {
     type in struct {
         Page int `query:"page"`

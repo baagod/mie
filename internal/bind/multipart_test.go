@@ -153,6 +153,46 @@ func TestDecodeMultipartFiles(t *testing.T) {
     }
 }
 
+// 文件切片之后的字段仍要绑定：切片分支曾经用 return 提前退出整个 bindForm。
+func TestDecodeMultipartFilesThenValue(t *testing.T) {
+    type in struct {
+        Files []*multipart.FileHeader `form:"files"`
+        Name  string                  `form:"name"`
+    }
+
+    var b bytes.Buffer
+    w := multipart.NewWriter(&b)
+    for _, name := range []string{"a.txt", "b.txt"} {
+        fw, err := w.CreateFormFile("files", name)
+        if err != nil {
+            t.Fatal(err)
+        }
+        if _, err := fw.Write([]byte("hello")); err != nil {
+            t.Fatal(err)
+        }
+    }
+    if err := w.WriteField("name", "x"); err != nil {
+        t.Fatal(err)
+    }
+    if err := w.Close(); err != nil {
+        t.Fatal(err)
+    }
+
+    req := httptest.NewRequest(http.MethodPost, "/", &b)
+    req.Header.Set("Content-Type", w.FormDataContentType())
+
+    var got in
+    if err := Decode(req, &got); err != nil {
+        t.Fatal(err)
+    }
+    if len(got.Files) != 2 {
+        t.Fatalf("len(Files) = %d, want 2", len(got.Files))
+    }
+    if got.Name != "x" {
+        t.Fatalf("Name = %q, want x", got.Name)
+    }
+}
+
 func TestDecodeMultipartFileMissing(t *testing.T) {
     type in struct {
         Name   string                `form:"name"`
