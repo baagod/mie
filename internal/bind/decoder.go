@@ -16,13 +16,7 @@ func Decode[IN any](r *http.Request, in *IN) error {
         return errors.New("bind: destination must be a non-nil pointer to IN")
     }
 
-    t := reflect.TypeFor[IN]()
-    ptr := t.Kind() == reflect.Pointer
-    if ptr {
-        t = t.Elem()
-    }
-
-    p := planFor(t)
+    p := planFor(reflect.TypeFor[IN]())
     if p.err != nil {
         return p.err
     }
@@ -30,9 +24,9 @@ func Decode[IN any](r *http.Request, in *IN) error {
     v := reflect.ValueOf(in).Elem() // IN
 
     // IN 是 *T：请求期分配 T，handler 永远拿到非 nil 指针。
-    if ptr {
+    if v.Kind() == reflect.Pointer {
         if v.IsNil() {
-            v.Set(reflect.New(t))
+            v.Set(reflect.New(v.Type().Elem()))
         }
         v = v.Elem()
     }

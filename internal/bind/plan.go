@@ -42,19 +42,20 @@ type plan struct {
     err     error
 }
 
-// planFor 取类型的方案；指针按元素类型规划，并发首批请求可能各自扫描一次，结果一致。
+// planFor 取类型的方案；指针按元素类型规划，多层指针是声明错误。并发首批请求可能各自扫描一次，结果一致。
 func planFor(t reflect.Type) *plan {
     if t.Kind() == reflect.Pointer {
-        t = t.Elem()
+        if t = t.Elem(); t.Kind() == reflect.Pointer {
+            return &plan{err: errors.New("bind: IN must not be a pointer to a pointer")}
+        }
     }
 
     if p, ok := plans.Load(t); ok {
         return p
     }
 
-    p := scan(t)
-    actual, _ := plans.LoadOrStore(t, p)
-    return actual
+    p, _ := plans.LoadOrStore(t, scan(t))
+    return p
 }
 
 // scan 检查 IN 的字段声明并生成方案；非法声明记入 err。

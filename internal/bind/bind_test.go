@@ -44,6 +44,30 @@ func TestValidateAcceptsMultiLevelPointer(t *testing.T) {
     }
 }
 
+func TestBindRejectsDoublePointerIN(t *testing.T) {
+    type in struct {
+        Name string `form:"name"`
+    }
+
+    err := bind.Validate(reflect.TypeFor[**in]())
+    if err == nil {
+        t.Fatal("Validate(**in) = nil, want error")
+    }
+    if !strings.Contains(err.Error(), "pointer to a pointer") {
+        t.Errorf("Validate(**in) = %v, want error about pointer to a pointer", err)
+    }
+
+    var dst **in
+    req := httptest.NewRequest(http.MethodPost, "/?name=x", nil)
+    err = bind.Decode(req, &dst)
+    if err == nil {
+        t.Fatal("Decode(**in) = nil, want error")
+    }
+    if !strings.Contains(err.Error(), "pointer to a pointer") {
+        t.Errorf("Decode(**in) = %v, want error about pointer to a pointer", err)
+    }
+}
+
 func TestBindSkipsUnexportedAndEmptyTags(t *testing.T) {
     type in struct {
         id   int    `query:"id"`

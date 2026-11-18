@@ -192,6 +192,17 @@ func TestUseInputConflictPanics(t *testing.T) {
     })
 }
 
+// 多层指针 IN 在注册期就 panic，不该留给首个请求。
+func TestRouteDoublePointerInputPanics(t *testing.T) {
+    type in struct {
+        Name string `form:"name"`
+    }
+
+    mustPanicWith(t, "pointer to a pointer", func() {
+        New().Post[**in, struct{}]("/x", func(*Ctx, **in) (struct{}, error) { return struct{}{}, nil })
+    })
+}
+
 func mustPanicWith(t *testing.T, want string, f func()) {
     t.Helper()
     defer func() {
