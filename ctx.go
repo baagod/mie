@@ -122,20 +122,6 @@ func (c *Ctx) IsCanceled() bool { return errors.Is(c.R.Context().Err(), context.
 // Param 返回路径参数的值。
 func (c *Ctx) Param(name string) string { return c.R.PathValue(name) }
 
-// HeaderGet 读取请求头；为空时返回第一个默认值。
-func (c *Ctx) HeaderGet(name string, or ...string) string {
-    h := c.R.Header.Get(name)
-    if h == "" && len(or) > 0 {
-        h = or[0]
-    }
-    return h
-}
-
-// ContentType 返回请求头的内容类型
-func (c *Ctx) ContentType() string {
-    return c.HeaderGet(HeaderContentType)
-}
-
 // RemoteIP 取 RemoteAddr 的主机部分；解析失败时返回原值。
 func (c *Ctx) RemoteIP() string {
     if host, _, err := net.SplitHostPort(c.R.RemoteAddr); err == nil {
@@ -153,10 +139,24 @@ func (c *Ctx) Header(name, value string) *Ctx {
     return c
 }
 
+// HeaderGet 读取请求头；为空时返回第一个默认值。
+func (c *Ctx) HeaderGet(name string, or ...string) string {
+    h := c.R.Header.Get(name)
+    if h == "" && len(or) > 0 {
+        h = or[0]
+    }
+    return h
+}
+
 // Type 设置 Content-Type 响应头。
 func (c *Ctx) Type(value string) *Ctx {
     c.W.Header().Set(HeaderContentType, value)
     return c
+}
+
+// ContentType 返回请求头的内容类型
+func (c *Ctx) ContentType() string {
+    return c.HeaderGet(HeaderContentType)
 }
 
 // Status 预设响应状态码，返回 Ctx 以便链式调用。
@@ -195,37 +195,6 @@ func (c *Ctx) Send(v any) error {
     }
 
     return c.sendFormat(v, media, true)
-}
-
-// sendFormat 用 media 的编码器编码 v；没有编码器时，raw 允许 string/[]byte 原样写出，其余报错。
-func (c *Ctx) sendFormat(v any, media string, raw bool) error {
-    if enc, ok := c.app.config.Codecs.encoder(media); ok {
-        b, err := enc(v)
-        if err == nil {
-            _, err = c.Type(media).W.Write(b)
-        }
-        return err
-    }
-
-    if raw {
-        switch x := v.(type) {
-        case string:
-            return c.Type(media).writeString(x)
-        case []byte:
-            return c.Type(media).writeBytes(x)
-        }
-    }
-
-    return errors.New("mie: no encoder for " + media)
-}
-
-// Next 把游标推进到下一个链元素并调用它；越过链尾后再调用返回错误。
-func (c *Ctx) Next() error {
-    c.index++
-    if c.index >= len(c.chain) {
-        return errors.New("mie: Next called after the end of the chain")
-    }
-    return c.chain[c.index](c)
 }
 
 // Bind 绑定 IN：先按 Content-Type 解码 body（权重最低），再由位置来源覆盖；同一请求同一 IN 类型只绑一次。
@@ -302,6 +271,15 @@ func (c *Ctx) BindBody[IN any](in *IN) (err error) {
     return
 }
 
+// Next 把游标推进到下一个链元素并调用它；越过链尾后再调用返回错误。
+func (c *Ctx) Next() error {
+    c.index++
+    if c.index >= len(c.chain) {
+        return errors.New("mie: Next called after the end of the chain")
+    }
+    return c.chain[c.index](c)
+}
+
 // finish 是请求的统一收尾：写错误响应、提交预设状态、记一条访问日志。
 // 取消导致的错误不写响应；handlePanic 的中止路径不经过 finish。
 func (c *Ctx) finish(err error) {
@@ -310,6 +288,28 @@ func (c *Ctx) finish(err error) {
     }
     c.W.commit()
     c.logAccess(err)
+}
+
+// sendFormat 用 media 的编码器编码 v；没有编码器时，raw 允许 string/[]byte 原样写出，其余报错。
+func (c *Ctx) sendFormat(v any, media string, raw bool) error {
+    if enc, ok := c.app.config.Codecs.encoder(media); ok {
+        b, err := enc(v)
+        if err == nil {
+            _, err = c.Type(media).W.Write(b)
+        }
+        return err
+    }
+
+    if raw {
+        switch x := v.(type) {
+        case string:
+            return c.Type(media).writeString(x)
+        case []byte:
+            return c.Type(media).writeBytes(x)
+        }
+    }
+
+    return errors.New("mie: no encoder for " + media)
 }
 
 // writeError 是所有错误响应的唯一出口；错误文本会原样写给客户端，内部细节不要放进 error。
