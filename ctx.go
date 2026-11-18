@@ -11,6 +11,7 @@ import (
     "net"
     "net/http"
     "reflect"
+    "strings"
     "time"
 
     "github.com/baagod/mie/internal/bind"
@@ -119,8 +120,32 @@ func (c *Ctx) Value(key any) any {
 // IsCanceled 判断请求是否因客户端取消而结束；不覆盖 deadline 超时。
 func (c *Ctx) IsCanceled() bool { return errors.Is(c.R.Context().Err(), context.Canceled) }
 
+// Path 返回请求的实际路径，如 /user/42。
+func (c *Ctx) Path() string {
+    return c.R.URL.Path
+}
+
+// Pattern 返回命中的路由模板，如 /user/{id}；未命中路由时为空串。
+func (c *Ctx) Pattern() string {
+    return strings.TrimPrefix(c.R.Pattern, c.R.Method+" ")
+}
+
 // Param 返回路径参数的值。
-func (c *Ctx) Param(name string) string { return c.R.PathValue(name) }
+func (c *Ctx) Param(name string) string {
+    return c.R.PathValue(name)
+}
+
+// Form 取参数并解析成 T；同名 query 优先，缺失或解析失败返回零值。
+// T 可为标量、TextUnmarshaler 或它们的切片/数组/指针；元素层再套指针不支持，按零值返回。
+func (c *Ctx) Form[T any](name string) (v T) {
+    ss, ok := c.R.URL.Query()[name]
+    if !ok {
+        _ = c.R.ParseForm()
+        ss = c.R.PostForm[name]
+    }
+    v, _ = bind.Parse[T](ss)
+    return
+}
 
 // RemoteIP 取 RemoteAddr 的主机部分；解析失败时返回原值。
 func (c *Ctx) RemoteIP() string {

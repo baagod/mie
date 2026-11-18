@@ -4,6 +4,8 @@ import (
     "context"
     "net/http"
     "net/http/httptest"
+    "slices"
+    "strings"
     "testing"
 )
 
@@ -123,5 +125,70 @@ func TestCtxValueFallsBackToRequestContext(t *testing.T) {
     c.Set(outerKey{}, "inner")
     if got := c.Value(outerKey{}); got != "inner" {
         t.Fatalf("Value = %v, want %q", got, "inner")
+    }
+}
+
+// 锁定：Form 同名时 query 整体替换 form（含多值），只在 form 的键仍能取到。
+func TestCtxFormQueryOverridesForm(t *testing.T) {
+    req := httptest.NewRequest(http.MethodPost, "/form?page=2&tags=b&tags=d",
+        strings.NewReader("page=1&tags=a&tags=c&only=form"))
+    req.Header.Set(HeaderContentType, MIMEFormUrlencoded)
+    c := newTestCtx(httptest.NewRecorder(), req)
+
+    if got := c.Form[int]("page"); got != 2 {
+        t.Fatalf("query 优先: Form[int] = %d, want 2", got)
+    }
+    if got := c.Form[[]string]("tags"); !slices.Equal(got, []string{"b", "d"}) {
+        t.Fatalf("query 多值整体替换: Form[[]string] = %v, want [b d]", got)
+    }
+    if got := c.Form[string]("only"); got != "form" {
+        t.Fatalf("只在 form: Form[string] = %q, want %q", got, "form")
+    }
+    if got := c.Form[[]int]("missing"); got != nil {
+        t.Fatalf("缺失: Form[[]int] = %v, want nil", got)
+    }
+}
+
+// 锁定：query 里存在但为空同样覆盖 form，解析失败按零值。
+func TestCtxFormEmptyQueryOverridesForm(t *testing.T) {
+    req := httptest.NewRequest(http.MethodPost, "/form?empty=&num=",
+        strings.NewReader("empty=form&num=7"))
+    req.Header.Set(HeaderContentType, MIMEFormUrlencoded)
+    c := newTestCtx(httptest.NewRecorder(), req)
+
+    if got := c.Form[string]("empty"); got != "" {
+        t.Fatalf("空串覆盖: Form[string] = %q, want empty", got)
+    }
+    if got := c.Form[int]("num"); got != 0 {
+        t.Fatalf("空串解析失败: Form[int] = %d, want 0", got)
+    }
+}
+
+// 锁定：数组解析失败时 Form 返回零值，不交出半截结果。
+func TestCtxFormArrayParseFailure(t *testing.T) {
+    c := newTestCtx(httptest.NewRecorder(),
+        httptest.NewRequest(http.MethodGet, "/form?pair=1&pair=abc", nil))
+
+    if got := c.Form[[2]int]("pair"); got != [2]int{} {
+        t.Fatalf("Form[[2]int] = %v, want [0 0]", got)
+    }
+}
+
+// 锁定：Path 是实际路径，Pattern 是不带方法前缀的模板。
+func TestCtxPathAndPattern(t *testing.T) {
+    r := New()
+    var path, pattern string
+    r.Get("/user/{id}", func(c *Ctx, _ struct{}) (struct{}, error) {
+        path, pattern = c.Path(), c.Pattern()
+        return struct{}{}, nil
+    })
+
+    r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/user/42", nil))
+
+    if path != "/user/42" {
+        t.Fatalf("Path = %q, want %q", path, "/user/42")
+    }
+    if pattern != "/user/{id}" {
+        t.Fatalf("Pattern = %q, want %q", pattern, "/user/{id}")
     }
 }

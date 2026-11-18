@@ -18,7 +18,7 @@
 - 组的中间件是创建时的快照：父组之后再 `Use` 不影响已建组，子组 `Use` 不影响兄弟。
 - 中间件声明的 `IN` 在注册时（启动期）与本层之后注册的每条路由的 `IN` 比对（含无输入路由），不一致 panic；`IN` 的字段类型同样在注册时校验。
 
-## 3. 输入绑定（IN）
+## 3. 输入（IN 绑定与单值读取）
 
 绑定发生在链上第一个声明 IN 的元素处，一个请求只绑一次并缓存。
 
@@ -29,6 +29,7 @@
 - 字段可加一层指针（`*int`、`*time.Time`、`*[]int`）：来源缺失保持 nil；值为空串时按类型解析，字符串得到指向空串的指针，数字、时间等解析失败返回 400 且保持 nil（集合类型保留空串元素，如 `?tags=` → `[""]`）；只支持一层，`**T`、`[]*T` 是声明错误，注册期 panic。
 - 多值来源：切片写全部、数组按序填充（超出丢弃、不足补零）、标量只取第一个；命名切片/数组本身实现 `TextUnmarshaler` 时（如 `net.IP`）按一个值整体解析、多余值丢弃（空值也算第一个值，不会被跳过，如 `?ip=&ip=::1` 得到零值），`[]time.Time`、`[2]time.Time` 这类则逐元素解析。
 - 存在参数来源（`query`/`form`）时调用一次 `ParseForm`；urlencoded 请求会因此读掉 body（框架不还原 `c.R.Body`），两种来源的解析错误都在这里统一返回 400；`query` 的值仍只从 URL 取。
+- 不建 IN 而只取单个参数时用 `Ctx.Form[T]`：同名 `query` 优先于表单参数（整体替换，含空值），缺失或解析失败返回零值；`T` 可为标量、`TextUnmarshaler` 或它们的切片/数组/一层指针，元素层指针按零值返回。
 - body：非 GET/HEAD 且有 body 时，先按 `Content-Type` 找解码器：`form-urlencoded` 归参数绑定、multipart 归 `Bind`（尚未实现），两者直接跳过；找不到解码器返回 415 且不读 body，`Content-Type` 缺失、畸形同样 415。
 - 内置解码器只有 `application/json` 与 `application/xml`，其余媒体由应用填 `Decode`；`+json`/`+xml` 这类结构化后缀（如 `application/vnd.api+json`）回退到同 top-level 的基类型解码器。
 - body 的键名语义由解码器决定：内置 JSON 走 `encoding/json/v2`，无 tag 字段按 Go 字段名参与，键名精确匹配（大小写敏感）；未知键默认忽略，需要严格拒绝时替换 `Config.Codecs.JSON.Decode`。
@@ -49,6 +50,6 @@
 
 ## 5. 延后
 
-body 重放/流式；严格未知字段；`multipart/form-data`。
+body 重放/流式；严格未知字段；`multipart/form-data`（`Bind` 与 `Ctx.Form` 都取不到）。
 
 

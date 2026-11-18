@@ -5,6 +5,7 @@ import (
     "net/http"
     "net/http/httptest"
     "net/netip"
+    "slices"
     "strings"
     "sync"
     "testing"
@@ -353,5 +354,28 @@ func TestBindEmptyValueFollowsTypeParser(t *testing.T) {
     // net.IP 的 UnmarshalText 把空串解析成零值，这是类型自己的决定。
     if v, err := decode("?ip=&ip=::1"); err != nil || v.IP != nil {
         t.Fatalf("net.IP empty = %v/%v, want nil/nil", err, v.IP)
+    }
+}
+
+// 锁定：Parse 单值得长度 1 的切片、多值按序、缺失为零值、标量取第一个。
+func TestParse(t *testing.T) {
+    if got, err := bind.Parse[[]int]([]string{"1"}); err != nil || !slices.Equal(got, []int{1}) {
+        t.Fatalf("单值 = %v/%v, want [1]/nil", got, err)
+    }
+    if got, err := bind.Parse[[]int]([]string{"1", "2"}); err != nil || !slices.Equal(got, []int{1, 2}) {
+        t.Fatalf("多值 = %v/%v, want [1 2]/nil", got, err)
+    }
+    if got, err := bind.Parse[int]([]string{"7", "8"}); err != nil || got != 7 {
+        t.Fatalf("标量 = %d/%v, want 7/nil", got, err)
+    }
+    if got, err := bind.Parse[[]int](nil); err != nil || got != nil {
+        t.Fatalf("缺失 = %v/%v, want nil/nil", got, err)
+    }
+    if got, err := bind.Parse[*string]([]string{""}); err != nil || got == nil || *got != "" {
+        t.Fatalf("空串指针 = %v/%v, want 指向空串", got, err)
+    }
+    // 数组是逐元素写入的，失败后不能把前几个元素交出去。
+    if got, err := bind.Parse[[2]int]([]string{"1", "abc"}); err == nil || got != [2]int{} {
+        t.Fatalf("数组半截 = %v/%v, want [0 0]/err", got, err)
     }
 }

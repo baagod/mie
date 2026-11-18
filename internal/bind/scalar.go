@@ -12,6 +12,16 @@ import (
 // textUnmarshaler 是标量解析的扩展点：类型的指针实现它时，字符串交给它解析。
 var textUnmarshaler = reflect.TypeFor[encoding.TextUnmarshaler]()
 
+// Parse 把一组参数值解析成 T：标量取第一个，切片/数组写入全部，顶层指针按需分配。
+// 失败返回零值：数组是逐元素写入的，半截结果不能交给丢弃 err 的调用方。
+func Parse[T any](s []string) (v T, err error) {
+    if err = setValues(reflect.ValueOf(&v).Elem(), s); err != nil {
+        var zero T
+        return zero, err
+    }
+    return
+}
+
 // bindValue 把该字段来源的值写进去：缺失（没有该参数/头/cookie）跳过，保留前面来源的值；
 // 存在但首个值为空串（?x=、空 header）则清零字段。切片/数组写入全部值，标量取第一个。
 func bindValue(r *http.Request, query url.Values, cookies []*http.Cookie, v reflect.Value, f field) (err error) {

@@ -5,7 +5,6 @@ import (
     "log/slog"
     "net/http"
     "os"
-    "strings"
     "time"
 )
 
@@ -31,8 +30,8 @@ func (c *Ctx) logAccess(err error) {
     attrs := []slog.Attr{
         slog.String("method", c.R.Method),
         slog.Int("status", status),
-        slog.String("path", c.R.URL.Path),
-        slog.String("pattern", strings.TrimPrefix(c.R.Pattern, c.R.Method+" ")),
+        slog.String("path", c.Path()),
+        slog.String("pattern", c.Pattern()),
         slog.Duration("latency", time.Since(c.start)),
         slog.String("traceid", c.TraceID()),
         slog.String("ip", c.RemoteIP()),
