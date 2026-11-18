@@ -43,18 +43,18 @@ func Decode[IN any](r *http.Request, in *IN) error {
 func (p *plan) bind(r *http.Request, out reflect.Value) (err error) {
     var query url.Values
 
-    for _, fs := range p.groups {
-        if len(fs.fields) == 0 {
+    for _, s := range p.sources {
+        if len(s.fields) == 0 {
             continue
         }
 
-        if query == nil && (fs.tag == bindForm || fs.tag == bindQuery) {
+        if query == nil && (s.tag == bindForm || s.tag == bindQuery) {
             if query, err = url.ParseQuery(r.URL.RawQuery); err != nil {
                 return
             }
         }
 
-        if err = fs.bind(fs, r, out, query); err != nil {
+        if err = s.bind(s, r, out, query); err != nil {
             return
         }
     }
@@ -62,55 +62,55 @@ func (p *plan) bind(r *http.Request, out reflect.Value) (err error) {
     return
 }
 
-func (fs *Fields) bindPath(r *http.Request, out reflect.Value, _ url.Values) (err error) {
-    for _, sf := range fs.fields {
-        var s []string
+func (s *source) bindPath(r *http.Request, out reflect.Value, _ url.Values) (err error) {
+    for _, sf := range s.fields {
+        var ss []string
         if v := r.PathValue(sf.key); v != "" {
-            s = []string{v}
+            ss = []string{v}
         }
-        if err = setValues(out.Field(sf.index), s); err != nil {
-            return fs.err(sf, err)
-        }
-    }
-    return
-}
-
-func (fs *Fields) bindHeader(r *http.Request, out reflect.Value, _ url.Values) (err error) {
-    for _, f := range fs.fields {
-        s := r.Header.Values(f.key)
-        if err = setValues(out.Field(f.index), s); err != nil {
-            return fs.err(f, err)
+        if err = setValues(out.Field(sf.index), ss); err != nil {
+            return s.err(sf, err)
         }
     }
     return
 }
 
-func (fs *Fields) bindCookie(r *http.Request, out reflect.Value, _ url.Values) (err error) {
+func (s *source) bindHeader(r *http.Request, out reflect.Value, _ url.Values) (err error) {
+    for _, f := range s.fields {
+        ss := r.Header.Values(f.key)
+        if err = setValues(out.Field(f.index), ss); err != nil {
+            return s.err(f, err)
+        }
+    }
+    return
+}
+
+func (s *source) bindCookie(r *http.Request, out reflect.Value, _ url.Values) (err error) {
     cookies := r.Cookies()
-    for _, f := range fs.fields {
-        var s []string
+    for _, f := range s.fields {
+        var ss []string
         for _, c := range cookies {
             if c.Name == f.key {
-                s = append(s, c.Value)
+                ss = append(ss, c.Value)
             }
         }
-        if err = setValues(out.Field(f.index), s); err != nil {
-            return fs.err(f, err)
+        if err = setValues(out.Field(f.index), ss); err != nil {
+            return s.err(f, err)
         }
     }
     return
 }
 
-func (fs *Fields) bindQuery(_ *http.Request, out reflect.Value, query url.Values) (err error) {
-    for _, f := range fs.fields {
+func (s *source) bindQuery(_ *http.Request, out reflect.Value, query url.Values) (err error) {
+    for _, f := range s.fields {
         if err = setValues(out.Field(f.index), query[f.key]); err != nil {
-            return fs.err(f, err)
+            return s.err(f, err)
         }
     }
     return
 }
 
-func (fs *Fields) bindForm(r *http.Request, out reflect.Value, query url.Values) (err error) {
+func (s *source) bindForm(r *http.Request, out reflect.Value, query url.Values) (err error) {
     // 请求体只在绑定 form 时解析：multipart 的值进 PostForm，文件进 MultipartForm。
     if ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); ct == "multipart/form-data" {
         if err = r.ParseMultipartForm(multipartMemory); err != nil {
@@ -121,7 +121,7 @@ func (fs *Fields) bindForm(r *http.Request, out reflect.Value, query url.Values)
     }
 
     // form 同时接受表单参数和同名查询参数：查询权重更高，最后写覆盖表单值（含空值）。
-    for _, f := range fs.fields {
+    for _, f := range s.fields {
         v := out.Field(f.index)
 
         if f.isFile { // 从已解析的文件表取字段：缺失保留 nil，单字段收到多文件报错。
@@ -141,7 +141,7 @@ func (fs *Fields) bindForm(r *http.Request, out reflect.Value, query url.Values)
             case 1:
                 v.Set(reflect.ValueOf(files[0]))
             default:
-                return fs.err(f, errors.New("multiple files for single field"))
+                return s.err(f, errors.New("multiple files for single field"))
             }
 
             continue
@@ -149,16 +149,16 @@ func (fs *Fields) bindForm(r *http.Request, out reflect.Value, query url.Values)
 
         // 文件 part 不进 PostForm，声明成非文件类型只会静默得到零值。
         if mf := r.MultipartForm; mf != nil && len(mf.File[f.key]) > 0 {
-            return fs.err(f, errors.New("file part must bind to *multipart.FileHeader"))
+            return s.err(f, errors.New("file part must bind to *multipart.FileHeader"))
         }
 
-        s := r.PostForm[f.key]
+        ss := r.PostForm[f.key]
         if q, ok := query[f.key]; ok {
-            s = q
+            ss = q
         }
 
-        if err = setValues(v, s); err != nil {
-            return fs.err(f, err)
+        if err = setValues(v, ss); err != nil {
+            return s.err(f, err)
         }
     }
 
@@ -166,6 +166,6 @@ func (fs *Fields) bindForm(r *http.Request, out reflect.Value, query url.Values)
 }
 
 // err 标注失败的来源与 IN 字段。
-func (fs *Fields) err(f field, err error) error {
-    return fmt.Errorf("bind: %s.%s: %w", fs.tag, f.name, err)
+func (s *source) err(f field, err error) error {
+    return fmt.Errorf("bind: %s.%s: %w", s.tag, f.name, err)
 }

@@ -5,6 +5,7 @@ import (
     "net/http"
     "net/http/httptest"
     "net/netip"
+    "reflect"
     "slices"
     "strings"
     "sync"
@@ -23,6 +24,23 @@ func TestBindRejectsUnsupportedFieldType(t *testing.T) {
     err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/?m=1", nil), &v)
     if err == nil || !strings.Contains(err.Error(), "unsupported binding type map[string]int") {
         t.Fatalf("err = %v, want unsupported binding type", err)
+    }
+}
+
+// 声明校验与解析器必须同口径：Parse 能写多级指针，Validate 就不能拒绝它。
+func TestValidateAcceptsMultiLevelPointer(t *testing.T) {
+    withFormTag := func(typ reflect.Type) reflect.Type {
+        return reflect.StructOf([]reflect.StructField{{Name: "F", Type: typ, Tag: `form:"f"`}})
+    }
+
+    for _, typ := range []reflect.Type{reflect.TypeFor[*int](), reflect.TypeFor[**int]()} {
+        if err := bind.Validate(withFormTag(typ)); err != nil {
+            t.Errorf("Validate(%v) = %v, want nil", typ, err)
+        }
+    }
+
+    if err := bind.Validate(withFormTag(reflect.TypeFor[map[string]int]())); err == nil {
+        t.Error("Validate(map[string]int) = nil, want error")
     }
 }
 
@@ -391,6 +409,9 @@ func TestParse(t *testing.T) {
     }
     if got, err := bind.Parse[*string]([]string{""}); err != nil || got == nil || *got != "" {
         t.Fatalf("空串指针 = %v/%v, want 指向空串", got, err)
+    }
+    if got, err := bind.Parse[**int]([]string{"7"}); err != nil || got == nil || **got != 7 {
+        t.Fatalf("多层指针 = %v/%v, want 7/nil", got, err)
     }
     // 数组是逐元素写入的，失败后不能把前几个元素交出去。
     if got, err := bind.Parse[[2]int]([]string{"1", "abc"}); err == nil || got != [2]int{} {

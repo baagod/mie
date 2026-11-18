@@ -1,6 +1,8 @@
 package bind
 
 import (
+    "errors"
+
     "github.com/baagod/mie/internal/xsync"
     "net/http"
     "net/url"
@@ -26,18 +28,18 @@ type field struct {
     isFile bool   // 字段承载上传文件
 }
 
-// Fields 是一个来源分组：顺序即绑定顺序，后写覆盖先写，信任等级从低到高：
+// source 是一个来源：顺序即绑定顺序，后写覆盖先写，信任等级从低到高：
 // form（表单）< query（URL 参数）< cookie（HttpOnly 会话 cookie 不能被诱导链接的 ?sid= 顶掉）< header（网关注入的身份头、显式 Authorization）< path（路由参数）。
-type Fields struct {
+type source struct {
     tag    string
     fields []field
-    bind   func(*Fields, *http.Request, reflect.Value, url.Values) error
+    bind   func(*source, *http.Request, reflect.Value, url.Values) error
 }
 
 // plan 是 IN 类型的绑定方案，存入后不再修改。
 type plan struct {
-    groups []*Fields
-    err    error
+    sources []*source
+    err     error
 }
 
 // planFor 取类型的方案；指针按元素类型规划，并发首批请求可能各自扫描一次，结果一致。
@@ -57,12 +59,12 @@ func planFor(t reflect.Type) *plan {
 
 // scan 检查 IN 的字段声明并生成方案；非法声明记入 err。
 func scan(t reflect.Type) *plan {
-    p := &plan{groups: []*Fields{
-        {tag: bindForm, bind: (*Fields).bindForm},
-        {tag: bindQuery, bind: (*Fields).bindQuery},
-        {tag: bindCookie, bind: (*Fields).bindCookie},
-        {tag: bindHeader, bind: (*Fields).bindHeader},
-        {tag: bindPath, bind: (*Fields).bindPath},
+    p := &plan{sources: []*source{
+        {tag: bindForm, bind: (*source).bindForm},
+        {tag: bindQuery, bind: (*source).bindQuery},
+        {tag: bindCookie, bind: (*source).bindCookie},
+        {tag: bindHeader, bind: (*source).bindHeader},
+        {tag: bindPath, bind: (*source).bindPath},
     }}
 
     // 非 struct 的 IN 没有字段：整个 body 就是值（由调用方的整块解码处理）。
@@ -78,8 +80,8 @@ func scan(t reflect.Type) *plan {
 
         // 同一字段声明多个来源时生成多项，各自进入对应分组。
         file := fileKind(sf.Type)
-        for _, f := range p.groups {
-            tag := f.tag
+        for _, s := range p.sources {
+            tag := s.tag
             v, _ := sf.Tag.Lookup(tag)
             if v == "" {
                 continue
@@ -91,11 +93,11 @@ func scan(t reflect.Type) *plan {
             }
 
             if !file && !scalarKind(sf.Type) {
-                p.err = fieldDeclError(t, sf, "unsupported binding type "+sf.Type.String())
+                p.err = errors.New("field " + t.String() + "." + sf.Name + ": unsupported binding type " + sf.Type.String())
                 return p
             }
 
-            f.fields = append(f.fields, field{index: i, name: sf.Name, key: v, isFile: file})
+            s.fields = append(s.fields, field{index: i, name: sf.Name, key: v, isFile: file})
         }
     }
 
