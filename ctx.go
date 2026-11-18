@@ -13,7 +13,7 @@ import (
     "reflect"
     "time"
 
-    "github.com/baagod/mie/bind"
+    "github.com/baagod/mie/internal/bind"
 )
 
 type (

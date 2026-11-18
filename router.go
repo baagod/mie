@@ -8,7 +8,7 @@ import (
     "slices"
     "strings"
 
-    "github.com/baagod/mie/bind"
+    "github.com/baagod/mie/internal/bind"
 )
 
 // Router 是注册面：前缀、本层中间件，以及最终落到的 ServeMux（由 App 持有）。

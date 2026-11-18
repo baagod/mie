@@ -10,7 +10,7 @@ import (
     "testing"
     "time"
 
-    "github.com/baagod/mie/bind"
+    "github.com/baagod/mie/internal/bind"
 )
 
 func TestBindRejectsUnsupportedFieldType(t *testing.T) {

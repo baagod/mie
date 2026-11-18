@@ -7,7 +7,6 @@ import (
     "github.com/baagod/mie/internal/xsync"
 )
 
-// Decode 按显式 tag 把位置来源（form → query → cookie → header → path）写进 IN；body 由调用方按 Content-Type 整块解码。
 const (
     bindPath   = "path"
     bindHeader = "header"
