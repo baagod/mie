@@ -80,7 +80,12 @@ func scan(t reflect.Type) *plan {
                 continue
             }
 
-            if !scalarKind(sf.Type) {
+            if fileKind(sf.Type) {
+                if tag != bindForm {
+                    p.err = errors.New("field " + t.String() + "." + sf.Name + ": file field only supports form tag")
+                    return p
+                }
+            } else if !scalarKind(sf.Type) {
                 p.err = errors.New("field " + t.String() + "." + sf.Name + ": unsupported binding type " + sf.Type.String())
                 return p
             }

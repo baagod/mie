@@ -36,6 +36,13 @@ func bindValue(r *http.Request, query url.Values, cookies []*http.Cookie, v refl
     case bindQuery:
         s = query[f.key]
     case bindForm:
+        if fileKind(v.Type()) {
+            return bindFile(r, v, f)
+        }
+        // 文件 part 不进 PostForm，声明成非文件类型只会静默得到零值。
+        if mf := r.MultipartForm; mf != nil && len(mf.File[f.key]) > 0 {
+            return errors.New("bind: " + f.source + "." + f.name + ": file part must bind to *multipart.FileHeader")
+        }
         // form 同时接受表单参数和同名查询参数：查询权重更高，最后写覆盖表单值（含空值）。
         s = r.PostForm[f.key]
         if q, ok := query[f.key]; ok {

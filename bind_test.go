@@ -1,7 +1,9 @@
 package mie
 
 import (
+    "bytes"
     "errors"
+    "mime/multipart"
     "net/http"
     "net/http/httptest"
     "reflect"
@@ -911,5 +913,70 @@ func TestDuplicateBindingSharesValue(t *testing.T) {
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/dup?page=1", nil))
     if rec.Code != http.StatusOK || rec.Body.String() != "11" {
         t.Fatalf("status/body = %d/%q, want 200 with 11", rec.Code, rec.Body.String())
+    }
+}
+
+func TestBindMultipartFileAndValue(t *testing.T) {
+    type in struct {
+        Name   string                `form:"name"`
+        Avatar *multipart.FileHeader `form:"avatar"`
+    }
+
+    var got in
+    r := New()
+    r.Post("/upload", func(c *Ctx, i in) (struct{}, error) {
+        got = i
+        return struct{}{}, nil
+    })
+
+    var b bytes.Buffer
+    w := multipart.NewWriter(&b)
+    if err := w.WriteField("name", "x"); err != nil {
+        t.Fatal(err)
+    }
+    f, err := w.CreateFormFile("avatar", "a.txt")
+    if err != nil {
+        t.Fatal(err)
+    }
+    if _, err := f.Write([]byte("hello")); err != nil {
+        t.Fatal(err)
+    }
+    if err := w.Close(); err != nil {
+        t.Fatal(err)
+    }
+
+    req := httptest.NewRequest(http.MethodPost, "/upload", &b)
+    req.Header.Set("Content-Type", w.FormDataContentType())
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, req)
+
+    if rec.Code != http.StatusOK {
+        t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+    }
+    if got.Name != "x" {
+        t.Fatalf("Name = %q, want x", got.Name)
+    }
+    if got.Avatar == nil || got.Avatar.Filename != "a.txt" {
+        t.Fatalf("Avatar = %+v, want a.txt", got.Avatar)
+    }
+}
+
+func TestBindMultipartMalformed400(t *testing.T) {
+    type in struct {
+        Name string `form:"name"`
+    }
+
+    r := New()
+    r.Post("/upload", func(c *Ctx, i in) (struct{}, error) {
+        return struct{}{}, nil
+    })
+
+    req := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader("not multipart"))
+    req.Header.Set("Content-Type", "multipart/form-data; boundary=missing")
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, req)
+
+    if rec.Code != http.StatusBadRequest {
+        t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
     }
 }

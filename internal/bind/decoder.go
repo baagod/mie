@@ -3,10 +3,16 @@ package bind
 import (
     "errors"
     "fmt"
+    "mime"
     "net/http"
     "net/url"
     "reflect"
 )
+
+// multipartMemory = 32M：multipart 的值与小文件驻留内存的上限，
+// 超出部分标准库写到磁盘临时文件。数值取标准库内部默认值 defaultMaxMemory（32 << 20，未导出）；
+// 传 0 不会回落到该默认值，而是全部写盘。
+const multipartMemory = 32 << 20
 
 // Decode 把请求里的位置来源写进 in；in 必须是 *IN，body 由调用方处理。
 func Decode[IN any](r *http.Request, in *IN) (err error) {
@@ -35,15 +41,23 @@ func Decode[IN any](r *http.Request, in *IN) (err error) {
         v = v.Elem()
     }
 
-    // 只有存在参数来源时才 ParseForm，避免多读/多解析 body。
+    // 只有存在参数来源时才解析 body，避免多读/多解析。
     // query 单独取 URL 参数：r.Form 把 body 参数排在前面，直接读它会被 body 覆盖。
-    // ParseForm 已校验过 query，这里的解析错误忽略即可。
     var query url.Values
     var cookies []*http.Cookie
+
     if p.hasParams {
-        if err = r.ParseForm(); err != nil {
+        // multipart 的值只能经 ParseMultipartForm 进入 PostForm；其它类型继续走 ParseForm。
+        if ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); ct == "multipart/form-data" {
+            err = r.ParseMultipartForm(multipartMemory)
+        } else {
+            err = r.ParseForm()
+        }
+
+        if err != nil {
             return fmt.Errorf("bind params: %w", err)
         }
+
         query = r.URL.Query()
     }
 
