@@ -229,6 +229,7 @@ func (c *Ctx) Next() error {
 }
 
 // Bind 绑定 IN：先按 Content-Type 解码 body（权重最低），再由位置来源覆盖；同一请求同一 IN 类型只绑一次。
+// 绑定失败时 err 非 nil，in 可能已被部分字段写入，调用方应以 err 为准并丢弃 in。
 func (c *Ctx) Bind[IN any](in *IN) (err error) {
     if v, ok := c.store[bindKey[IN]{}]; ok {
         *in = v.(IN)
