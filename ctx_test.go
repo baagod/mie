@@ -1,7 +1,9 @@
 package mie
 
 import (
+    "bytes"
     "context"
+    "mime/multipart"
     "net/http"
     "net/http/httptest"
     "slices"
@@ -190,5 +192,98 @@ func TestCtxPathAndPattern(t *testing.T) {
     }
     if pattern != "/user/{id}" {
         t.Fatalf("Pattern = %q, want %q", pattern, "/user/{id}")
+    }
+}
+
+func TestCtxFormMultipartValue(t *testing.T) {
+    c := newTestCtx(httptest.NewRecorder(), multipartValueRequest(t, "name", "mux"))
+    if got := c.Form[string]("name"); got != "mux" {
+        t.Fatalf("Form[string] = %q, want mux", got)
+    }
+}
+
+// 锁定：Bind 与 Form 共用同一次解析，先 Bind 再 Form 仍能读到值。
+func TestCtxFormAfterBindMultipart(t *testing.T) {
+    c := newTestCtx(httptest.NewRecorder(), multipartValueRequest(t, "name", "mux"))
+
+    var in struct {
+        Name string `form:"name"`
+    }
+    if err := c.Bind(&in); err != nil {
+        t.Fatal(err)
+    }
+    if in.Name != "mux" {
+        t.Fatalf("Bind Name = %q, want mux", in.Name)
+    }
+    if got := c.Form[string]("name"); got != "mux" {
+        t.Fatalf("Form after Bind = %q, want mux", got)
+    }
+}
+
+func TestCtxFormMultipartFile(t *testing.T) {
+    c := newTestCtx(httptest.NewRecorder(), multipartFileRequest(t, "avatar", "a.txt", "hello"))
+
+    fh := c.Form[*multipart.FileHeader]("avatar")
+    if fh == nil || fh.Filename != "a.txt" {
+        t.Fatalf("Form[*multipart.FileHeader] = %v, want a.txt", fh)
+    }
+    if got := c.Form[string]("avatar"); got != "" {
+        t.Fatalf("value type on file part = %q, want empty", got)
+    }
+}
+
+func TestCtxFormMultipartMultipleFiles(t *testing.T) {
+    var b bytes.Buffer
+    w := multipart.NewWriter(&b)
+    for _, name := range []string{"a.txt", "b.txt"} {
+        f, err := w.CreateFormFile("docs", name)
+        if err != nil {
+            t.Fatal(err)
+        }
+        if _, err := f.Write([]byte("hello")); err != nil {
+            t.Fatal(err)
+        }
+    }
+    if err := w.Close(); err != nil {
+        t.Fatal(err)
+    }
+
+    req := httptest.NewRequest(http.MethodPost, "/", &b)
+    req.Header.Set(HeaderContentType, w.FormDataContentType())
+    c := newTestCtx(httptest.NewRecorder(), req)
+
+    if files := c.Form[[]*multipart.FileHeader]("docs"); len(files) != 2 {
+        t.Fatalf("Form[[]*multipart.FileHeader] = %d files, want 2", len(files))
+    }
+    if fh := c.Form[*multipart.FileHeader]("docs"); fh != nil {
+        t.Fatalf("single file type on two files = %v, want nil", fh)
+    }
+}
+
+func TestCtxFormMalformedMultipart(t *testing.T) {
+    req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("not multipart"))
+    req.Header.Set(HeaderContentType, "multipart/form-data; boundary=missing")
+    c := newTestCtx(httptest.NewRecorder(), req)
+
+    if got := c.Form[string]("name"); got != "" {
+        t.Fatalf("malformed multipart = %q, want zero", got)
+    }
+    if fh := c.Form[*multipart.FileHeader]("name"); fh != nil {
+        t.Fatalf("malformed multipart file = %v, want nil", fh)
+    }
+}
+
+type panicReader struct{}
+
+func (panicReader) Read([]byte) (int, error) { panic("body must not be read") }
+
+// 锁定：query 命中时连 body 都不碰。
+func TestCtxFormQuerySkipsBody(t *testing.T) {
+    req := httptest.NewRequest(http.MethodPost, "/?name=mux", panicReader{})
+    req.Header.Set(HeaderContentType, MIMEMultipartForm)
+    c := newTestCtx(httptest.NewRecorder(), req)
+
+    if got := c.Form[string]("name"); got != "mux" {
+        t.Fatalf("Form[string] = %q, want mux", got)
     }
 }

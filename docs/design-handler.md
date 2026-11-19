@@ -30,11 +30,11 @@
 - 字段可加指针（`*int`、`*time.Time`、`*[]int`，多层亦可）：来源缺失保持 nil；值为空串时按类型解析，字符串得到指向空串的指针，数字、时间等解析失败返回 400 且保持 nil（集合类型保留空串元素，如 `?tags=` → `[""]`）。
 - 多值来源：切片写全部、数组按序填充（超出丢弃、不足补零）、标量只取第一个；命名切片/数组本身实现 `TextUnmarshaler` 时（如 `net.IP`）按一个值整体解析、多余值丢弃（空值也算第一个值，不会被跳过，如 `?ip=&ip=::1` 得到零值），`[]time.Time`、`[2]time.Time` 这类则逐元素解析。
 - 只有 `form` 来源才解析 body：urlencoded 走 `ParseForm`（会因此读掉 body，框架不还原 `c.R.Body`），multipart 走 `ParseMultipartForm`（缺 boundary、part 损坏都 400）；`query` 用 `url.ParseQuery` 单独取，非法转义同样 400；纯 `query`/`header`/`path` 的 IN 不读 body。
-- 不建 IN 而只取单个参数时用 `Ctx.Form[T]`：同名 `query` 优先于表单参数（整体替换，含空值），缺失或解析失败返回零值；`T` 可为标量、`TextUnmarshaler` 或它们的切片/数组/指针，元素层指针按零值返回；multipart 下不读文件、返回零值。
+- 不建 IN 而只取单个参数时用 `Ctx.Form[T]`：同名 `query` 优先于表单参数（整体替换，含空值），query 命中时不读 body，未命中时读取并消费 body（框架不还原 `c.R.Body`）；缺失或解析失败返回零值。`T` 可为标量、`TextUnmarshaler` 或它们的切片/数组/指针，元素层指针按零值返回；`T` 为 `*multipart.FileHeader` / `[]*multipart.FileHeader` 时取上传文件（不读 query，单类型收到多个文件返回零值）。
 - body：非 GET/HEAD 且有 body 时，先按 `Content-Type` 找解码器：`form-urlencoded` 与 `multipart/form-data` 都归参数绑定，两者直接跳过；找不到解码器返回 415 且不读 body，`Content-Type` 缺失、畸形同样 415。
 - 内置解码器只有 `application/json` 与 `application/xml`，其余媒体由应用填 `Decode`；`+json`/`+xml` 这类结构化后缀（如 `application/vnd.api+json`）回退到同 top-level 的基类型解码器。
 - body 的键名语义由解码器决定：内置 JSON 走 `encoding/json/v2`，无 tag 字段按 Go 字段名参与，键名精确匹配（大小写敏感）；未知键默认忽略，需要严格拒绝时替换 `Config.Codecs.JSON.Decode`。
-- 找到解码器才读 `c.Body()` 解码；body 默认上限 1 MiB（`Config.MaxBodyBytes`，负值关闭，multipart 不适用），超限 413；解码失败 400。multipart 的值与不超过 32 MiB 的文件留在内存，超出部分写到磁盘临时文件，请求结束统一删除。
+- 找到解码器才读 `c.Body()` 解码；body 默认上限 1 MiB（`Config.MaxBodyBytes`，负值关闭，multipart 不适用），超限 413；解码失败 400。multipart 的值与不超过 32 MiB 的文件留在内存，超出部分写到磁盘临时文件，请求结束统一删除（handler 自行解析产生的临时文件也一并删除）。
 - `struct{}` 不绑不读 body；`*T` 由框架在解码 body 前分配，handler 拿到非 nil（含 `null` body）。
 - 绑定结果按值缓存：值类型 IN 的每层拿到独立副本，改字段不影响下游（切片/map 的底层数据仍共享，改元素可见）；`*T` 的各层指向同一对象，改对象内容下游可见。
 - 参数/头部只扫顶层字段，不展开匿名嵌入；body 的嵌入按解码器规则处理。
@@ -51,6 +51,6 @@
 
 ## 5. 延后
 
-body 重放/流式；严格未知字段；`Ctx.Form[T]` 不读 multipart 文件（`Bind` 支持）。
+body 重放/流式；严格未知字段。
 
 

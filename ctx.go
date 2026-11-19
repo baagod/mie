@@ -51,7 +51,6 @@ type Ctx struct {
 func newCtx(w http.ResponseWriter, req *http.Request, a *App) *Ctx {
     c := &Ctx{
         index:   -1,
-        store:   map[any]any{},
         traceid: req.Header.Get(HeaderXRequestID),
         start:   time.Now(),
         app:     a,
@@ -90,6 +89,9 @@ func (c *Ctx) Body() (b []byte, err error) {
 
 // Set 把请求级键值写入 Ctx 的容器，不替换 c.R；c.R.Context() 里读不到这些值。
 func (c *Ctx) Set(key, value any) *Ctx {
+    if c.store == nil {
+        c.store = map[any]any{}
+    }
     c.store[key] = value
     return c
 }
@@ -136,13 +138,21 @@ func (c *Ctx) Param(name string) string {
 }
 
 // Form 取参数并解析成 T；同名 query 优先，缺失或解析失败返回零值。
+// query 未命中（或 T 为文件类型）时读取并消费 body，框架不还原 c.R.Body。
 // T 可为标量、TextUnmarshaler 或它们的切片/数组/指针；元素层再套指针不支持，按零值返回。
+// T 为 *multipart.FileHeader 或 []*multipart.FileHeader 时取上传文件，不读 query。
 func (c *Ctx) Form[T any](name string) (v T) {
+    if bind.IsFile[T]() {
+        v, _ = bind.ParseFile[T](c.R, name)
+        return
+    }
+
     ss, ok := c.R.URL.Query()[name]
     if !ok {
-        _ = c.R.ParseForm()
+        _ = bind.ParseForm(c.R)
         ss = c.R.PostForm[name]
     }
+
     v, _ = bind.Parse[T](ss)
     return
 }

@@ -3,7 +3,9 @@ package bind
 import (
     "encoding"
     "errors"
+    "mime"
     "mime/multipart"
+    "net/http"
     "reflect"
     "strconv"
 )
@@ -29,9 +31,63 @@ func Parse[T any](s []string) (v T, err error) {
     return
 }
 
+// ParseForm 解析表单请求体：multipart 的值进 PostForm、文件进 MultipartForm，其余按 urlencoded 解析。
+// bindForm 与 Ctx.Form 共用这一入口。
+func ParseForm(r *http.Request) error {
+    if ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); ct == "multipart/form-data" {
+        return r.ParseMultipartForm(multipartMemory)
+    }
+    return r.ParseForm()
+}
+
+// ParseFile 取 multipart 文件字段并解析成 T。
+// T 必须是 *multipart.FileHeader 或 []*multipart.FileHeader；缺失返回零值。
+func ParseFile[T any](r *http.Request, name string) (v T, err error) {
+    dst := reflect.ValueOf(&v).Elem()
+    if !fileKind(dst.Type()) {
+        return v, errors.New("ParseFile requires *multipart.FileHeader or []*multipart.FileHeader")
+    }
+
+    if err = ParseForm(r); err != nil {
+        return v, err
+    }
+
+    if m := r.MultipartForm; m != nil {
+        if err = setFiles(dst, m.File[name]); err != nil {
+            return v, err
+        }
+    }
+
+    return
+}
+
+// IsFile 报告 T 是否为文件类型：*multipart.FileHeader 或 []*multipart.FileHeader。
+func IsFile[T any]() bool {
+    return fileKind(reflect.TypeFor[T]())
+}
+
 // Validate 报告 IN 的绑定声明是否可用；注册期调用，让写错的字段类型在启动时暴露。
 func Validate(t reflect.Type) (err error) {
     _, err = planFor(t)
+    return
+}
+
+// setFiles 把文件列表写入 v：文件切片整体替换，单文件要求至多一个。
+func setFiles(v reflect.Value, files []*multipart.FileHeader) (err error) {
+    if v.Type() == fileHeadersType {
+        v.Set(reflect.ValueOf(files))
+        return
+    }
+
+    switch len(files) {
+    case 0:
+        v.SetZero()
+    case 1:
+        v.Set(reflect.ValueOf(files[0]))
+    default:
+        return errors.New("multiple files for single field")
+    }
+
     return
 }
 

@@ -3,7 +3,6 @@ package bind
 import (
     "errors"
     "fmt"
-    "mime"
     "mime/multipart"
     "net/http"
     "net/url"
@@ -105,12 +104,7 @@ func (s *source) bindQuery(_ *http.Request, out reflect.Value, query url.Values)
 }
 
 func (s *source) bindForm(r *http.Request, out reflect.Value, query url.Values) (err error) {
-    // 请求体只在绑定 form 时解析：multipart 的值进 PostForm，文件进 MultipartForm。
-    if ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); ct == "multipart/form-data" {
-        if err = r.ParseMultipartForm(multipartMemory); err != nil {
-            return
-        }
-    } else if err = r.ParseForm(); err != nil {
+    if err = ParseForm(r); err != nil {
         return
     }
 
@@ -124,18 +118,8 @@ func (s *source) bindForm(r *http.Request, out reflect.Value, query url.Values) 
                 files = m.File[f.key]
             }
 
-            if v.Type() == fileHeadersType {
-                v.Set(reflect.ValueOf(files))
-                continue
-            }
-
-            switch len(files) {
-            case 0:
-                v.SetZero()
-            case 1:
-                v.Set(reflect.ValueOf(files[0]))
-            default:
-                return s.err(f, errors.New("multiple files for single field"))
+            if err = setFiles(v, files); err != nil {
+                return s.err(f, err)
             }
 
             continue

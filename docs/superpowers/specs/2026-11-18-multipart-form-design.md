@@ -22,7 +22,7 @@
 ## 3. 目标 / 非目标
 
 - 目标：`Bind` 能绑定 `multipart/form-data` 的表单值，且「同名字段 query 覆盖 form」的既有语义保持成立；`*multipart.FileHeader` / `[]*multipart.FileHeader` 字段可直接绑定（D1）。
-- 非目标：`Ctx.Form` 的 multipart 支持（D4：本次不做）、multipart 的 body 上限（D2：明确不设）、独立的文件上传公开方法（`Ctx.FormFile` 之类）。
+- 非目标：multipart 的 body 上限（D2：明确不设）、独立的文件上传公开方法（`Ctx.FormFile` 之类；文件走 `Bind` 字段或 `Ctx.Form` 的文件类型）。
 
 ## 4. 决策
 
@@ -30,8 +30,9 @@
 |---|---|---|---|
 | D1 | 文件部分是否进公开 API | **走 D**：复用 `Bind`，字段类型写 `*multipart.FileHeader` / `[]*multipart.FileHeader`，不新增公开方法；文件只从 `form` tag 绑定，写到其它 tag 的声明被忽略（不报错，便于同一 IN 复用到多种来源） | 用户：struct 里写了文件字段就是想要文件；只绑值而丢弃文件等于字段失效，用户还得自己解析一遍。m01190 追加：非 form tag 报错会让 DTO 无法复用，改忽略 |
 | D2 | 字节上限归谁管 | 保持现状：multipart 继续豁免 `MaxBodyBytes`，`maxMemory` 用常量，不新增配置项 | 用户：普通 body 1MiB 够用，但 multipart 不能设上限；`BindBody` 与 multipart 是两类请求，此前的豁免是故意的 |
-| D3 | 解析失败语义 | `Bind` 遇 multipart 解析失败（缺 boundary、part 损坏、读 body 出错）→ 400，与 `bind` 现有其它解析错误一致；另：`form` 字段声明为非文件类型但请求携带同名文件 → 400（避免静默零值）；`Ctx.Form` 因 D4 不适用 | 用户：「错误保持一致」；静默失真比报错更贵 |
+| D3 | 解析失败语义 | `Bind` 遇 multipart 解析失败（缺 boundary、part 损坏、读 body 出错）→ 400，与 `bind` 现有其它解析错误一致；另：`form` 字段声明为非文件类型但请求携带同名文件 → 400（避免静默零值）；`Ctx.Form` 解析失败返回零值（D5），不走 400 | 用户：「错误保持一致」；静默失真比报错更贵 |
 | D4 | `Ctx.Form` 是否同步支持 | 本次不改，只动 `bind` | 用户：「先不管 Ctx.Form」。代价：`Bind` 能取 multipart、`Form` 取不到（已知且接受的不对称） |
+| D5 | 反转 D4：`Ctx.Form` 支持 multipart | 值与文件都支持：`T` 为 `*multipart.FileHeader` / `[]*multipart.FileHeader` 时取文件 part，其余类型取 `PostForm`；query 命中仍短路不读 body；解析失败返回零值 | 解析收成 `bind.ParseForm` 唯一入口后，`Form` 与 `Bind` 共用同一段解析，旧的不对称没有保留理由；用户决定实施 |
 
 ## 5. 第 1 轮 frontier（待答）
 
@@ -76,6 +77,6 @@ type Upload struct {
 
 1. **解析分支**：`internal/bind/decoder.go:44` 从 `r.ParseForm()` 改为按 Content-Type 分支——multipart 用 `r.ParseMultipartForm(multipartMemory)`，其它维持 `ParseForm()`。`multipartMemory` 用常量（建议 `32 << 20`），不新增配置项（D2）。
 2. **清理挂点**：`RemoveAll()` 必须挂在请求级 `defer`（panic 路径也要执行），不能挂在 `Bind` 内部——`Bind` 返回后 handler 仍要 `FileHeader.Open()`。
-3. **文档**：`docs/design-handler.md` §5 现写「`Bind` 与 `Ctx.Form` 都取不到 multipart」，改后事实是「`Bind` 能取（值 + 文件），`Ctx.Form` 仍取不到（D4）」，必须同步改，否则文档撒谎。
+3. **文档**：`docs/design-handler.md` §5 与 D5 同步——`Bind` 与 `Ctx.Form` 都能取 multipart（值 + 文件）；`Ctx.Form` 解析失败返回零值而不是 400。
 
 已知风险（D2 的直接后果，用户已接受）：multipart 不受 `MaxBodyBytes` 约束，`ParseMultipartForm` 会把超大文件写到磁盘临时文件，构成磁盘耗尽面；缓解只能靠部署层（反代/nginx）限制请求体。

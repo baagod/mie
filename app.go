@@ -94,7 +94,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
     defer func() {
         // multipart 的文件可能落到磁盘临时文件，请求结束（含 panic）先删。
-        if f := req.MultipartForm; f != nil {
+        if f := c.R.MultipartForm; f != nil {
             _ = f.RemoveAll()
         }
         if p := recover(); p != nil {
