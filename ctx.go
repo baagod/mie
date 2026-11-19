@@ -44,6 +44,7 @@ type Ctx struct {
     traceid string
     start   time.Time
     store   map[any]any // 请求级键值：Body/Bind 缓存与 Set 写入的值
+    form    bind.FormCache
 }
 
 // newCtx 创建请求上下文，并把 *Ctx 放进请求 context。
@@ -140,20 +141,22 @@ func (c *Ctx) Param(name string) string {
 // Form 取参数并解析成 T；同名 query 优先，缺失或解析失败返回零值。
 // query 未命中（或 T 为文件类型）时读取并消费 body，框架不还原 c.R.Body。
 // T 可为标量、TextUnmarshaler 或它们的切片/数组/指针；元素层再套指针不支持，按零值返回。
-// T 为 *multipart.FileHeader 或 []*multipart.FileHeader 时取上传文件，不读 query。
+// T 为 *multipart.FileHeader 或 []*multipart.FileHeader 时取上传文件，不取 URL 参数的值。
 func (c *Ctx) Form[T any](name string) (v T) {
     if bind.IsFile[T]() {
-        v, _ = bind.ParseFile[T](c.R, name)
+        c.form.Form(c.R)
+        v, _ = bind.ParseFile[T](c.R.MultipartForm, name)
         return
     }
 
-    ss, ok := c.R.URL.Query()[name]
-    if !ok {
-        _ = bind.ParseForm(c.R)
-        ss = c.R.PostForm[name]
+    q := c.form.Query(c.R)
+    if ss, ok := q[name]; ok {
+        v, _ = bind.Parse[T](ss)
+        return
     }
 
-    v, _ = bind.Parse[T](ss)
+    f := c.form.Form(c.R)
+    v, _ = bind.Parse[T](f[name])
     return
 }
 
@@ -244,7 +247,7 @@ func (c *Ctx) Bind[IN any](in *IN) (err error) {
         return err
     }
 
-    if err = bind.Decode(c.R, in); err != nil {
+    if err = bind.Decode(c.R, in, &c.form); err != nil {
         if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
             return Status413RequestEntityTooLarge()
         }

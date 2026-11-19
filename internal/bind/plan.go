@@ -2,17 +2,15 @@ package bind
 
 import (
     "errors"
+    "net/http"
+    "reflect"
 
     "github.com/baagod/mie/internal/xsync"
-    "net/http"
-    "net/url"
-    "reflect"
 )
 
 const (
     bindPath   = "path"
     bindHeader = "header"
-    bindQuery  = "query"
     bindForm   = "form"
     bindCookie = "cookie"
 )
@@ -29,11 +27,11 @@ type field struct {
 }
 
 // source 是一个来源：顺序即绑定顺序，后写覆盖先写，信任等级从低到高：
-// form（表单）< query（URL 参数）< cookie（HttpOnly 会话 cookie 不能被诱导链接的 ?sid= 顶掉）< header（网关注入的身份头、显式 Authorization）< path（路由参数）。
+// form < query < cookie（HttpOnly 会话 cookie 不能被诱导链接的 ?sid= 顶掉）< header（网关注入的身份头、显式 Authorization）< path（路由参数）。
 type source struct {
     tag    string
     fields []field
-    bind   func(*source, *http.Request, reflect.Value, url.Values) error
+    bind   func(*source, *http.Request, reflect.Value, *FormCache) error
 }
 
 // plan 是 IN 类型的绑定方案，存入后不再修改。
@@ -65,7 +63,6 @@ func planFor(t reflect.Type) (p *plan, err error) {
 func scan(t reflect.Type) *plan {
     p := &plan{sources: []*source{
         {tag: bindForm, bind: (*source).bindForm},
-        {tag: bindQuery, bind: (*source).bindQuery},
         {tag: bindCookie, bind: (*source).bindCookie},
         {tag: bindHeader, bind: (*source).bindHeader},
         {tag: bindPath, bind: (*source).bindPath},
@@ -83,7 +80,7 @@ func scan(t reflect.Type) *plan {
         }
 
         // 同一字段声明多个来源时生成多项，各自进入对应分组。
-        file := fileKind(sf.Type)
+        isFile := fileKind(sf.Type)
         for _, s := range p.sources {
             tag := s.tag
             v, _ := sf.Tag.Lookup(tag)
@@ -91,17 +88,17 @@ func scan(t reflect.Type) *plan {
                 continue
             }
 
-            if file && tag != bindForm {
+            if isFile && tag != bindForm {
                 // 文件只从 multipart 的 form part 来；其它 tag 忽略，让同一个 IN 能复用到多种来源。
                 continue
             }
 
-            if !file && !scalarKind(sf.Type) {
+            if !isFile && !scalarKind(sf.Type) {
                 p.err = errors.New("field " + t.String() + "." + sf.Name + ": unsupported binding type " + sf.Type.String())
                 return p
             }
 
-            s.fields = append(s.fields, field{index: i, name: sf.Name, key: v, isFile: file})
+            s.fields = append(s.fields, field{index: i, name: sf.Name, key: v, isFile: isFile})
         }
     }
 

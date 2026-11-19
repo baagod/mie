@@ -17,7 +17,7 @@ import (
 
 func TestBindRejectsUnsupportedFieldType(t *testing.T) {
     type in struct {
-        M map[string]int `query:"m"`
+        M map[string]int `form:"m"`
     }
 
     var v in
@@ -70,8 +70,8 @@ func TestBindRejectsDoublePointerIN(t *testing.T) {
 
 func TestBindSkipsUnexportedAndEmptyTags(t *testing.T) {
     type in struct {
-        id   int    `query:"id"`
-        Name string `query:""`
+        id   int    `form:"id"`
+        Name string `form:""`
     }
 
     var v in
@@ -85,7 +85,7 @@ func TestBindSkipsUnexportedAndEmptyTags(t *testing.T) {
 
 func TestBindRequiresNonNilPointer(t *testing.T) {
     type in struct {
-        ID int `query:"id"`
+        ID int `form:"id"`
     }
 
     err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/", nil), nil)
@@ -96,7 +96,7 @@ func TestBindRequiresNonNilPointer(t *testing.T) {
 
 func TestBindPointerInputAllocates(t *testing.T) {
     type in struct {
-        ID int `query:"id"`
+        ID int `form:"id"`
     }
 
     var v *in
@@ -110,8 +110,8 @@ func TestBindPointerInputAllocates(t *testing.T) {
 
 func TestBindSliceAndArray(t *testing.T) {
     type in struct {
-        Tags []string `query:"tag"`
-        N    [2]int   `query:"n"`
+        Tags []string `form:"tag"`
+        N    [2]int   `form:"n"`
     }
 
     var v in
@@ -128,7 +128,7 @@ func TestBindSliceAndArray(t *testing.T) {
 
 func TestBindConcurrentFirstUse(t *testing.T) {
     type in struct {
-        ID int `query:"id"`
+        ID int `form:"id"`
     }
 
     type result struct {
@@ -212,7 +212,7 @@ func TestBindCookieInvalidValue(t *testing.T) {
 
 func TestBindCookieOverridesQuery(t *testing.T) {
     type in struct {
-        ID string `cookie:"id" query:"id"`
+        ID string `cookie:"id" form:"id"`
     }
 
     r := httptest.NewRequest(http.MethodGet, "/?id=from-query", nil)
@@ -272,8 +272,8 @@ func (u *upperText) UnmarshalText(b []byte) error {
 
 func TestBindTextUnmarshaler(t *testing.T) {
     type in struct {
-        At  time.Time  `query:"at"`
-        IP  netip.Addr `query:"ip"`
+        At  time.Time  `form:"at"`
+        IP  netip.Addr `form:"ip"`
         Tag upperText  `header:"X-Tag"`
     }
 
@@ -297,21 +297,21 @@ func TestBindTextUnmarshaler(t *testing.T) {
 
 func TestBindTextUnmarshalerError(t *testing.T) {
     type in struct {
-        At time.Time `query:"at"`
+        At time.Time `form:"at"`
     }
 
     var v in
     err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/?at=nope", nil), &v)
-    if err == nil || !strings.Contains(err.Error(), "bind: query.At:") {
-        t.Fatalf("err = %v, want wrapped as bind: query.At", err)
+    if err == nil || !strings.Contains(err.Error(), "bind: form.At:") {
+        t.Fatalf("err = %v, want wrapped as bind: form.At", err)
     }
 }
 
 func TestBindTextUnmarshalerSliceAndPointer(t *testing.T) {
     type in struct {
-        Tags    []upperText `query:"tag"`
-        First   *upperText  `query:"first"`
-        Missing *upperText  `query:"none"`
+        Tags    []upperText `form:"tag"`
+        First   *upperText  `form:"first"`
+        Missing *upperText  `form:"none"`
     }
 
     r := httptest.NewRequest(http.MethodGet, "/?tag=a&tag=b&first=hi", nil)
@@ -332,7 +332,7 @@ func TestBindTextUnmarshalerSliceAndPointer(t *testing.T) {
 
 func TestBindTextUnmarshalerNamedSlice(t *testing.T) {
     type in struct {
-        IP net.IP `query:"ip"`
+        IP net.IP `form:"ip"`
     }
 
     var v in
@@ -358,8 +358,8 @@ func (m *macAddr) UnmarshalText(b []byte) error {
 
 func TestBindTextUnmarshalerArray(t *testing.T) {
     type in struct {
-        At  [2]time.Time `query:"at"`
-        MAC macAddr      `query:"mac"`
+        At  [2]time.Time `form:"at"`
+        MAC macAddr      `form:"mac"`
     }
 
     r := httptest.NewRequest(http.MethodGet,
@@ -380,13 +380,13 @@ func TestBindTextUnmarshalerArray(t *testing.T) {
 // 空串没有特殊语法：能否绑定由目标类型自己的解析器决定。
 func TestBindEmptyValueFollowsTypeParser(t *testing.T) {
     type in struct {
-        Page int       `query:"page"`
-        Ptr  *int      `query:"p"`
-        Nums []int     `query:"n"`
-        Tags []string  `query:"tags"`
-        At   time.Time `query:"at"`
-        IP   net.IP    `query:"ip"`
-        MAC  macAddr   `query:"mac"`
+        Page int       `form:"page"`
+        Ptr  *int      `form:"p"`
+        Nums []int     `form:"n"`
+        Tags []string  `form:"tags"`
+        At   time.Time `form:"at"`
+        IP   net.IP    `form:"ip"`
+        MAC  macAddr   `form:"mac"`
     }
 
     decode := func(q string) (in, error) {

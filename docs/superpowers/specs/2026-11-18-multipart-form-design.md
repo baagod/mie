@@ -15,7 +15,7 @@
 - `maxMemory` **不是请求体上限**，只决定内容放内存还是写盘；标准库内部的默认值是未导出的 `defaultMaxMemory = 32 << 20`，且 `ParseMultipartForm(0)` 不会回落到该默认值（0 表示文件全部写盘），所以必须显式传一个正数，数值取 `32 << 20` 与标准库自身行为一致。
 - `ParseMultipartForm` 对非 multipart 请求返回 `ErrNotMultipart`，**不能**无条件替换现有的 `ParseForm` 调用。
 - `bind` 唯一解析入口：`internal/bind/decoder.go:44` 的 `r.ParseForm()`，由 `internal/bind/plan.go:36` 的 `plan.hasParams` 控制。
-- `Ctx.Form` 唯一解析入口：`ctx.go:143` 的 `c.R.ParseForm()`。
+- `Ctx.Form` 与 `Ctx.Bind` 共用 `bind.FormCache`：query 与 body 各解析一次（`internal/bind/cache.go`），`Ctx.Form` 不再直接调 `ParseForm`。
 - `BindBody` 对 form 与 multipart 均早退（`ctx.go:260`），不读 body。
 - `MaxBodyBytes` 当前明确跳过 multipart（`app.go:39-40` 注释、`app.go:88` 的 `ct != MIMEMultipartForm` 守卫），注释写「上传大小由上传路由自行限制」。
 
@@ -33,6 +33,8 @@
 | D3 | 解析失败语义 | `Bind` 遇 multipart 解析失败（缺 boundary、part 损坏、读 body 出错）→ 400，与 `bind` 现有其它解析错误一致；另：`form` 字段声明为非文件类型但请求携带同名文件 → 400（避免静默零值）；`Ctx.Form` 解析失败返回零值（D5），不走 400 | 用户：「错误保持一致」；静默失真比报错更贵 |
 | D4 | `Ctx.Form` 是否同步支持 | 本次不改，只动 `bind` | 用户：「先不管 Ctx.Form」。代价：`Bind` 能取 multipart、`Form` 取不到（已知且接受的不对称） |
 | D5 | 反转 D4：`Ctx.Form` 支持 multipart | 值与文件都支持：`T` 为 `*multipart.FileHeader` / `[]*multipart.FileHeader` 时取文件 part，其余类型取 `PostForm`；query 命中仍短路不读 body；解析失败返回零值 | 解析收成 `bind.ParseForm` 唯一入口后，`Form` 与 `Bind` 共用同一段解析，旧的不对称没有保留理由；用户决定实施 |
+| D6 | 解析缓存 | `bind.FormCache` 持 query 与 form 两张表，各解析一次；`Decode` 遍历到 form 源时由 `bindForm` 逐字段懒取，`Ctx.Form` / `Ctx.Bind` 共用；解析错误只存一个 `err`，由 `bindForm` 取值时当场返回；已有错误时两张表都返回空表、不再解析 | 每次 `Ctx.Form` 都重跑 `url.ParseQuery` / `ParseForm` 是重复解析；两张表分开才能保住 URL 命中不读 body（Q4）与只绑 path 不读 body（D2） |
+| D7 | 删除 query tag | 对外只保留 `form`：先 URL 后 body，URL 命中不读 body；删除 `query` 来源与 `bindQuery`。代价：纯 URL 字段缺值时也会解析 body，body 可补 URL 缺值 | 两套 tag 要分别维护解析路径；用户要求统一成一个入口（m01144） |
 
 ## 5. 第 1 轮 frontier（待答）
 

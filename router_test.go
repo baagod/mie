@@ -118,11 +118,11 @@ func TestChainedRegistration(t *testing.T) {
 }
 
 type routerInput struct {
-    Name string `query:"name"`
+    Name string `form:"name"`
 }
 
 type otherInput struct {
-    ID int `query:"id"`
+    ID int `form:"id"`
 }
 
 func TestUseTypedMiddleware(t *testing.T) {

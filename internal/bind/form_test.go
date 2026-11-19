@@ -45,7 +45,11 @@ func TestParseFormMalformedMultipart(t *testing.T) {
 func TestParseFile(t *testing.T) {
     req := multipartWithFiles(t, "avatar", []string{"a.txt", "b.txt"})
 
-    files, err := bind.ParseFile[[]*multipart.FileHeader](req, "avatar")
+    var cache bind.FormCache
+    cache.Form(req)
+    form := req.MultipartForm
+
+    files, err := bind.ParseFile[[]*multipart.FileHeader](form, "avatar")
     if err != nil {
         t.Fatalf("ParseFile: %v", err)
     }
@@ -53,11 +57,11 @@ func TestParseFile(t *testing.T) {
         t.Fatalf("want 2 files, got %d", len(files))
     }
 
-    if _, err := bind.ParseFile[*multipart.FileHeader](req, "avatar"); err == nil {
+    if _, err := bind.ParseFile[*multipart.FileHeader](form, "avatar"); err == nil {
         t.Fatal("want error for two files into single file type")
     }
 
-    single, err := bind.ParseFile[*multipart.FileHeader](req, "missing")
+    single, err := bind.ParseFile[*multipart.FileHeader](form, "missing")
     if err != nil {
         t.Fatalf("missing file: %v", err)
     }
@@ -65,7 +69,7 @@ func TestParseFile(t *testing.T) {
         t.Fatalf("want nil for missing file, got %v", single)
     }
 
-    if _, err := bind.ParseFile[string](req, "avatar"); err == nil {
+    if _, err := bind.ParseFile[string](form, "avatar"); err == nil {
         t.Fatal("want error for non-file type")
     }
 

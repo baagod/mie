@@ -119,7 +119,7 @@ func TestHeAsNoInputHandler(t *testing.T) {
 
 func TestRegisterRejectsUnbindableInput(t *testing.T) {
     type bad struct {
-        Items map[string]int `query:"items"`
+        Items map[string]int `form:"items"`
     }
 
     // 字段类型非法是服务端声明错误：注册时 panic，避免每个请求都拿到 400。

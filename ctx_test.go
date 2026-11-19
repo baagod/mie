@@ -3,6 +3,7 @@ package mie
 import (
     "bytes"
     "context"
+    "io"
     "mime/multipart"
     "net/http"
     "net/http/httptest"
@@ -285,5 +286,93 @@ func TestCtxFormQuerySkipsBody(t *testing.T) {
 
     if got := c.Form[string]("name"); got != "mux" {
         t.Fatalf("Form[string] = %q, want mux", got)
+    }
+}
+
+type countingBody struct {
+    r io.Reader
+    n int
+}
+
+func (b *countingBody) Read(p []byte) (int, error) {
+    n, err := b.r.Read(p)
+    b.n += n
+    return n, err
+}
+
+// 锁定：Form 吞掉坏 body 的错误后，随后的 Bind 仍要 400，不能返回 200 空值。
+func TestCtxFormBadBodyThenBind(t *testing.T) {
+    req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("a=%zz"))
+    req.Header.Set(HeaderContentType, MIMEFormUrlencoded)
+    c := newTestCtx(httptest.NewRecorder(), req)
+
+    if got := c.Form[string]("a"); got != "" {
+        t.Fatalf("Form = %q, want zero", got)
+    }
+
+    var in struct {
+        A string `form:"a"`
+    }
+    err := c.Bind(&in)
+    if err == nil || !strings.Contains(err.Error(), "invalid URL escape") {
+        t.Fatalf("Bind err = %v, want parse error", err)
+    }
+}
+
+// 锁定：先 Form 后 Bind 共用同一份解析结果。
+func TestCtxFormThenBindSharesValues(t *testing.T) {
+    req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("name=form"))
+    req.Header.Set(HeaderContentType, MIMEFormUrlencoded)
+    c := newTestCtx(httptest.NewRecorder(), req)
+
+    if got := c.Form[string]("name"); got != "form" {
+        t.Fatalf("Form = %q, want form", got)
+    }
+
+    var in struct {
+        Name string `form:"name"`
+    }
+    if err := c.Bind(&in); err != nil {
+        t.Fatal(err)
+    }
+    if in.Name != "form" {
+        t.Fatalf("Bind Name = %q, want form", in.Name)
+    }
+}
+
+// 锁定：只绑 path 的 multipart 请求不读 body。
+func TestBindPathOnlySkipsMultipartBody(t *testing.T) {
+    type in struct {
+        ID string `path:"id"`
+    }
+
+    var b bytes.Buffer
+    w := multipart.NewWriter(&b)
+    part, err := w.CreateFormFile("f", "a.txt")
+    if err != nil {
+        t.Fatal(err)
+    }
+    if _, err := part.Write([]byte("hello")); err != nil {
+        t.Fatal(err)
+    }
+    if err := w.Close(); err != nil {
+        t.Fatal(err)
+    }
+
+    body := &countingBody{r: bytes.NewReader(b.Bytes())}
+    req := httptest.NewRequest(http.MethodPost, "/u/7", body)
+    req.Header.Set(HeaderContentType, w.FormDataContentType())
+
+    r := New()
+    r.Post("/u/{id}", func(c *Ctx, v in) (string, error) { return v.ID, nil })
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, req)
+
+    if rec.Code != http.StatusOK || rec.Body.String() != "7" {
+        t.Fatalf("status/body = %d/%q, want 200/7", rec.Code, rec.Body.String())
+    }
+    if body.n != 0 {
+        t.Fatalf("body read = %d bytes, want 0", body.n)
     }
 }

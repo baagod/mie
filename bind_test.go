@@ -14,12 +14,12 @@ import (
 
 type bindSources struct {
     ID     int     `path:"id"`
-    Page   int     `query:"page"`
+    Page   int     `form:"page"`
     Trace  string  `header:"X-Trace-Id"`
-    Active bool    `query:"active"`
-    Ratio  float64 `query:"ratio"`
-    Count  uint    `query:"count"`
-    Limit  *int    `query:"limit"`
+    Active bool    `form:"active"`
+    Ratio  float64 `form:"ratio"`
+    Count  uint    `form:"count"`
+    Limit  *int    `form:"limit"`
 }
 
 func TestBindPathQueryHeader(t *testing.T) {
@@ -327,7 +327,7 @@ func TestBindNestedStructBody(t *testing.T) {
 type formIn struct {
     Name string `form:"name"`
     Page int    `form:"page"`
-    Q    string `query:"q"`
+    Q    string `form:"q"`
 }
 
 func TestBindFormGETUsesQuery(t *testing.T) {
@@ -435,7 +435,7 @@ func TestBindConversionErrorGoesThroughErrorHandler(t *testing.T) {
     if rec.Code != http.StatusBadRequest {
         t.Fatalf("status = %d, want 400", rec.Code)
     }
-    if got := rec.Body.String(); !strings.Contains(got, "bind: query.Page") {
+    if got := rec.Body.String(); !strings.Contains(got, "bind: form.Page") {
         t.Fatalf("body = %q, want 来源与字段名", got)
     }
 
@@ -448,7 +448,7 @@ func TestBindConversionErrorGoesThroughErrorHandler(t *testing.T) {
 func TestBindSourceOrder(t *testing.T) {
     t.Run("path overrides query", func(t *testing.T) {
         type in struct {
-            ID int `path:"id" query:"id"`
+            ID int `path:"id" form:"id"`
         }
         r := New()
         r.Get("/p/{id}", func(c *Ctx, v in) (int, error) { return v.ID, nil })
@@ -463,7 +463,7 @@ func TestBindSourceOrder(t *testing.T) {
 
     t.Run("missing query keeps path", func(t *testing.T) {
         type in struct {
-            ID int `path:"id" query:"id"`
+            ID int `path:"id" form:"id"`
         }
         r := New()
         r.Get("/p/{id}", func(c *Ctx, v in) (int, error) { return v.ID, nil })
@@ -478,7 +478,7 @@ func TestBindSourceOrder(t *testing.T) {
 
     t.Run("header overrides query", func(t *testing.T) {
         type in struct {
-            ID int `header:"X-Id" query:"id"`
+            ID int `header:"X-Id" form:"id"`
         }
         r := New()
         r.Get("/h", func(c *Ctx, v in) (int, error) { return v.ID, nil })
@@ -495,7 +495,7 @@ func TestBindSourceOrder(t *testing.T) {
 
     t.Run("query overrides form", func(t *testing.T) {
         type in struct {
-            Name string `query:"name" form:"name"`
+            Name string `form:"name"`
         }
         r := New()
         r.Post("/q", func(c *Ctx, v in) (string, error) { return v.Name, nil })
@@ -510,9 +510,9 @@ func TestBindSourceOrder(t *testing.T) {
         }
     })
 
-    t.Run("query ignores form body", func(t *testing.T) {
+    t.Run("form fills from body when query missing", func(t *testing.T) {
         type in struct {
-            Name string `query:"name"`
+            Name string `form:"name"`
         }
         r := New()
         r.Post("/q", func(c *Ctx, v in) (string, error) { return v.Name, nil })
@@ -522,8 +522,8 @@ func TestBindSourceOrder(t *testing.T) {
         rec := httptest.NewRecorder()
         r.ServeHTTP(rec, req)
 
-        if rec.Code != http.StatusOK || rec.Body.String() != "" {
-            t.Fatalf("status/body = %d/%q, want 200/\"\"", rec.Code, rec.Body.String())
+        if rec.Code != http.StatusOK || rec.Body.String() != "form" {
+            t.Fatalf("status/body = %d/%q, want 200/form", rec.Code, rec.Body.String())
         }
     })
 
@@ -563,7 +563,7 @@ func TestBindSourceOrder(t *testing.T) {
 
     t.Run("form falls back to query", func(t *testing.T) {
         type in struct {
-            Name string `query:"name" form:"name"`
+            Name string `form:"name"`
         }
         r := New()
         r.Post("/q", func(c *Ctx, v in) (string, error) { return v.Name, nil })
@@ -600,7 +600,7 @@ func TestBindSkipsUnexportedAndEmptyTags(t *testing.T) {
     type in struct {
         ID    int    `path:"id"`
         id    int    `path:"id"` // 未导出：带 tag 也跳过
-        Empty int    `query:""`  // 空 tag：等同没写
+        Empty int    `form:""`  // 空 tag：等同没写
         Name  string `json:"name"`
     }
 
@@ -622,10 +622,10 @@ func TestBindSkipsUnexportedAndEmptyTags(t *testing.T) {
 
 func TestBindIndependentInputsUseSeparateCache(t *testing.T) {
     type nameIn struct {
-        Name string `query:"name"`
+        Name string `form:"name"`
     }
     type idIn struct {
-        ID int `query:"id"`
+        ID int `form:"id"`
     }
 
     r := New()
@@ -676,7 +676,7 @@ func TestBindTwiceReusesCachedInput(t *testing.T) {
 
 func TestConcurrentFirstRequest(t *testing.T) {
     type in struct {
-        ID int `query:"id"`
+        ID int `form:"id"`
     }
 
     r := New()
@@ -700,7 +700,7 @@ func TestConcurrentFirstRequest(t *testing.T) {
 
 func TestBindExplicitEmptyClearsValue(t *testing.T) {
     type in struct {
-        Name string `query:"name" header:"X-Name"`
+        Name string `form:"name" header:"X-Name"`
     }
 
     r := New()
@@ -758,26 +758,7 @@ func TestBindFormParseQueryError(t *testing.T) {
     }
 }
 
-func TestBindQueryOnlySkipsBody(t *testing.T) {
-    type in struct {
-        Page int `query:"page"`
-    }
-
-    r := New()
-    r.Post("/f", func(c *Ctx, v in) (int, error) { return v.Page, nil })
-
-    req := httptest.NewRequest(http.MethodPost, "/f", strings.NewReader("a=%zz"))
-    req.Header.Set(HeaderContentType, MIMEFormUrlencoded)
-    rec := httptest.NewRecorder()
-    r.ServeHTTP(rec, req)
-
-    // 没有 form 来源就不解析 body：畸形 body 不影响只读 query 的绑定。
-    if rec.Code != http.StatusOK || rec.Body.String() != "0" {
-        t.Fatalf("status/body = %d/%q, want 200/0", rec.Code, rec.Body.String())
-    }
-}
-
-// 没有 query/form 来源就不解析 URL 参数：畸形 query 不影响只读 header 的绑定。
+// 没有 form 来源就不解析 URL 参数：畸形 query 不影响只读 header 的绑定。
 func TestBindHeaderOnlySkipsQueryParse(t *testing.T) {
     type in struct {
         User string `header:"X-User"`
@@ -798,7 +779,7 @@ func TestBindHeaderOnlySkipsQueryParse(t *testing.T) {
 
 func TestBindQueryParseError(t *testing.T) {
     type in struct {
-        Page int `query:"page"`
+        Page int `form:"page"`
     }
 
     r := New()
@@ -839,8 +820,8 @@ func TestBindCookieOnlyPOSTLeavesBody(t *testing.T) {
 
 func TestBindSliceValues(t *testing.T) {
     type in struct {
-        Tags []string `query:"tag"`
-        IDs  []int    `query:"id"`
+        Tags []string `form:"tag"`
+        IDs  []int    `form:"id"`
     }
 
     r := New()
@@ -882,7 +863,7 @@ func TestBindSliceHeaderValues(t *testing.T) {
 
 func TestBindArrayValues(t *testing.T) {
     type in struct {
-        Pair [2]int `query:"p"`
+        Pair [2]int `form:"p"`
     }
 
     r := New()
@@ -908,7 +889,7 @@ func TestBindArrayValues(t *testing.T) {
 
 func TestBindArrayMultiSourceClearsTail(t *testing.T) {
     type in struct {
-        Pair [2]int `header:"X-P" query:"p"`
+        Pair [2]int `header:"X-P" form:"p"`
     }
 
     r := New()
@@ -942,7 +923,7 @@ func TestBindSliceBody(t *testing.T) {
 
 func TestBindSliceConversionError(t *testing.T) {
     type in struct {
-        IDs []int `query:"id"`
+        IDs []int `form:"id"`
     }
 
     r := New()
@@ -950,16 +931,16 @@ func TestBindSliceConversionError(t *testing.T) {
 
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/e?id=1&id=x", nil))
-    if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "bind: query.IDs") {
-        t.Fatalf("status/body = %d/%q, want 400 with bind: query.IDs", rec.Code, rec.Body.String())
+    if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "bind: form.IDs") {
+        t.Fatalf("status/body = %d/%q, want 400 with bind: form.IDs", rec.Code, rec.Body.String())
     }
 }
 
 // 锁定：不同 IN 类型各自缓存；同一类型重复绑定命中缓存。
 func TestDuplicateBindingSharesValue(t *testing.T) {
     type in struct {
-        A int `query:"page"`
-        B int `query:"page"`
+        A int `form:"page"`
+        B int `form:"page"`
     }
 
     r := New()

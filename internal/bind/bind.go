@@ -32,7 +32,7 @@ func Parse[T any](s []string) (v T, err error) {
 }
 
 // ParseForm 解析表单请求体：multipart 的值进 PostForm、文件进 MultipartForm，其余按 urlencoded 解析。
-// bindForm 与 Ctx.Form 共用这一入口。
+// FormCache.Form 调用；测试也直接调用。
 func ParseForm(r *http.Request) error {
     if ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); ct == "multipart/form-data" {
         return r.ParseMultipartForm(multipartMemory)
@@ -40,19 +40,15 @@ func ParseForm(r *http.Request) error {
     return r.ParseForm()
 }
 
-// ParseFile 取 multipart 文件字段并解析成 T。
+// ParseFile 从已解析的 multipart 表单取文件字段并解析成 T。
 // T 必须是 *multipart.FileHeader 或 []*multipart.FileHeader；缺失返回零值。
-func ParseFile[T any](r *http.Request, name string) (v T, err error) {
+func ParseFile[T any](m *multipart.Form, name string) (v T, err error) {
     dst := reflect.ValueOf(&v).Elem()
     if !fileKind(dst.Type()) {
         return v, errors.New("ParseFile requires *multipart.FileHeader or []*multipart.FileHeader")
     }
 
-    if err = ParseForm(r); err != nil {
-        return v, err
-    }
-
-    if m := r.MultipartForm; m != nil {
+    if m != nil {
         if err = setFiles(dst, m.File[name]); err != nil {
             return v, err
         }

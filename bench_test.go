@@ -34,8 +34,8 @@ type benchFullIn struct {
 	Tags  string `json:"tags"`
 	Flag  bool   `json:"flag"`
 
-	Page int    `query:"page"`
-	Sort string `query:"sort"`
+	Page int    `form:"page"`
+	Sort string `form:"sort"`
 	Tag  string `header:"X-Tag"`
 	SID  string `cookie:"sid"`
 }

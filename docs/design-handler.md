@@ -23,14 +23,14 @@
 
 绑定发生在链上第一个声明 IN 的元素处，一个请求只绑一次并缓存。
 
-- 位置来源只认显式 tag：`path:"id"`、`header:"X-Trace-Id"`、`query:"page"`、`form:"page"`、`cookie:"sid"`。`query` 只读 URL 参数；`form` 先读表单参数，同名查询参数后写覆盖（含空值）；`form` 也读 multipart 的值部分，字段声明为 `*multipart.FileHeader` / `[]*multipart.FileHeader` 时改读同名文件 part（只认 `form`，文件字段挂到其它 tag 会被忽略、不注册）。没写 tag 的字段不会被位置来源写入。
-- 顺序：body（按 `Content-Type` 解码，权重最低，见下）→ `form` → `query` → `cookie` → `header` → `path`，后写覆盖先写，即信任等级从低到高；`cookie` 压过 `query` 是为了让 URL 参数顶不掉 HttpOnly 会话 cookie，`header` 再压过 `cookie` 是因为网关注入的身份头、显式 `Authorization` 比浏览器长期驻留的 cookie 更代表当前请求的意图。来源缺失跳过；空串不特殊处理，能否绑定由目标类型的解析器决定：字符串合法（`?name=` → `""`，`?tags=` → `[""]`），数字、布尔、时间等解析失败返回 400。
+- 位置来源只认显式 tag：`path:"id"`、`header:"X-Trace-Id"`、`form:"page"`、`cookie:"sid"`。`form` 先读 URL 参数，未命中再读表单参数（含 multipart 的值部分）；同名时 URL 参数优先（整体替换，含空值），未命中才解析 body。字段声明为 `*multipart.FileHeader` / `[]*multipart.FileHeader` 时改读同名文件 part（只认 `form`）。没写 tag 的字段不会被位置来源写入。
+- 顺序：body（按 `Content-Type` 解码，权重最低，见下）→ `form` → `cookie` → `header` → `path`，后写覆盖先写，即信任等级从低到高；`cookie` 压过 `form` 是为了让 URL 参数顶不掉 HttpOnly 会话 cookie，`header` 再压过 `cookie` 是因为网关注入的身份头、显式 `Authorization` 比浏览器长期驻留的 cookie 更代表当前请求的意图。来源缺失跳过；空串不特殊处理，能否绑定由目标类型的解析器决定：字符串合法（`?name=` → `""`，`?tags=` → `[""]`），数字、布尔、时间等解析失败返回 400。
 - `cookie` 只按字符串读，非法值 400；cookie 头本身格式坏掉时 `net/http` 静默丢弃，不会 400。
 - 未导出字段、空 tag 一律跳过；标量，或指针实现 `encoding.TextUnmarshaler` 的类型（`time.Time`、`netip.Addr`、`net.IP` 等）才能绑定，字符串交给该接口解析、解析失败 400；`*multipart.FileHeader` / `[]*multipart.FileHeader` 走文件通道（缺失 nil，单字段收到多个文件 400）；`[]*T` 这类元素层指针、以及取元素后仍不是标量/TextUnmarshaler 的类型，是声明错误，注册时报 panic。
 - 字段可加指针（`*int`、`*time.Time`、`*[]int`，多层亦可）：来源缺失保持 nil；值为空串时按类型解析，字符串得到指向空串的指针，数字、时间等解析失败返回 400 且保持 nil（集合类型保留空串元素，如 `?tags=` → `[""]`）。
 - 多值来源：切片写全部、数组按序填充（超出丢弃、不足补零）、标量只取第一个；命名切片/数组本身实现 `TextUnmarshaler` 时（如 `net.IP`）按一个值整体解析、多余值丢弃（空值也算第一个值，不会被跳过，如 `?ip=&ip=::1` 得到零值），`[]time.Time`、`[2]time.Time` 这类则逐元素解析。
-- 只有 `form` 来源才解析 body：urlencoded 走 `ParseForm`（会因此读掉 body，框架不还原 `c.R.Body`），multipart 走 `ParseMultipartForm`（缺 boundary、part 损坏都 400）；`query` 用 `url.ParseQuery` 单独取，非法转义同样 400；纯 `query`/`header`/`path` 的 IN 不读 body。
-- 不建 IN 而只取单个参数时用 `Ctx.Form[T]`：同名 `query` 优先于表单参数（整体替换，含空值），query 命中时不读 body，未命中时读取并消费 body（框架不还原 `c.R.Body`）；缺失或解析失败返回零值。`T` 可为标量、`TextUnmarshaler` 或它们的切片/数组/指针，元素层指针按零值返回；`T` 为 `*multipart.FileHeader` / `[]*multipart.FileHeader` 时取上传文件（不读 query，单类型收到多个文件返回零值）。
+- 只有 `form` 字段才解析参数：先查 URL（`url.ParseQuery`，非法转义 400），命中不读 body；未命中才解析 body（urlencoded 走 `ParseForm`，会因此读掉 body，框架不还原 `c.R.Body`；multipart 走 `ParseMultipartForm`，缺 boundary、part 损坏都 400）。纯 `header`/`path` 的 IN 既不解 URL 也不读 body。解析结果按请求缓存在 `bind.FormCache`，`Bind` 与 `Ctx.Form` 共用，URL 与 body 各最多解析一次。
+- 不建 IN 而只取单个参数时用 `Ctx.Form[T]`：同名 URL 参数优先于表单参数（整体替换，含空值），URL 命中时不读 body，未命中时读取并消费 body（框架不还原 `c.R.Body`）；缺失或解析失败返回零值。`T` 可为标量、`TextUnmarshaler` 或它们的切片/数组/指针，元素层指针按零值返回；`T` 为 `*multipart.FileHeader` / `[]*multipart.FileHeader` 时取上传文件（不读 URL 参数，单类型收到多个文件返回零值）。
 - body：非 GET/HEAD 且有 body 时，先按 `Content-Type` 找解码器：`form-urlencoded` 与 `multipart/form-data` 都归参数绑定，两者直接跳过；找不到解码器返回 415 且不读 body，`Content-Type` 缺失、畸形同样 415。
 - 内置解码器只有 `application/json` 与 `application/xml`，其余媒体由应用填 `Decode`；`+json`/`+xml` 这类结构化后缀（如 `application/vnd.api+json`）回退到同 top-level 的基类型解码器。
 - body 的键名语义由解码器决定：内置 JSON 走 `encoding/json/v2`，无 tag 字段按 Go 字段名参与，键名精确匹配（大小写敏感）；未知键默认忽略，需要严格拒绝时替换 `Config.Codecs.JSON.Decode`。

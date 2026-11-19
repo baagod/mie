@@ -3,6 +3,7 @@ package mie
 import (
     "context"
     "errors"
+    "github.com/baagod/mie/internal/xslices"
     "log/slog"
     "mime"
     "net/http"
@@ -54,10 +55,7 @@ func New(cfg ...Config) *App {
         panic("mie: New accepts at most one Config")
     }
 
-    var c Config
-    if len(cfg) == 1 {
-        c = cfg[0]
-    }
+    c := xslices.First(cfg)
 
     if c.ErrorHandler == nil {
         c.ErrorHandler = defaultErrorHandler
