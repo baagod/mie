@@ -18,6 +18,7 @@
 - 组的中间件是创建时的快照：父组之后再 `Use` 不影响已建组，子组 `Use` 不影响兄弟。
 - 中间件声明的 `IN` 在注册时（启动期）与本层之后注册的每条路由的 `IN` 比对（含无输入路由），不一致 panic。
 - 路由与中间件的 `IN` 在注册时校验：字段类型非法 panic；`IN` 本身只能是 `T` 或 `*T`，`**T` 是声明错误。
+- 只写五个动词就够：`ServeMux` 让 `GET` 隐式匹配 `HEAD`（405 的 `Allow` 头本身就是 `GET, HEAD`），不需要 `Head`；未注册的 `OPTIONS` 返回 405 且带 `Allow`，会落进 `NoMatchHandler`，CORS 预检在那里接管。其余方法（`PROPFIND` 这类）用 `Handle` 注册。
 
 ## 3. 输入（IN 绑定与单值读取）
 
@@ -49,7 +50,11 @@
 - bind 错误：来源绑定与解码失败 400；不支持的 `Content-Type` 415；`http.MaxBytesReader` 超限由 `Ctx.Body()` 映射 413；其它读取错误（连接中断等）500。
 - panic 走 `Config.RecoverHandler`。
 
-## 5. 延后
+## 5. 应用上下文（TypedRouter）
+
+`WithContext[C]` 让处理器的第一个参数变成应用自己的 `C`，绑定、协商、日志、恢复不变。`C` 由工厂从 `*Ctx` 构造，每请求一次，typed 中间件与处理器共享同一份；工厂在首次用到 `C` 的位置执行。完整规格见 [design-typed-router.md](design-typed-router.md)，实现见 `typed.go`。
+
+## 6. 延后
 
 body 重放/流式；严格未知字段。
 

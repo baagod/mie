@@ -30,7 +30,6 @@ func (r *Router) Use[I any](m HandlerFunc[I, any]) *Router {
         }
         r.in = in
     }
-
     r.middlewares = append(r.middlewares, handler(m))
     return r
 }
@@ -38,12 +37,7 @@ func (r *Router) Use[I any](m HandlerFunc[I, any]) *Router {
 // Group 返回带前缀的子注册面。中间件取当前层的快照：父层之后再 Use 不影响已创建的子组，
 // 子层再 Use 也不影响兄弟。
 func (r *Router) Group(prefix string) *Router {
-    return &Router{
-        app:         r.app,
-        prefix:      r.join(prefix),
-        middlewares: slices.Clone(r.middlewares),
-        in:          r.in,
-    }
+    return r.snapshot(prefix)
 }
 
 // Get 注册 GET 路由。
@@ -100,6 +94,17 @@ func (r *Router) Handle[IN, OUT any](method, pattern string, h HandlerFunc[IN, O
     }))
 
     return r
+}
+
+// snapshot 用相对当前前缀的 prefix 派生注册面：中间件是独立副本，之后父层的 Use 不影响它。
+// prefix 为空表示沿用当前前缀。
+func (r *Router) snapshot(prefix string) *Router {
+    return &Router{
+        app:         r.app,
+        prefix:      r.join(prefix), // 左边是最终前缀，右边是相对当前前缀。
+        middlewares: slices.Clone(r.middlewares),
+        in:          r.in,
+    }
 }
 
 // join 把本层前缀与注册 pattern 合成 ServeMux 的 pattern。
