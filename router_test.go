@@ -152,6 +152,40 @@ func TestUseTypedMiddleware(t *testing.T) {
     }
 }
 
+// 指针 IN 在整条链上共享同一个对象：中间件写入的字段处理器能看到。
+func TestUsePointerInputShared(t *testing.T) {
+    r := New()
+    r.Use(func(c *Ctx, in *routerInput) (any, error) {
+        in.Name = "rewritten"
+        return nil, c.Next()
+    })
+    r.Get("/ptr", func(c *Ctx, in *routerInput) (string, error) { return in.Name, nil })
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ptr?name=bob", nil))
+
+    if rec.Code != http.StatusOK || rec.Body.String() != "rewritten" {
+        t.Fatalf("status = %d, body = %s, want 200 and rewritten", rec.Code, rec.Body.String())
+    }
+}
+
+// 值 IN 是快照：中间件改自己的参数不会传下去，处理器仍看到首次绑定的值。
+func TestUseValueInputIsSnapshot(t *testing.T) {
+    r := New()
+    r.Use(func(c *Ctx, in routerInput) (any, error) {
+        in.Name = "rewritten"
+        return nil, c.Next()
+    })
+    r.Get("/val", func(c *Ctx, in routerInput) (string, error) { return in.Name, nil })
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/val?name=bob", nil))
+
+    if rec.Code != http.StatusOK || rec.Body.String() != "bob" {
+        t.Fatalf("status = %d, body = %s, want 200 and bob", rec.Code, rec.Body.String())
+    }
+}
+
 // 组前缀带不带尾斜杠，决定组根是精确路径还是子树；两者可以同时注册。
 func TestGroupRootTrailingSlash(t *testing.T) {
     r := New()
