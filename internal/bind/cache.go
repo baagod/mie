@@ -14,7 +14,7 @@ type FormCache struct {
 // Query 解析 URL 参数并缓存；错误存入 err，不打断取值。
 func (c *FormCache) Query(r *http.Request) url.Values {
     if c.query == nil {
-        if c.err != nil {
+        if r.URL.RawQuery == "" || c.err != nil {
             c.query = url.Values{}
         } else {
             c.query, c.err = url.ParseQuery(r.URL.RawQuery)

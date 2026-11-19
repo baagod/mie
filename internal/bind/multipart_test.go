@@ -236,3 +236,45 @@ func TestDecodeMultipartFileDeclaredAsString(t *testing.T) {
         t.Fatal("want error for file part bound to string, got nil")
     }
 }
+
+// multipartWithFileAndQuery 复用 multipartWithFiles，再给 URL 补一个参数。
+func multipartWithFileAndQuery(t *testing.T, query, field, name string) *http.Request {
+    t.Helper()
+
+    req := multipartWithFiles(t, field, []string{name})
+    req.URL.RawQuery = query
+    return req
+}
+
+// 锁定：URL 命中同名参数时不读 body，同名文件 part 被忽略而不是 400。
+func TestDecodeMultipartURLHitSkipsFilePart(t *testing.T) {
+    type in struct {
+        Name string `form:"name"`
+    }
+
+    var got in
+    if err := bind.Decode(multipartWithFileAndQuery(t, "name=query", "name", "a.txt"), &got); err != nil {
+        t.Fatalf("Decode = %v, want nil（URL 命中不读 body）", err)
+    }
+    if got.Name != "query" {
+        t.Fatalf("Name = %q, want query", got.Name)
+    }
+}
+
+// 文件字段只认文件 part：同名 URL 参数被忽略。
+func TestDecodeMultipartFileIgnoresQuery(t *testing.T) {
+    type in struct {
+        Avatar *multipart.FileHeader `form:"avatar"`
+    }
+
+    var got in
+    if err := bind.Decode(multipartWithFileAndQuery(t, "avatar=x", "avatar", "a.txt"), &got); err != nil {
+        t.Fatal(err)
+    }
+    if got.Avatar == nil {
+        t.Fatal("Avatar = nil, want file header")
+    }
+    if got.Avatar.Filename != "a.txt" {
+        t.Fatalf("Filename = %q, want a.txt", got.Avatar.Filename)
+    }
+}

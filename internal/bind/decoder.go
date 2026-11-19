@@ -11,7 +11,6 @@ import (
 
 // Decode 把请求里的位置来源写进 in；in 必须是 *IN。
 // cache 省略或为 nil 时用一次性缓存，传入时解析结果缓存在其中。
-// 表单解析错误由 bindForm 取值时当场返回，Decode 不统一检查缓存错误。
 func Decode[IN any](r *http.Request, in *IN, cache ...*FormCache) (err error) {
     if in == nil {
         return errors.New("bind: destination must be a non-nil pointer to IN")
@@ -90,11 +89,24 @@ func (s *source) bindForm(r *http.Request, out reflect.Value, cache *FormCache) 
     for _, f := range s.fields {
         v := out.Field(f.index)
 
-        if f.isFile { // 文件需要先解析 body；缺失保留 nil，单字段收到多文件报错。
-            if cache.Form(r); cache.err != nil {
+        if !f.isFile {
+            query := cache.Query(r)
+            if cache.err != nil {
                 return cache.err
             }
+            if ss, ok := query[f.key]; ok { // URL 命中时不读 body
+                if err = setValues(v, ss); err != nil {
+                    return s.err(f, err)
+                }
+                continue
+            }
+        }
 
+        if cache.Form(r); cache.err != nil {
+            return cache.err
+        }
+
+        if f.isFile { // 文件需要先解析 body；缺失保留 nil，单字段收到多文件报错。
             var files []*multipart.FileHeader
             if m := r.MultipartForm; m != nil {
                 files = m.File[f.key]
@@ -105,22 +117,6 @@ func (s *source) bindForm(r *http.Request, out reflect.Value, cache *FormCache) 
             }
 
             continue
-        }
-
-        query := cache.Query(r)
-        if cache.err != nil {
-            return cache.err
-        }
-
-        if ss, ok := query[f.key]; ok { // URL 命中时不读 body
-            if err = setValues(v, ss); err != nil {
-                return s.err(f, err)
-            }
-            continue
-        }
-
-        if cache.Form(r); cache.err != nil {
-            return cache.err
         }
 
         // 文件 part 不进 PostForm，声明成非文件类型只会静默得到零值。
