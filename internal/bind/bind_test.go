@@ -21,7 +21,7 @@ func TestBindRejectsUnsupportedFieldType(t *testing.T) {
     }
 
     var v in
-    err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/?m=1", nil), &v)
+    err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/?m=1", nil), &v, nil)
     if err == nil || !strings.Contains(err.Error(), "unsupported binding type map[string]int") {
         t.Fatalf("err = %v, want unsupported binding type", err)
     }
@@ -59,7 +59,7 @@ func TestBindRejectsDoublePointerIN(t *testing.T) {
 
     var dst **in
     req := httptest.NewRequest(http.MethodPost, "/?name=x", nil)
-    err = bind.Decode(req, &dst)
+    err = bind.Decode(req, &dst, nil)
     if err == nil {
         t.Fatal("Decode(**in) = nil, want error")
     }
@@ -75,7 +75,7 @@ func TestBindSkipsUnexportedAndEmptyTags(t *testing.T) {
     }
 
     var v in
-    if err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/?id=5", nil), &v); err != nil {
+    if err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/?id=5", nil), &v, nil); err != nil {
         t.Fatalf("Bind: %v", err)
     }
     if v.Name != "" {
@@ -88,7 +88,7 @@ func TestBindRequiresNonNilPointer(t *testing.T) {
         ID int `form:"id"`
     }
 
-    err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/", nil), nil)
+    err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/", nil), nil, nil)
     if err == nil || !strings.Contains(err.Error(), "non-nil pointer") {
         t.Fatalf("Bind(nil) err = %v, want non-nil pointer error", err)
     }
@@ -100,7 +100,7 @@ func TestBindPointerInputAllocates(t *testing.T) {
     }
 
     var v *in
-    if err := bind.Decode[*in](httptest.NewRequest(http.MethodGet, "/?id=7", nil), &v); err != nil {
+    if err := bind.Decode[*in](httptest.NewRequest(http.MethodGet, "/?id=7", nil), &v, nil); err != nil {
         t.Fatalf("Bind: %v", err)
     }
     if v == nil || v.ID != 7 {
@@ -115,7 +115,7 @@ func TestBindSliceAndArray(t *testing.T) {
     }
 
     var v in
-    if err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/?tag=a&tag=b&n=1", nil), &v); err != nil {
+    if err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/?tag=a&tag=b&n=1", nil), &v, nil); err != nil {
         t.Fatalf("Bind: %v", err)
     }
     if len(v.Tags) != 2 || v.Tags[0] != "a" || v.Tags[1] != "b" {
@@ -145,7 +145,7 @@ func TestBindConcurrentFirstUse(t *testing.T) {
         go func() {
             defer wg.Done()
             var v in
-            err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/?id=7", nil), &v)
+            err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/?id=7", nil), &v, nil)
             results <- result{v, err}
         }()
     }
@@ -178,7 +178,7 @@ func TestBindCookie(t *testing.T) {
     r.AddCookie(&http.Cookie{Name: "clear", Value: ""})
 
     v := in{Cleared: "old"}
-    if err := bind.Decode(r, &v); err != nil {
+    if err := bind.Decode(r, &v, nil); err != nil {
         t.Fatalf("Bind: %v", err)
     }
     if v.Session != "abc" {
@@ -204,7 +204,7 @@ func TestBindCookieInvalidValue(t *testing.T) {
     r.AddCookie(&http.Cookie{Name: "n", Value: "abc"})
 
     var v in
-    err := bind.Decode(r, &v)
+    err := bind.Decode(r, &v, nil)
     if err == nil || !strings.Contains(err.Error(), "bind: cookie.N") {
         t.Fatalf("err = %v, want bind: cookie.N", err)
     }
@@ -219,7 +219,7 @@ func TestBindCookieOverridesQuery(t *testing.T) {
     r.AddCookie(&http.Cookie{Name: "id", Value: "from-cookie"})
 
     var v in
-    if err := bind.Decode(r, &v); err != nil {
+    if err := bind.Decode(r, &v, nil); err != nil {
         t.Fatalf("Bind: %v", err)
     }
     if v.ID != "from-cookie" {
@@ -237,7 +237,7 @@ func TestBindHeaderOverridesCookie(t *testing.T) {
     r.AddCookie(&http.Cookie{Name: "user", Value: "from-cookie"})
 
     var v in
-    if err := bind.Decode(r, &v); err != nil {
+    if err := bind.Decode(r, &v, nil); err != nil {
         t.Fatalf("Bind: %v", err)
     }
     if v.User != "from-header" {
@@ -254,7 +254,7 @@ func TestBindFormReadsBodyAndQueryWins(t *testing.T) {
         Page int    `form:"page"`
         City string `form:"city"`
     }
-    if err := bind.Decode(r, &v); err != nil {
+    if err := bind.Decode(r, &v, nil); err != nil {
         t.Fatalf("Bind: %v", err)
     }
     if v.Name != "from-query" || v.Page != 3 || v.City != "Paris" {
@@ -281,7 +281,7 @@ func TestBindTextUnmarshaler(t *testing.T) {
     r.Header.Set("X-Tag", "low")
 
     var v in
-    if err := bind.Decode(r, &v); err != nil {
+    if err := bind.Decode(r, &v, nil); err != nil {
         t.Fatalf("Bind: %v", err)
     }
     if want := time.Date(2026, 11, 18, 3, 0, 0, 0, time.UTC); !v.At.Equal(want) {
@@ -301,7 +301,7 @@ func TestBindTextUnmarshalerError(t *testing.T) {
     }
 
     var v in
-    err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/?at=nope", nil), &v)
+    err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/?at=nope", nil), &v, nil)
     if err == nil || !strings.Contains(err.Error(), "bind: form.At:") {
         t.Fatalf("err = %v, want wrapped as bind: form.At", err)
     }
@@ -316,7 +316,7 @@ func TestBindTextUnmarshalerSliceAndPointer(t *testing.T) {
 
     r := httptest.NewRequest(http.MethodGet, "/?tag=a&tag=b&first=hi", nil)
     var v in
-    if err := bind.Decode(r, &v); err != nil {
+    if err := bind.Decode(r, &v, nil); err != nil {
         t.Fatalf("Bind: %v", err)
     }
     if len(v.Tags) != 2 || v.Tags[0] != "A" || v.Tags[1] != "B" {
@@ -336,7 +336,7 @@ func TestBindTextUnmarshalerNamedSlice(t *testing.T) {
     }
 
     var v in
-    if err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/?ip=::1", nil), &v); err != nil {
+    if err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/?ip=::1", nil), &v, nil); err != nil {
         t.Fatalf("Bind: %v", err)
     }
     if !v.IP.Equal(net.IPv6loopback) {
@@ -366,7 +366,7 @@ func TestBindTextUnmarshalerArray(t *testing.T) {
         "/?at=2026-11-18T03:00:00Z&at=2026-11-19T03:00:00Z&mac=00:11:22:33:44:55", nil)
 
     var v in
-    if err := bind.Decode(r, &v); err != nil {
+    if err := bind.Decode(r, &v, nil); err != nil {
         t.Fatalf("Bind: %v", err)
     }
     if v.At[0].IsZero() || v.At[1].IsZero() {
@@ -391,7 +391,7 @@ func TestBindEmptyValueFollowsTypeParser(t *testing.T) {
 
     decode := func(q string) (in, error) {
         var v in
-        err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/e"+q, nil), &v)
+        err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/e"+q, nil), &v, nil)
         return v, err
     }
 

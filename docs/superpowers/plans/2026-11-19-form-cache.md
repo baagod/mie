@@ -26,7 +26,7 @@
 - **D9 单错误缓存**：解析错误只进 `FormCache.err`（先到先得），`Query` / `Form` 不返回错误；
   一旦有错，两张表都返回空表、不再解析，`bindForm` 取值时当场返回。`Form` 吞错返回零值，`Bind` 用这条错误返回 400/413，
   避免“先 Form 失败、后 Bind 对已消费 body 二次解析得到 200”。
-- **D10 一个缓存类型两处用**：`Ctx` 持有 `bind.FormCache`；`bind.Decode(r,in)` 省略 cache 时内部用局部 `FormCache`。
+- **D10 一个缓存类型两处用**：`Ctx` 持有 `bind.FormCache`；`bind.Decode(r,in,cache)` 的 cache 为 nil 时内部用局部 `FormCache`。
   不存在 `Needs` / `DecodeMaps` 那种“先加载再解码”的时序契约。
 - **D11 只保留 form tag**：删除 `query` 来源与 `bindQuery`；`form` 字段先查 URL，命中即绑，未命中才解析 body。
   GET 由 `ParseForm` 自动只取 query；POST 同时得到两表。代价：纯 URL 字段在缺值时也会读 body，
@@ -72,8 +72,8 @@ func (c *FormCache) Query(r *http.Request) url.Values
 // Form 解析 body 并缓存 r.PostForm；query 由调用方按需通过 Query 取。
 func (c *FormCache) Form(r *http.Request) url.Values
 
-// 缓存可选：省略或 nil 用一次性缓存，传入则复用。
-func Decode[IN any](r *http.Request, in *IN, cache ...*FormCache) error
+// 缓存可选：nil 用一次性缓存，传入则复用。
+func Decode[IN any](r *http.Request, in *IN, cache *FormCache) error
 
 // 不再解析，只从已解析的文件表取字段。
 func ParseFile[T any](m *multipart.Form, name string) (v T, err error)
@@ -88,7 +88,7 @@ type Ctx struct {
 }
 ```
 
-`Decode(r, in)` 仍可两参调用；`cache` 为可变参数，省略时内部新建 `FormCache`，约 20 处测试调用点不动。
+`Decode(r, in, nil)` 用一次性缓存；测试 20 处两参调用补 `nil`，`cache_test.go` 传 `&cache` 复用。
 
 ## Task 1：新增 bind.FormCache
 
@@ -139,44 +139,41 @@ func (c *FormCache) Form(r *http.Request) url.Values {
 
 文件：`internal/bind/decoder.go`、`internal/bind/bind.go`
 
-1. 删除 `plan.bind`，遍历直接放进 `Decode`（它只有这一个调用点），`cache` 用可变参数表示可选：
+1. 删除 `plan.bind`，遍历直接放进 `Decode`（它只有这一个调用点），`cache` 为 nil 时用一次性缓存：
 
 ```go
-func Decode[IN any](r *http.Request, in *IN, cache ...*FormCache) error {
+func Decode[IN any](r *http.Request, in *IN, cache *FormCache) (err error) {
     if in == nil {
         return errors.New("bind: destination must be a non-nil pointer to IN")
     }
 
-    p, err := planFor(reflect.TypeFor[IN]())
-    if err != nil {
-        return err
+    p, e := planFor(reflect.TypeFor[IN]())
+    if e != nil {
+        return e
     }
 
-    v := reflect.ValueOf(in).Elem() // IN
-    // IN 是 *T：请求期分配 T，handler 永远拿到非 nil 指针。
-    if v.Kind() == reflect.Pointer {
+    v := reflect.ValueOf(in).Elem()  // IN
+    if v.Kind() == reflect.Pointer { // 请求期分配 T，handler 永远拿到非 nil 指针。
         if v.IsNil() {
             v.Set(reflect.New(v.Type().Elem()))
         }
         v = v.Elem()
     }
 
-    c := new(FormCache)
-    if len(cache) > 0 && cache[0] != nil {
-        c = cache[0]
+    if cache == nil {
+        cache = &FormCache{}
     }
 
     for _, s := range p.sources {
         if len(s.fields) == 0 {
             continue
         }
-
-        if err = s.bind(s, r, v, c); err != nil {
+        if err = s.bind(s, r, v, cache); err != nil {
             return err
         }
     }
 
-    return c.err
+    return
 }
 ```
 

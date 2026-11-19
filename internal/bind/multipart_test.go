@@ -37,7 +37,7 @@ func TestDecodeMultipartValues(t *testing.T) {
     }
 
     var got in
-    if err := bind.Decode(multipartRequest(t, map[string]string{"name": "张三"}), &got); err != nil {
+    if err := bind.Decode(multipartRequest(t, map[string]string{"name": "张三"}), &got, nil); err != nil {
         t.Fatal(err)
     }
 
@@ -53,7 +53,7 @@ func TestDecodeMultipartQueryOverridesForm(t *testing.T) {
     }
 
     var got in
-    if err := bind.Decode(multipartRequest(t, map[string]string{"page": "1", "name": "x"}), &got); err != nil {
+    if err := bind.Decode(multipartRequest(t, map[string]string{"page": "1", "name": "x"}), &got, nil); err != nil {
         t.Fatal(err)
     }
 
@@ -74,7 +74,7 @@ func TestDecodeMultipartMalformed(t *testing.T) {
     req.Header.Set("Content-Type", "multipart/form-data; boundary=missing")
 
     var got in
-    if err := bind.Decode(req, &got); err == nil {
+    if err := bind.Decode(req, &got, nil); err == nil {
         t.Fatal("want error for malformed multipart, got nil")
     }
 }
@@ -109,7 +109,7 @@ func TestDecodeMultipartFile(t *testing.T) {
     }
 
     var got in
-    if err := bind.Decode(multipartWithFiles(t, "avatar", []string{"a.txt"}), &got); err != nil {
+    if err := bind.Decode(multipartWithFiles(t, "avatar", []string{"a.txt"}), &got, nil); err != nil {
         t.Fatal(err)
     }
     if got.Avatar == nil {
@@ -140,7 +140,7 @@ func TestDecodeMultipartFiles(t *testing.T) {
     }
 
     var got in
-    if err := bind.Decode(multipartWithFiles(t, "files", []string{"a.txt", "b.txt"}), &got); err != nil {
+    if err := bind.Decode(multipartWithFiles(t, "files", []string{"a.txt", "b.txt"}), &got, nil); err != nil {
         t.Fatal(err)
     }
 
@@ -183,7 +183,7 @@ func TestDecodeMultipartFilesThenValue(t *testing.T) {
     req.Header.Set("Content-Type", w.FormDataContentType())
 
     var got in
-    if err := bind.Decode(req, &got); err != nil {
+    if err := bind.Decode(req, &got, nil); err != nil {
         t.Fatal(err)
     }
     if len(got.Files) != 2 {
@@ -201,7 +201,7 @@ func TestDecodeMultipartFileMissing(t *testing.T) {
     }
 
     var got in
-    if err := bind.Decode(multipartRequest(t, map[string]string{"name": "x"}), &got); err != nil {
+    if err := bind.Decode(multipartRequest(t, map[string]string{"name": "x"}), &got, nil); err != nil {
         t.Fatal(err)
     }
     if got.Avatar != nil {
@@ -216,7 +216,7 @@ func TestDecodeMultipartSingleFileFieldRejectsMultiple(t *testing.T) {
 
     req := multipartWithFiles(t, "avatar", []string{"a.txt", "b.txt"})
     var got in
-    err := bind.Decode(req, &got)
+    err := bind.Decode(req, &got, nil)
     if err == nil {
         t.Fatal("want error for multiple files into single field, got nil")
     }
@@ -232,7 +232,7 @@ func TestDecodeMultipartFileDeclaredAsString(t *testing.T) {
 
     req := multipartWithFiles(t, "avatar", []string{"a.txt"})
     var got in
-    if err := bind.Decode(req, &got); err == nil {
+    if err := bind.Decode(req, &got, nil); err == nil {
         t.Fatal("want error for file part bound to string, got nil")
     }
 }
@@ -253,7 +253,7 @@ func TestDecodeMultipartURLHitSkipsFilePart(t *testing.T) {
     }
 
     var got in
-    if err := bind.Decode(multipartWithFileAndQuery(t, "name=query", "name", "a.txt"), &got); err != nil {
+    if err := bind.Decode(multipartWithFileAndQuery(t, "name=query", "name", "a.txt"), &got, nil); err != nil {
         t.Fatalf("Decode = %v, want nil（URL 命中不读 body）", err)
     }
     if got.Name != "query" {
@@ -268,7 +268,7 @@ func TestDecodeMultipartFileIgnoresQuery(t *testing.T) {
     }
 
     var got in
-    if err := bind.Decode(multipartWithFileAndQuery(t, "avatar=x", "avatar", "a.txt"), &got); err != nil {
+    if err := bind.Decode(multipartWithFileAndQuery(t, "avatar=x", "avatar", "a.txt"), &got, nil); err != nil {
         t.Fatal(err)
     }
     if got.Avatar == nil {

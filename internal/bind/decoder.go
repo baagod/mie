@@ -3,15 +3,14 @@ package bind
 import (
     "errors"
     "fmt"
-    "github.com/baagod/mie/internal/xslices"
     "mime/multipart"
     "net/http"
     "reflect"
 )
 
 // Decode 把请求里的位置来源写进 in；in 必须是 *IN。
-// cache 省略或为 nil 时用一次性缓存，传入时解析结果缓存在其中。
-func Decode[IN any](r *http.Request, in *IN, cache ...*FormCache) (err error) {
+// cache 为 nil 时用一次性缓存，传入时解析结果缓存在其中。
+func Decode[IN any](r *http.Request, in *IN, cache *FormCache) (err error) {
     if in == nil {
         return errors.New("bind: destination must be a non-nil pointer to IN")
     }
@@ -29,16 +28,15 @@ func Decode[IN any](r *http.Request, in *IN, cache ...*FormCache) (err error) {
         v = v.Elem()
     }
 
-    c := xslices.First(cache)
-    if c == nil {
-        c = &FormCache{}
+    if cache == nil {
+        cache = &FormCache{}
     }
 
     for _, s := range p.sources {
         if len(s.fields) == 0 {
             continue
         }
-        if err = s.bind(s, r, v, c); err != nil {
+        if err = s.bind(s, r, v, cache); err != nil {
             return err
         }
     }
