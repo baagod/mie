@@ -154,6 +154,25 @@ func TestDecodeMultipartFiles(t *testing.T) {
     }
 }
 
+// 绑定拿到的切片必须与 MultipartForm 里的列表脱钩：
+// handler 替换元素不能改到框架用于清理临时文件的表。
+func TestDecodeMultipartFilesCopy(t *testing.T) {
+    type in struct {
+        Files []*multipart.FileHeader `form:"files"`
+    }
+
+    req := multipartWithFiles(t, "files", []string{"a.txt"})
+    var got in
+    if err := bind.Decode(req, &got, nil); err != nil {
+        t.Fatal(err)
+    }
+
+    got.Files[0] = nil
+    if req.MultipartForm.File["files"][0] == nil {
+        t.Fatal("bound slice aliases MultipartForm.File")
+    }
+}
+
 // 文件切片之后的字段仍要绑定：切片分支曾经用 return 提前退出整个 bindForm。
 func TestDecodeMultipartFilesThenValue(t *testing.T) {
     type in struct {
