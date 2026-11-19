@@ -70,7 +70,8 @@ func Validate(t reflect.Type) (err error) {
 }
 
 // setFiles 把文件列表写入 v：文件切片整体替换并复制 slice，
-// 避免 handler 改动元素时反向改到 MultipartForm 里用于清理的列表；单文件要求至多一个。
+// 避免 handler 替换元素时反向改到 MultipartForm 里用于清理的列表；*FileHeader 本身仍共享。
+// 单文件要求至多一个。
 func setFiles(v reflect.Value, files []*multipart.FileHeader) (err error) {
     if v.Type() == fileHeadersType {
         v.Set(reflect.ValueOf(slices.Clone(files)))
