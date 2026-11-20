@@ -22,7 +22,8 @@ type Router struct {
 
 // Use 追加中间件，只影响之后注册的路由。
 // 中间件是 HandlerFunc[IN, any]：必须调用 c.Next() 推进链；返回 nil 表示不写 body。
-// 同层中间件的 IN 必须相同；带 IN 的 Use 之后注册的每条路由（含无输入路由）IN 必须与之一致，否则 panic。
+// 同层中间件的 IN 必须相同；带 IN 的 Use 之后本层注册的每条路由（含无输入路由）IN 必须与之一致，否则 panic。
+// 子组是新的注册面，不继承这条约束。
 func (r *Router) Use[IN any](m HandlerFunc[IN, any]) *Router {
     if in := reflect.TypeFor[IN](); in != reflect.TypeFor[struct{}]() {
         if r.in != nil && r.in != in {
@@ -97,13 +98,13 @@ func (r *Router) Handle[IN, OUT any](method, pattern string, h HandlerFunc[IN, O
 }
 
 // snapshot 用相对当前前缀的 prefix 派生注册面：中间件是独立副本，之后父层的 Use 不影响它。
+// IN 约束不随快照继承：子组是新的注册面，路由的 IN 由子组自己决定。
 // prefix 为空表示沿用当前前缀。
 func (r *Router) snapshot(prefix string) *Router {
     return &Router{
         app:         r.app,
         prefix:      r.join(prefix), // 左边是最终前缀，右边是相对当前前缀。
         middlewares: slices.Clone(r.middlewares),
-        in:          r.in,
     }
 }
 

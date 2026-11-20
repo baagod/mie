@@ -223,18 +223,31 @@ func TestTypedRouterInheritsParentMiddleware(t *testing.T) {
     }
 }
 
-func TestTypedRouterInheritsParentInput(t *testing.T) {
-    r := New()
-    r.Use(func(c *Ctx, in routerInput) (any, error) { return nil, c.Next() })
+// TypedRouter 也是新的注册面：不继承父层中间件的 IN，父层中间件照常运行。
+func TestTypedRouterDoesNotInheritParentInput(t *testing.T) {
+    var seen string
 
-    defer func() {
-        if recover() == nil {
-            t.Fatal("want panic when typed route input differs from parent middleware input")
-        }
-    }()
+    r := New()
+    r.Use(func(c *Ctx, in routerInput) (any, error) {
+        seen = in.Name
+        return nil, c.Next()
+    })
 
     r.WithContext(func(c *Ctx) *typedApp { return &typedApp{Ctx: c} }).
-        Get("/x", func(a *typedApp, _ struct{}) (string, error) { return "", nil })
+        Get("/x", func(_ *typedApp, in otherInput) (otherInput, error) { return in, nil })
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x?id=7&name=bob", nil))
+
+    if rec.Code != http.StatusOK {
+        t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+    }
+    if seen != "bob" {
+        t.Fatalf("middleware input = %q, want bob", seen)
+    }
+    if got := rec.Body.String(); got != `{"ID":7}` {
+        t.Fatalf("body = %s, want %s", got, `{"ID":7}`)
+    }
 }
 
 // typedIface 用来验证 C 是接口类型时也能注册中间件：接口自己声明了 Next()，满足 TypedContext。

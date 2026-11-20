@@ -290,14 +290,30 @@ func TestGroupKeepsOwnMiddleware(t *testing.T) {
     }
 }
 
-// 子组继承父层中间件的 IN，路由 IN 不一致同样在注册期 panic。
-func TestGroupInheritsMiddlewareInput(t *testing.T) {
-    r := New()
-    r.Use(func(c *Ctx, _ routerInput) (any, error) { return nil, c.Next() })
+// 子组是新的注册面：不继承父层中间件的 IN，父层中间件照常运行。
+func TestGroupDoesNotInheritMiddlewareInput(t *testing.T) {
+    var seen string
 
-    mustPanicWith(t, "does not match middleware input", func() {
-        r.Group("/api").Get("/x", func(_ *Ctx, in otherInput) (otherInput, error) { return in, nil })
+    r := New()
+    r.Use(func(c *Ctx, in routerInput) (any, error) {
+        seen = in.Name
+        return nil, c.Next()
     })
+
+    r.Group("/api").Get("/x", func(_ *Ctx, in otherInput) (otherInput, error) { return in, nil })
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/x?id=7&name=bob", nil))
+
+    if rec.Code != http.StatusOK {
+        t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+    }
+    if seen != "bob" {
+        t.Fatalf("middleware input = %q, want bob", seen)
+    }
+    if got := rec.Body.String(); got != `{"ID":7}` {
+        t.Fatalf("body = %s, want %s", got, `{"ID":7}`)
+    }
 }
 
 // 根上 pattern 为空，落到 "/"。
