@@ -8,8 +8,8 @@
 
 - `ServeMux` 支持方法、主机、通配段：`"GET /users/{id}"`、`"/files/{path...}"`、`"/{$}"`。注册冲突在启动期 panic；路径按段反转义（`%2F` 不再被整体还原）；`GODEBUG=httpmuxgo121=1` 回退旧行为。
 - `Request.PathValue` / `SetPathValue`（`request.go:1495`）配合上面的模式取值。
-- 文件服务加了 FS 版本：`ServeFileFS`、`FileServerFS`、`NewFileTransportFS`（`fs.go:856` 起）。
-- 空 `Content-Length:` 头从「忽略」变为「报错」；`GODEBUG=httplaxcontentlength=1` 恢复宽松解析（`transfer.go:1088`）。
+- 文件服务加了 FS 版本：`ServeFileFS`（`fs.go:856`）、`FileServerFS`（`fs.go:992`）、`NewFileTransportFS`（`filetransport.go:49`）。
+- 空 `Content-Length:` 头从「忽略」变为「报错」（`transfer.go:1106` 返回 `invalid empty Content-Length`）；`GODEBUG=httplaxcontentlength=1` 恢复宽松解析（`transfer.go:1102` 读该开关）。
 
 ## 2. Go 1.23
 
@@ -39,13 +39,13 @@
 ## 6. Go 1.27
 
 - `Server.MaxHeaderValueCount`（`server.go:3133`）+ `DefaultMaxHeaderValueCount = 500`（`server.go:940`）。计的是**值个数**：单行逗号分隔算 1 个，多行各算 1 个；`Trailer` 例外，其逗号分隔值逐个计数（因为后续会各走一行）。
-- `Server.DisableClientPriority`（`server.go:3197`）：HTTP/2 默认按 RFC 9218 处理客户端优先级，置 true 退回 round-robin。仅在 HTTP/2 且未自定义写调度器时生效。
-- 客户端 `Response.Body` 被 `Close()` 后异步排空未读数据，上限 256 KiB（`transport.go:2420` 的 `maxPostCloseReadBytes`），便于连接复用。
+- `Server.DisableClientPriority`（`server.go:3197`）：HTTP/2 默认按 RFC 9218 处理客户端优先级，置 true 换成 round-robin（`internal/http2/server.go:294`）。字段注释称「已自定义写调度器时不生效」，但当前内置 http2 没有暴露该钩子，设置后总是生效。
+- 客户端 `Response.Body` 被 `Close()` 后继续排空未读数据以便复用连接：上限 256 KiB（`transport.go:2420`）、最多再等 50 ms（`transport.go:2425`），且只对 `ContentLength` 不超过 256 KiB 的响应尝试（`transport.go:2631`）。
 
 ## 7. 补丁版本
 
 以下行为在当前源码里可核实，但具体从哪个补丁版本引入需对照发布说明：
 
-- `Range` 请求头最多处理 200 段（`fs.go:1025` 的 `defaultMaxContentRanges`），`GODEBUG=httpservecontentmaxranges=N` 调整，`0` 表示不限制。
-- `MaxBytesReader` 超限后服务端会关闭连接，不再复用（`server.go:1751` 检查 `requestBodyLimitHit`）。1.27.4 是安全修复版，本条与超限后的写头时序相关；完整 CVE 清单以 go.dev 发布说明为准，本文件不转述编号。
+- `Range` 请求头的段数超过 200 时整个头被忽略、返回 200 全量，而不是截断处理前 200 段（`fs.go:1025` 的 `defaultMaxContentRanges`，`fs.go:1058` 的 `return nil, nil`）；`GODEBUG=httpservecontentmaxranges=N` 调整，`0` 表示不限制。
+- `MaxBytesReader` 超限后服务端强制关闭连接、不再复用：写响应头时若 `requestBodyLimitHit` 为真就置 `closeAfterReply`（`server.go:1438`、`server.go:1564`），HTTP/1.1 由此补上 `Connection: close`（`server.go:1580`），复用判断再读一次（`server.go:1751`）。1.27.4 是安全修复版；完整 CVE 清单以 go.dev 发布说明为准，本文件不转述编号。
 
