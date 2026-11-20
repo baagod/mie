@@ -40,27 +40,27 @@ func (r *Router) Group(prefix string) *Router {
     return r.snapshot(prefix)
 }
 
-// Get 注册 GET 路由。
+// Get 注册 GET 路由
 func (r *Router) Get[IN, OUT any](pattern string, h HandlerFunc[IN, OUT]) *Router {
     return r.Handle(http.MethodGet, pattern, h)
 }
 
-// Post 注册 POST 路由。
+// Post 注册 POST 路由
 func (r *Router) Post[IN, OUT any](pattern string, h HandlerFunc[IN, OUT]) *Router {
     return r.Handle(http.MethodPost, pattern, h)
 }
 
-// Put 注册 PUT 路由。
+// Put 注册 PUT 路由
 func (r *Router) Put[IN, OUT any](pattern string, h HandlerFunc[IN, OUT]) *Router {
     return r.Handle(http.MethodPut, pattern, h)
 }
 
-// Patch 注册 PATCH 路由。
+// Patch 注册 PATCH 路由
 func (r *Router) Patch[IN, OUT any](pattern string, h HandlerFunc[IN, OUT]) *Router {
     return r.Handle(http.MethodPatch, pattern, h)
 }
 
-// Delete 注册 DELETE 路由。
+// Delete 注册 DELETE 路由
 func (r *Router) Delete[IN, OUT any](pattern string, h HandlerFunc[IN, OUT]) *Router {
     return r.Handle(http.MethodDelete, pattern, h)
 }
