@@ -23,8 +23,8 @@ type Router struct {
 // Use 追加中间件，只影响之后注册的路由。
 // 中间件是 HandlerFunc[IN, any]：必须调用 c.Next() 推进链；返回 nil 表示不写 body。
 // 同层中间件的 IN 必须相同；带 IN 的 Use 之后注册的每条路由（含无输入路由）IN 必须与之一致，否则 panic。
-func (r *Router) Use[I any](m HandlerFunc[I, any]) *Router {
-    if in := reflect.TypeFor[I](); in != reflect.TypeFor[struct{}]() {
+func (r *Router) Use[IN any](m HandlerFunc[IN, any]) *Router {
+    if in := reflect.TypeFor[IN](); in != reflect.TypeFor[struct{}]() {
         if r.in != nil && r.in != in {
             panic("mie: middleware input " + in.String() + " conflicts with " + r.in.String())
         }

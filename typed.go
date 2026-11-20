@@ -30,7 +30,7 @@ func (r *Router) WithContext[C TypedContext](factory func(*Ctx) C) *TypedRouter[
 }
 
 // Use 追加 typed 中间件，只影响之后注册的路由。
-func (r *TypedRouter[C]) Use[I any](m TypedHandler[C, I, any]) *TypedRouter[C] {
+func (r *TypedRouter[C]) Use[IN any](m TypedHandler[C, IN, any]) *TypedRouter[C] {
     r.r.Use(typedHandler(r.factory, m))
     return r
 }
