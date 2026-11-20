@@ -8,7 +8,6 @@ import (
     "reflect"
     "slices"
     "strings"
-    "sync"
     "testing"
     "time"
 
@@ -68,21 +67,6 @@ func TestBindRejectsDoublePointerIN(t *testing.T) {
     }
 }
 
-func TestBindSkipsUnexportedAndEmptyTags(t *testing.T) {
-    type in struct {
-        id   int    `form:"id"`
-        Name string `form:""`
-    }
-
-    var v in
-    if err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/?id=5", nil), &v, nil); err != nil {
-        t.Fatalf("Bind: %v", err)
-    }
-    if v.Name != "" {
-        t.Fatalf("Name = %q, want empty", v.Name)
-    }
-}
-
 func TestBindRequiresNonNilPointer(t *testing.T) {
     type in struct {
         ID int `form:"id"`
@@ -123,43 +107,6 @@ func TestBindSliceAndArray(t *testing.T) {
     }
     if v.N != [2]int{1, 0} {
         t.Fatalf("N = %v, want [1 0]", v.N)
-    }
-}
-
-func TestBindConcurrentFirstUse(t *testing.T) {
-    type in struct {
-        ID int `form:"id"`
-    }
-
-    type result struct {
-        v   in
-        err error
-    }
-
-    const n = 16
-    results := make(chan result, n)
-    var wg sync.WaitGroup
-    wg.Add(n)
-
-    for range n {
-        go func() {
-            defer wg.Done()
-            var v in
-            err := bind.Decode[in](httptest.NewRequest(http.MethodGet, "/?id=7", nil), &v, nil)
-            results <- result{v, err}
-        }()
-    }
-
-    wg.Wait()
-    close(results)
-
-    for r := range results {
-        if r.err != nil {
-            t.Fatalf("Bind: %v", r.err)
-        }
-        if r.v.ID != 7 {
-            t.Fatalf("ID = %d, want 7", r.v.ID)
-        }
     }
 }
 

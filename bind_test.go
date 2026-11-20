@@ -225,24 +225,33 @@ func TestBindPointerINWithNullBodyIsAllocated(t *testing.T) {
 
 func TestBindNonStructIN(t *testing.T) {
     r := New()
-    r.Post("/sum", func(c *Ctx, in []int) (int, error) {
+    r.Post("/sum", func(_ *Ctx, in []int) (int, error) {
         n := 0
         for _, v := range in {
             n += v
         }
         return n, nil
     })
+    r.Post("/ptr", func(_ *Ctx, in *[]int) (int, error) {
+        n := 0
+        for _, v := range *in {
+            n += v
+        }
+        return n, nil
+    })
 
-    rec := httptest.NewRecorder()
-    req := httptest.NewRequest(http.MethodPost, "/sum", strings.NewReader(`[1,2,3]`))
-    req.Header.Set(HeaderContentType, MIMEJSON)
-    r.ServeHTTP(rec, req)
+    for _, path := range []string{"/sum", "/ptr"} {
+        rec := httptest.NewRecorder()
+        req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`[1,2,3]`))
+        req.Header.Set(HeaderContentType, MIMEJSON)
+        r.ServeHTTP(rec, req)
 
-    if rec.Code != http.StatusOK || rec.Body.String() != "6" {
-        t.Fatalf("status=%d body=%q, want 200 6", rec.Code, rec.Body.String())
-    }
-    if got := rec.Header().Get(HeaderContentType); got != MIMEJSON {
-        t.Fatalf("Content-Type = %q, want %q", got, MIMEJSON)
+        if rec.Code != http.StatusOK || rec.Body.String() != "6" {
+            t.Fatalf("%s status=%d body=%q, want 200 6", path, rec.Code, rec.Body.String())
+        }
+        if got := rec.Header().Get(HeaderContentType); got != MIMEJSON {
+            t.Fatalf("%s Content-Type = %q, want %q", path, got, MIMEJSON)
+        }
     }
 }
 
@@ -259,26 +268,6 @@ func TestBindNonStructINRequiresJSONContentType(t *testing.T) {
 
     if rec.Code != http.StatusUnsupportedMediaType {
         t.Fatalf("status=%d, want 415（CT 不是 JSON 不解析）", rec.Code)
-    }
-}
-
-func TestBindPointerNonStructIN(t *testing.T) {
-    r := New()
-    r.Post("/sum", func(_ *Ctx, in *[]int) (int, error) {
-        n := 0
-        for _, v := range *in {
-            n += v
-        }
-        return n, nil
-    })
-
-    rec := httptest.NewRecorder()
-    req := httptest.NewRequest(http.MethodPost, "/sum", strings.NewReader(`[1,2,3]`))
-    req.Header.Set(HeaderContentType, MIMEJSON)
-    r.ServeHTTP(rec, req)
-
-    if rec.Code != http.StatusOK || rec.Body.String() != "6" {
-        t.Fatalf("status=%d body=%q, want 200 6", rec.Code, rec.Body.String())
     }
 }
 
