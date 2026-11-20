@@ -43,6 +43,7 @@
 ## 4. 输出与错误
 
 - error 非 nil 时忽略 OUT；OUT 为 nil 不写 body（中间件 `return nil, nil` 即放行），状态取 `c.Status`，未设置则 200。
+- 处理器自己写过响应（直接 `c.Send`/`c.W.Write`）后又返回非 nil 的 OUT，body 会写两遍：框架在处理器返回后照常渲染 OUT。两种写法二选一；`He` 的 OUT 恒为 nil，天然没有这个问题。
 - 输出：`Formatted` 只声明格式（`Format() (media, value)`），框架必须用该格式的编码器编码，缺了报错（`JSON(v)`/`XML(v)` 是忽略 `Accept` 的捷径）。`Format()` 返回的媒体必须是 `Config.Codecs` 提供的媒体之一：这里只做精确匹配，vendor 类型（如 `application/vnd.api+json`）不会走 `Accept` 的后缀回退，会直接报没有编码器。
 - 裸值：处理器事先设了 `Content-Type` 时以它为准、不协商；否则按 `Accept` 选格式。只有 string 与 `[]byte` 有天然类型（`text/plain`、嗅探结果），天然类型能覆盖请求时优先；其余裸值没有天然类型，按 `Config.Codecs.Order` 选（未配时即 JSON）。`Accept` 里的 `+json`/`+xml` 后缀按同 top-level 的基类型匹配（`application/vnd.api+json` → `application/json`），响应仍写基类型而非 vendor 类型。有编码器就编码，没有编码器时 string/`[]byte` 按原字节写、其余报错。
 - 媒体集合：`Config.Codecs` 是固定的媒体表（`JSON`、`XML`、`TOML`、`YAML`、`MsgPack`、`Protobuf`、`CBOR`、`BSON`），填 `Encode` 即能产出、填 `Decode` 即能接收 body，两者独立；字段为零值即不提供该媒体。`New` 给 `JSON`、`XML` 各补内置编码与解码，其余保持零值。`Config.Codecs.Order` 决定通配请求（`type/*`、`*/*`、缺失 `Accept`）的优先级：列出的媒体（`Media`）按给定顺序在前，其余按声明序（JSON、XML、TOML、YAML、MsgPack、Protobuf、CBOR、BSON）追加；未实现的媒体即使列在 `Order` 里也不参与协商，引用未知媒体或重复媒体时 `New` panic。注意 string/`[]byte` 的天然类型仍优先于 `Order`；其余裸值把非 JSON 格式排到前面后，`Accept: */*` 也会落到该格式（例如结构体命中 XML 编码器后可能编码失败）。`New` 把媒体展开成有序列表供 `Formatted` 与 `Accept` 协商共用，`Content-Type` 取协商出的媒体类型。无法满足时 406，响应带 `Vary: Accept`。
