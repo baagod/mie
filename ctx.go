@@ -138,25 +138,26 @@ func (c *Ctx) Param(name string) string {
     return c.R.PathValue(name)
 }
 
-// Form 取参数并解析成 T；同名 query 优先，缺失或解析失败返回零值。
-// query 未命中（或 T 为文件类型）时读取并消费 body，框架不还原 c.R.Body。
-// T 可为标量、TextUnmarshaler 或它们的切片/数组/指针；元素层再套指针不支持，按零值返回。
-// T 为 *multipart.FileHeader 或 []*multipart.FileHeader 时取上传文件，不取 URL 参数的值。
+// Form 取参数并解析成 T；同名 query 优先，未命中时读取并消费 body（框架不还原 c.R.Body），
+// 缺失或解析失败返回零值。T 为 *multipart.FileHeader（或其切片）时不查 query，改取上传文件，
+// multipart 同样在这条路径解析。T 可为标量、TextUnmarshaler 或它们的切片/数组/指针；元素层再套指针不支持。
 func (c *Ctx) Form[T any](name string) (v T) {
-    if bind.IsFile[T]() {
-        c.form.Form(c.R)
+    isFile := bind.IsFile[T]()
+    if !isFile {
+        q := c.form.Query(c.R)
+        if ss, ok := q[name]; ok {
+            v, _ = bind.Parse[T](ss)
+            return
+        }
+    }
+
+    p := c.form.Form(c.R)
+    if isFile {
         v, _ = bind.ParseFile[T](c.R.MultipartForm, name)
         return
     }
 
-    q := c.form.Query(c.R)
-    if ss, ok := q[name]; ok {
-        v, _ = bind.Parse[T](ss)
-        return
-    }
-
-    f := c.form.Form(c.R)
-    v, _ = bind.Parse[T](f[name])
+    v, _ = bind.Parse[T](p[name])
     return
 }
 
