@@ -18,19 +18,18 @@ func He[IN any](f func(c *Ctx, in IN) error) HandlerFunc[IN, any] {
 }
 
 // handler 把 HandlerFunc 适配成链元素 Handler：绑定输入、调用处理器、渲染输出。
-func handler[IN, OUT any](f HandlerFunc[IN, OUT]) Handler {
-    noInput := xtype.Eq[IN, struct{}]()
+func handler[IN, OUT any](h HandlerFunc[IN, OUT]) Handler {
+    noInput := xtype.Is[IN, struct{}]()
 
     return func(c *Ctx) error {
         var in IN
-
         if !noInput {
             if err := c.Bind(&in); err != nil {
                 return err
             }
         }
 
-        out, err := f(c, in)
+        out, err := h(c, in)
         if err != nil {
             return err
         }

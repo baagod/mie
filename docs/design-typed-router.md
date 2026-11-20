@@ -39,8 +39,8 @@ app.Get("/me", func(c *AppCtx, _ struct{}) (User, error) {
 ## 已确认的决定
 
 - **D1 工厂执行时机：懒执行。** `factory` 懒在 `typedHandler` 的闭包里：该路由第一次处理请求时才执行，没人用 `C` 的路由不执行工厂；工厂内 panic 落在链内，`c.index` 能反映停在哪个中间件。
-- **D2 typed 中间件签名：`Use[I any](m TypedHandler[C, I, any])`。** 中间件靠 `C` 上的 `Next()` 推进链（通常由嵌入 `*mux.Ctx` 提升而来）；这条要求由类型参数 `TypedContext` 保证，缺 `Next() error` 在编译期就报错。
-- **D3 `WithContext` 返回快照。** 复制 `prefix`/`middlewares`/`in`（与 `Group` 走同一个 `Router.snapshot`，`router.go:102-110`），typed 面 `Use` 不外溢到原 `Router`，两个 `WithContext` 互不影响。
+- **D2 typed 中间件签名：`Use[I any](m TypedHandler[C, I, any])`。** 中间件靠 `C` 上的 `Next()` 推进链（由嵌入 `*mux.Ctx` 提升而来）；`WithContext[T any](factory func(*Ctx) *T)` 把 `C` 固定成 `*T`，值类型的 `C` 在签名层就写不出来，`T` 没直接嵌入 `*Ctx` 则注册期 panic。
+- **D3 `WithContext` 返回快照。** 复制 `prefix`/`middlewares`（与 `Group` 走同一个 `Router.snapshot`，`router.go:102-110`；`in` 不随快照继承），typed 面 `Use` 不外溢到原 `Router`，两个 `WithContext` 互不影响。
 - **D4 工厂签名保持 `func(*Ctx) C`，不返回 error。** 拒绝请求只发生在中间件（不调 `Next` 即可）；工厂只做组装，`typedHandler` 里没有新的错误分支。
 
 ## 已知代价
@@ -56,17 +56,17 @@ app.Get("/me", func(c *AppCtx, _ struct{}) (User, error) {
 
 ### 机制：类型键缓存（与 Bind 同构）
 
-`typedHandler` 用 `typedCtxKey[C]{}`（零尺寸结构体，类型即键）把工厂结果写进 `c.store`，与 `bindKey[IN]{}` 同构，值/指针语义也一致。三条性质全部来自这一处：
+`typedHandler` 用 `typedCtxKey[C]{}`（零尺寸结构体，类型即键）把工厂结果写进 `c.store`，与 `bindKey[IN]{}` 同构。三条性质全部来自这一处：
 
 - **工厂每请求最多跑一次**：链上任意多个中间件与处理器共享同一个值。
-- **值/指针语义与 IN 一致**：`C = AppCtx` 时存副本，中间件改自己的参数不会传下去；`C = *AppCtx` 时整链共享同一对象，任何一处的写入对下游可见。不需要第二套解释。
+- **整链共享同一份 C**：`C` 恒为指针，中间件与处理器拿到的是同一个对象，任何一处的写入对下游可见。
 - **不经过 `c.Value`**：`Value` 会回退到 `req.Context()`，把框架内部键暴露进 context 查找路径，没必要。
 
 ### 校验
 
 - `factory == nil`：注册期 panic，与 `bind.Validate` 的失败方式一致。
 - IN 与中间件 IN 的一致性：完全沿用 `Router.Use` 的 `r.in` 校验（`router.go:26-31`、`router.go:72-79`），TypedRouter 不新增规则。
-- `C` 的可推进性：`TypedRouter[C TypedContext]` 把「方法集必须包含 `Next() error`」写进类型参数，构造时就由编译器检查。嵌入 `*mux.Ctx` 时 `AppCtx`、`*AppCtx` 与自行声明该方法的接口类型都满足；值类型 `C` 也能注册，只是中间件改的是副本，写入不会传下去。
+- `T` 的形态：`WithContext` 检查 `T` 是否直接嵌入 `*Ctx`（`*T` 的指针性由签名保证），失败即 `panic("mie: WithContext requires C to be a pointer to a struct embedding *Ctx")`。嵌入保证 `Next()`、`Header()` 这些方法全部提升上来；命名包装、指向接口、`T = Ctx` 都被拒绝。
 
 ### 成本
 
@@ -77,7 +77,7 @@ app.Get("/me", func(c *AppCtx, _ struct{}) (User, error) {
 
 - 同一个 `Router` 调两次 `WithContext`、不同 `C`：两个独立键，互不影响。
 - 工厂看到的是**首次被调用那一刻**的 `store`。D1 懒执行下工厂在链上首次使用 `C` 的位置运行，所以它依赖的中间件（如写入 `*User` 的鉴权）必须排在 typed 中间件之前，否则工厂读到空值。
-- `C` 是接口类型时（接口自己声明了 `Next() error`），该接口的所有 `WithContext` 共用 `typedCtxKey[I]{}` 一格；别用方法集过宽的接口做 `C`。
+- `C` 恒为 `*T`，`T` 必须直接嵌入 `*Ctx`；`T = Ctx` 不放行（`Ctx` 没有嵌入自己），要直接用 `*Ctx` 就用 `Router`。多层嵌入（间接嵌入）也不放行，需要在每层都直接写 `*mux.Ctx`。
 - `Ctx` 不跨请求，`store` 随请求结束，不存在跨请求串值。
 
 ## 组合
@@ -93,4 +93,4 @@ app.Get("/me", func(c *AppCtx, _ struct{}) (User, error) {
 
 ## 测试
 
-行为用例在 `typed_test.go`（17 个），这里只记不显然的三条：`C` 为值类型时 `Use` 能注册，但中间件写入随副本丢弃；typed 中间件与处理器共享同一份绑定缓存；工厂返回 nil 时 panic，不静默回零值（检查只覆盖接口类型的 nil，指针类型的 nil 会落到下游解引用）。
+行为用例在 `typed_test.go`（14 个），这里只记不显然的三条：`C` 不是「指向直接嵌入 `*Ctx` 的结构体的指针」时注册期 panic；typed 中间件与处理器共享同一份绑定缓存；typed 面是快照，父层之后再 `Use` 不进 typed 面。

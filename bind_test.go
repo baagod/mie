@@ -190,7 +190,7 @@ func TestBindBodyDecoderReceivesPointer(t *testing.T) {
     req.Header.Set(HeaderContentType, MIMEJSON)
     r.ServeHTTP(httptest.NewRecorder(), req)
 
-    if want := reflect.TypeOf((*in)(nil)); target != want {
+    if want := reflect.TypeFor[*in](); target != want {
         t.Fatalf("decoder in = %v, want %v", target, want)
     }
     if got == nil {

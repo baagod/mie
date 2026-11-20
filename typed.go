@@ -1,6 +1,9 @@
 package mie
 
-import "net/http"
+import (
+    "net/http"
+    "reflect"
+)
 
 // typedCtxKey 是 store 中缓存本次请求 C 的键；与 bindKey[IN]{} 同构，类型即键。
 type typedCtxKey[C any] struct{}
@@ -9,24 +12,31 @@ type typedCtxKey[C any] struct{}
 // 与 HandlerFunc 只差第一个参数由 *Ctx 换成 C，这两种处理器不能互相替换。
 type TypedHandler[C, IN, OUT any] func(C, IN) (OUT, error)
 
-// TypedContext 是 typed 面 C 的约束：中间件靠 C 上的 Next() 推进链，所以 C 的方法集必须包含它，
-// 嵌入 *Ctx 即可满足；不满足在编译期就报错。
-type TypedContext interface{ Next() error }
-
 // TypedRouter 是带应用上下文的注册面：处理器的第一个参数是 C，而不是 *Ctx。
 // 它是 Router 的快照，Use 与 Group 只影响自身。
-type TypedRouter[C TypedContext] struct {
+type TypedRouter[C any] struct {
     r       *Router
     factory func(*Ctx) C
 }
 
-// WithContext 绑定应用上下文工厂，返回以 C 为处理器参数类型的注册面。
+// WithContext 绑定应用上下文工厂，返回以 C 为处理器参数类型的注册面，C 恒为 *T。
+// T 必须是直接嵌入 *Ctx 的结构体：嵌入把 Next()、Header() 这些方法提升上来，
+// 中间件才能推进链，处理器才能直接用它们。T 不是结构体、没嵌入 *Ctx、或 T 就是 Ctx 本身时注册期 panic。
 // 工厂每请求最多执行一次，且在首次用到 C 的位置才执行。
-func (r *Router) WithContext[C TypedContext](factory func(*Ctx) C) *TypedRouter[C] {
+func (r *Router) WithContext[T any](factory func(*Ctx) *T) *TypedRouter[*T] {
     if factory == nil {
         panic("mie: WithContext requires a non-nil factory")
     }
-    return &TypedRouter[C]{r: r.snapshot(""), factory: factory}
+
+    if t := reflect.TypeFor[T](); t.Kind() == reflect.Struct {
+        for f := range t.Fields() {
+            if f.Anonymous && f.Type == reflect.TypeFor[*Ctx]() {
+                return &TypedRouter[*T]{r: r.snapshot(""), factory: factory}
+            }
+        }
+    }
+
+    panic("mie: WithContext requires C to be a pointer to a struct embedding *Ctx")
 }
 
 // Use 追加 typed 中间件，只影响之后注册的路由。
@@ -72,18 +82,14 @@ func (r *TypedRouter[C]) Handle[IN, OUT any](method, pattern string, h TypedHand
 }
 
 // typedHandler 把应用签名的处理器包成普通处理器：C 由工厂构造并缓存，IN 用绑定好的那份。
-// 缓存键是 typedCtxKey[C]：C 是值时存副本，中间件改自己的参数不会传下去；C 是指针时整条链共享同一对象。
-func typedHandler[C TypedContext, IN, OUT any](factory func(*Ctx) C, h TypedHandler[C, IN, OUT]) HandlerFunc[IN, OUT] {
+// 缓存键是 typedCtxKey[C]：C 恒为指针，整条链共享同一对象。
+func typedHandler[C any, IN, OUT any](factory func(*Ctx) C, h TypedHandler[C, IN, OUT]) HandlerFunc[IN, OUT] {
     return func(c *Ctx, in IN) (OUT, error) {
         if tc, ok := c.store[typedCtxKey[C]{}]; ok {
             return h(tc.(C), in)
         }
 
         tc := factory(c)
-        if any(tc) == nil {
-            panic("mie: WithContext factory returned nil")
-        }
-
         c.Set(typedCtxKey[C]{}, tc)
         return h(tc, in)
     }

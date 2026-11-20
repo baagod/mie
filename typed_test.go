@@ -11,19 +11,6 @@ type typedApp struct {
     User string
 }
 
-func TestWithContextIdentity(t *testing.T) {
-    r := New()
-    r.WithContext(func(c *Ctx) *Ctx { return c }).
-        Get("/id", func(c *Ctx, _ struct{}) (string, error) { return "ok", nil })
-
-    rec := httptest.NewRecorder()
-    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/id", nil))
-
-    if rec.Code != http.StatusOK || rec.Body.String() != "ok" {
-        t.Fatalf("status = %d, body = %s, want 200 and ok", rec.Code, rec.Body.String())
-    }
-}
-
 func TestWithContextFactoryRunsOnce(t *testing.T) {
     runs := 0
     r := New()
@@ -181,24 +168,38 @@ func TestWithContextRequiresFactory(t *testing.T) {
         }
     }()
 
-    New().WithContext[*Ctx](nil)
+    New().WithContext[Ctx](nil)
 }
 
-func TestTypedValueContextIsSnapshot(t *testing.T) {
-    r := New()
-    app := r.WithContext(func(c *Ctx) typedApp { return typedApp{Ctx: c} })
-    app.Use(func(a typedApp, _ struct{}) (any, error) {
-        a.User = "alice"
-        return nil, a.Next()
-    })
-    app.Get("/v", func(a typedApp, _ struct{}) (string, error) { return "user=" + a.User, nil })
+// 工厂必须返回 *T，值类型的 C 已经写不出来；这里覆盖其余三种：没嵌入 *Ctx、T 是 *Ctx、T 是指针到接口。
+func TestWithContextRequiresEmbeddedCtx(t *testing.T) {
+    const want = "mie: WithContext requires C to be a pointer to a struct embedding *Ctx"
 
-    rec := httptest.NewRecorder()
-    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v", nil))
-
-    if rec.Code != http.StatusOK || rec.Body.String() != "user=" {
-        t.Fatalf("status = %d, body = %s, want 200 and user=", rec.Code, rec.Body.String())
+    cases := []struct {
+        name string
+        f    func()
+    }{
+        {"wrapper", func() { New().WithContext(func(c *Ctx) *typedWrapper { return &typedWrapper{Ctx: c} }) }},
+        {"identity", func() { New().WithContext(func(c *Ctx) *Ctx { return c }) }},
+        {"interface", func() { New().WithContext(func(*Ctx) *error { return nil }) }},
     }
+
+    for _, tc := range cases {
+        t.Run(tc.name, func(t *testing.T) {
+            defer func() {
+                if p := recover(); p != want {
+                    t.Fatalf("panic = %v, want %q", p, want)
+                }
+            }()
+
+            tc.f()
+        })
+    }
+}
+
+// typedWrapper 持有 *Ctx 但不是嵌入，注册期应被拒绝。
+type typedWrapper struct {
+    Ctx *Ctx
 }
 
 func TestTypedRouterInheritsParentMiddleware(t *testing.T) {
@@ -250,38 +251,6 @@ func TestTypedRouterDoesNotInheritParentInput(t *testing.T) {
     }
 }
 
-// typedIface 用来验证 C 是接口类型时也能注册中间件：接口自己声明了 Next()，满足 TypedContext。
-type typedIface interface {
-    Next() error
-    User() string
-    SetUser(string)
-}
-
-type typedIfaceImpl struct {
-    *Ctx
-    user string
-}
-
-func (a *typedIfaceImpl) User() string     { return a.user }
-func (a *typedIfaceImpl) SetUser(u string) { a.user = u }
-
-func TestTypedRouterAcceptsInterfaceContext(t *testing.T) {
-    r := New()
-    app := r.WithContext(func(c *Ctx) typedIface { return &typedIfaceImpl{Ctx: c} })
-    app.Use(func(a typedIface, _ struct{}) (any, error) {
-        a.SetUser("alice")
-        return nil, a.Next()
-    })
-    app.Get("/i", func(a typedIface, _ struct{}) (string, error) { return a.User(), nil })
-
-    rec := httptest.NewRecorder()
-    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/i", nil))
-
-    if rec.Code != http.StatusOK || rec.Body.String() != "alice" {
-        t.Fatalf("status = %d, body = %s, want 200 and alice", rec.Code, rec.Body.String())
-    }
-}
-
 func TestTypedRouterHandleCustomMethod(t *testing.T) {
     r := New()
     app := r.WithContext(func(c *Ctx) *typedApp { return &typedApp{Ctx: c} })
@@ -296,31 +265,6 @@ func TestTypedRouterHandleCustomMethod(t *testing.T) {
 
     if rec.Code != http.StatusOK || rec.Body.String() != "alice" {
         t.Fatalf("status = %d, body = %s, want 200 and alice", rec.Code, rec.Body.String())
-    }
-}
-
-// 指针或接口类型的 C 都可能返回 nil；指针类型的 nil 装进接口后不为 nil，
-// typedHandler 里的检查只覆盖接口类型的 nil，指针类型的 nil 会落到下游解引用。
-func TestWithContextNilFactoryResult(t *testing.T) {
-    var got any
-    r := New(Config{
-        RecoverHandler: func(_ *Ctx, p *Panic) error {
-            got = p.Value
-            return NewError(http.StatusInternalServerError, "boom")
-        },
-    })
-    app := r.WithContext(func(*Ctx) typedIface { return nil })
-    app.Use(func(a typedIface, _ struct{}) (any, error) { return nil, a.Next() })
-    app.Get("/nil", func(typedIface, struct{}) (string, error) { return "ok", nil })
-
-    rec := httptest.NewRecorder()
-    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nil", nil))
-
-    if got != "mie: WithContext factory returned nil" {
-        t.Fatalf("panic value = %v, want the factory nil message", got)
-    }
-    if rec.Code != http.StatusInternalServerError {
-        t.Fatalf("status = %d, want 500", rec.Code)
     }
 }
 
