@@ -3,6 +3,7 @@ package mie
 import (
     "net/http"
     "net/http/httptest"
+    "strings"
     "testing"
 )
 
@@ -47,6 +48,58 @@ func TestTypedMiddlewareSharesPointer(t *testing.T) {
     if rec.Body.String() != "alice" {
         t.Fatalf("body = %s, want alice", rec.Body.String())
     }
+}
+
+func TestTypedRouterUsePlainMiddleware(t *testing.T) {
+    var order []string
+    runs := 0
+    r := New()
+    app := r.WithContext(func(c *Ctx) *typedApp {
+        runs++
+        order = append(order, "factory")
+        return &typedApp{Ctx: c, User: c.Get[string]("user")}
+    })
+    app.Use(func(c *Ctx, _ struct{}) (any, error) {
+        order = append(order, "plain")
+        c.Set("user", "alice")
+        return nil, c.Next()
+    })
+    app.Use(HandlerFunc[struct{}, any](func(c *Ctx, _ struct{}) (any, error) {
+        order = append(order, "named")
+        return nil, c.Next()
+    }))
+    app.Use(func(a *typedApp, _ struct{}) (any, error) {
+        order = append(order, "typed")
+        return nil, a.Next()
+    })
+    app.Get("/mixed", func(a *typedApp, _ struct{}) (string, error) { return a.User, nil })
+
+    rec := httptest.NewRecorder()
+    r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/mixed", nil))
+
+    if got := strings.Join(order, ","); got != "plain,named,factory,typed" {
+        t.Fatalf("order = %s, want plain,named,factory,typed", got)
+    }
+    if rec.Body.String() != "alice" {
+        t.Fatalf("body = %q, want alice", rec.Body.String())
+    }
+    if runs != 1 {
+        t.Fatalf("factory runs = %d, want 1", runs)
+    }
+}
+
+func TestTypedRouterUseRejectsForeignContext(t *testing.T) {
+    r := New()
+    app := r.WithContext(func(c *Ctx) *typedApp { return &typedApp{Ctx: c} })
+
+    defer func() {
+        got, _ := recover().(string)
+        if !strings.Contains(got, "*Ctx or *mie.typedApp") {
+            t.Fatalf("panic = %q, want a message naming both context types", got)
+        }
+    }()
+
+    app.Use(func(x int, _ struct{}) (any, error) { return nil, nil })
 }
 
 func TestTypedHandlerCachesContextPerRequest(t *testing.T) {
@@ -171,9 +224,9 @@ func TestWithContextRequiresFactory(t *testing.T) {
     New().WithContext[Ctx](nil)
 }
 
-// 工厂必须返回 *T，值类型的 C 已经写不出来；这里覆盖其余三种：没嵌入 *Ctx、T 是 *Ctx、T 是指针到接口。
+// 工厂必须返回 *C，值类型的上下文已经写不出来；这里覆盖其余三种：没嵌入 *Ctx、C 是 *Ctx、C 是指向接口的指针。
 func TestWithContextRequiresEmbeddedCtx(t *testing.T) {
-    const want = "mie: WithContext requires C to be a pointer to a struct embedding *Ctx"
+    const want = "mie: WithContext requires C to be a struct embedding *Ctx"
 
     cases := []struct {
         name string

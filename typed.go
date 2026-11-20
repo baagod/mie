@@ -19,29 +19,38 @@ type TypedRouter[C any] struct {
     factory func(*Ctx) C
 }
 
-// WithContext 绑定应用上下文工厂，返回以 C 为处理器参数类型的注册面，C 恒为 *T。
-// T 必须是直接嵌入 *Ctx 的结构体：嵌入把 Next()、Header() 这些方法提升上来，
-// 中间件才能推进链，处理器才能直接用它们。T 不是结构体、没嵌入 *Ctx、或 T 就是 Ctx 本身时注册期 panic。
-// 工厂每请求最多执行一次，且在首次用到 C 的位置才执行。
-func (r *Router) WithContext[T any](factory func(*Ctx) *T) *TypedRouter[*T] {
+// WithContext 绑定应用上下文工厂，返回处理器参数为 *C 的注册面。
+// C 必须是直接嵌入 *Ctx 的结构体：嵌入把 Next()、Header() 这些方法提升上来，
+// 中间件才能推进链，处理器才能直接用它们。C 不是结构体、没嵌入 *Ctx、或 C 就是 Ctx 本身时注册期 panic。
+// 工厂每请求最多执行一次，且在首次用到上下文的位置才执行。
+func (r *Router) WithContext[C any](factory func(*Ctx) *C) *TypedRouter[*C] {
     if factory == nil {
         panic("mie: WithContext requires a non-nil factory")
     }
 
-    if t := reflect.TypeFor[T](); t.Kind() == reflect.Struct {
+    if t := reflect.TypeFor[C](); t.Kind() == reflect.Struct {
         for f := range t.Fields() {
             if f.Anonymous && f.Type == reflect.TypeFor[*Ctx]() {
-                return &TypedRouter[*T]{r: r.snapshot(""), factory: factory}
+                return &TypedRouter[*C]{r: r.snapshot(""), factory: factory}
             }
         }
     }
 
-    panic("mie: WithContext requires C to be a pointer to a struct embedding *Ctx")
+    panic("mie: WithContext requires C to be a struct embedding *Ctx")
 }
 
-// Use 追加 typed 中间件，只影响之后注册的路由。
-func (r *TypedRouter[C]) Use[IN any](m TypedHandler[C, IN, any]) *TypedRouter[C] {
-    r.r.Use(typedHandler(r.factory, m))
+// Use 追加中间件，只影响之后注册的路由。
+// 两种形状：func(*Ctx, IN) 直接进链，不构造 C；func(P, IN) 在本位置构造 C 后调用。
+// 其余形状在注册期 panic。
+func (r *TypedRouter[C]) Use[P, IN any](m func(P, IN) (any, error)) *TypedRouter[C] {
+    switch h := any(m).(type) {
+    case func(*Ctx, IN) (any, error):
+        r.r.Use(h)
+    case func(C, IN) (any, error):
+        r.r.Use(typedHandler(r.factory, h))
+    default:
+        panic("mie: Use: want a middleware on *Ctx or " + reflect.TypeFor[C]().String())
+    }
     return r
 }
 
@@ -88,7 +97,6 @@ func typedHandler[C any, IN, OUT any](factory func(*Ctx) C, h TypedHandler[C, IN
         if tc, ok := c.store[typedCtxKey[C]{}]; ok {
             return h(tc.(C), in)
         }
-
         tc := factory(c)
         c.Set(typedCtxKey[C]{}, tc)
         return h(tc, in)
