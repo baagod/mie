@@ -11,11 +11,6 @@ type typedApp struct {
     User string
 }
 
-// typedBare 没有嵌入 *Ctx，Next 不会被提升；用来验证 Use 的注册期检查。
-type typedBare struct {
-    Ctx *Ctx
-}
-
 func TestWithContextIdentity(t *testing.T) {
     r := New()
     r.WithContext(func(c *Ctx) *Ctx { return c }).
@@ -67,20 +62,30 @@ func TestTypedMiddlewareSharesPointer(t *testing.T) {
     }
 }
 
-func TestAppOfCachesPerRequest(t *testing.T) {
-    c := newTestCtx(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
-
+func TestTypedHandlerCachesContextPerRequest(t *testing.T) {
+    r := New()
     runs := 0
-    factory := func(*Ctx) *typedApp {
+    app := r.WithContext(func(c *Ctx) *typedApp {
         runs++
-        return &typedApp{}
+        return &typedApp{Ctx: c}
+    })
+    app.Use(func(a *typedApp, _ struct{}) (any, error) {
+        a.User = "alice"
+        return nil, a.Next()
+    })
+    app.Get("/app", func(a *typedApp, _ struct{}) (string, error) { return a.User, nil })
+
+    for range 2 {
+        rec := httptest.NewRecorder()
+        r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/app", nil))
+
+        if body := rec.Body.String(); body != "alice" {
+            t.Fatalf("body = %q, want %q", body, "alice")
+        }
     }
 
-    first := appOf(c, factory)
-    second := appOf(c, factory)
-
-    if runs != 1 || first != second {
-        t.Fatalf("runs = %d, same = %v, want 1 and true", runs, first == second)
+    if runs != 2 {
+        t.Fatalf("factory runs = %d, want 2 (once per request, not once per use)", runs)
     }
 }
 
@@ -148,19 +153,6 @@ func TestTypedRouterCoexistsWithPlain(t *testing.T) {
             t.Fatalf("GET %s: status = %d, body = %s, want 200 and %s", tc.path, rec.Code, rec.Body.String(), tc.body)
         }
     }
-}
-
-func TestTypedRouterUseRequiresNext(t *testing.T) {
-    r := New()
-    app := r.WithContext(func(c *Ctx) typedBare { return typedBare{Ctx: c} })
-
-    defer func() {
-        if recover() == nil {
-            t.Fatal("want panic when C has no Next")
-        }
-    }()
-
-    app.Use(func(a typedBare, _ struct{}) (any, error) { return nil, nil })
 }
 
 func TestTypedMiddlewareBindsInput(t *testing.T) {
@@ -245,8 +237,7 @@ func TestTypedRouterInheritsParentInput(t *testing.T) {
         Get("/x", func(a *typedApp, _ struct{}) (string, error) { return "", nil })
 }
 
-// typedIface 用来验证 C 是接口类型时也能注册中间件：接口的方法集包含 Next()，
-// 判据必须基于类型，不能基于零值（nil 接口做类型断言必失败）。
+// typedIface 用来验证 C 是接口类型时也能注册中间件：接口自己声明了 Next()，满足 TypedContext。
 type typedIface interface {
     Next() error
     User() string
@@ -295,8 +286,8 @@ func TestTypedRouterHandleCustomMethod(t *testing.T) {
     }
 }
 
-// 工厂返回 nil 只可能发生在 C 是接口类型时；静态类型的 nil 装进接口后不为 nil，
-// 所以必须靠 appOf 里的显式检查把它变成一条明确的 panic，而不是让下游 nil 解引用。
+// 指针或接口类型的 C 都可能返回 nil；指针类型的 nil 装进接口后不为 nil，
+// typedHandler 里的检查只覆盖接口类型的 nil，指针类型的 nil 会落到下游解引用。
 func TestWithContextNilFactoryResult(t *testing.T) {
     var got any
     r := New(Config{
