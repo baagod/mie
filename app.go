@@ -1,8 +1,10 @@
 package mie
 
 import (
+    "cmp"
     "context"
     "errors"
+    "fmt"
     "github.com/baagod/mie/internal/xslices"
     "log/slog"
     "mime"
@@ -14,13 +16,8 @@ import (
     "time"
 )
 
-const (
-    // 未配置 MaxBodyBytes 时的请求 body 上限。
-    defaultMaxBodyBytes = 1 << 20
-    // 停机最多等这么久。必须小于平台宽限期（docker stop 默认 10s），
-    // 否则到点被 SIGKILL，收尾代码和 defer 都来不及执行。
-    shutdownTimeout = 8 * time.Second
-)
+// 未配置 MaxBodyBytes 时的请求 body 上限。
+const defaultMaxBodyBytes = 1 << 20
 
 // Config 零值即可使用；缺省项在 New 中补齐。
 type Config struct {
@@ -46,6 +43,9 @@ type Config struct {
     // MaxBodyBytes 是非 multipart 请求的 body 上限，超出时读 body 返回 413。
     // 零值在 New 中补 1MiB；负值关闭这层保护。multipart 不适用：上传大小由上传路由自行限制。
     MaxBodyBytes int64
+
+    // ServerConfig 在 http.Server 建好后、开始服务前调用，用来改字段或调方法。
+    ServerConfig func(*http.Server)
 }
 
 // App 持有 ServeMux、配置与生命周期方法；注册面见 Router。
@@ -124,25 +124,36 @@ func (a *App) ServeHTTP(w http.ResponseWriter, req *http.Request) {
     }
 }
 
-// Run 在 addr 上监听并调用 RunListen；addr 为空时使用 ":8080"。
-// config 在开始服务前依次调用，用来调整 http.Server。
-func (a *App) Run(addr string, config ...func(*http.Server)) error {
-    if addr == "" {
-        addr = ":8080"
+// Run 在 addr 上监听；addr 为空时使用 ":8080"。
+// certFiles 为空表示 HTTP；按 cert、key 顺序传两个文件路径则为 HTTPS。
+func (a *App) Run(addr string, certFiles ...string) error {
+    if len(certFiles) != 0 && len(certFiles) != 2 {
+        return fmt.Errorf("mie: Run needs 0 or 2 cert files (cert, key), got %d", len(certFiles))
     }
 
-    l, err := net.Listen("tcp", addr)
+    l, err := net.Listen("tcp", cmp.Or(addr, ":8080"))
     if err != nil {
-        return err // 启动失败在这里就返回，不进 RunListen。
+        return err // 启动失败在这里就返回，不进 serve。
     }
 
-    return a.RunListen(l, config...)
+    //goland:noinspection GoUnhandledErrorResult
+    defer l.Close() // Serve 关过也无害；ServeTLS 在包 listener 前失败时靠这里兜住。
+
+    if len(certFiles) == 2 {
+        return a.serve(func(s *http.Server) error { return s.ServeTLS(l, certFiles[0], certFiles[1]) })
+    }
+
+    return a.RunListen(l)
 }
 
 // RunListen 在 l 上提供服务，收到 Interrupt/SIGTERM 后优雅关停。
-// config 在开始服务前依次调用，用来调整 http.Server：改字段、调方法都可以。
-// 返回时 l 已关闭。TLS 请传入 tls.NewListener 包好的 listener，改 TLSConfig 不生效。
-func (a *App) RunListen(l net.Listener, config ...func(*http.Server)) (err error) {
+// 返回时 l 已关闭。TLS 请传入 tls.NewListener 包好的 listener。
+func (a *App) RunListen(l net.Listener) error {
+    return a.serve(func(s *http.Server) error { return s.Serve(l) })
+}
+
+// serve 建好 http.Server，在 run 上跑服务，收到 Interrupt/SIGTERM 后优雅关停。
+func (a *App) serve(run func(*http.Server) error) (err error) {
     s := &http.Server{
         Handler:           a,
         ErrorLog:          slog.NewLogLogger(a.config.Logger.Handler(), slog.LevelError),
@@ -151,10 +162,10 @@ func (a *App) RunListen(l net.Listener, config ...func(*http.Server)) (err error
         WriteTimeout:      15 * time.Second,
         // 必须大于前置代理的空闲超时（ALB 与 nginx 后端侧默认都是 60s），
         // 否则代理仍可能把请求发到我们已经关掉的连接上。
-        IdleTimeout:       90 * time.Second,
+        IdleTimeout: 90 * time.Second,
     }
 
-    for _, c := range config {
+    if c := a.config.ServerConfig; c != nil {
         c(s)
     }
 
@@ -163,7 +174,7 @@ func (a *App) RunListen(l net.Listener, config ...func(*http.Server)) (err error
     defer stop()
 
     errCh := make(chan error, 1)
-    go func() { errCh <- s.Serve(l) }()
+    go func() { errCh <- run(s) }()
 
     select {
     case err = <-errCh:
@@ -173,7 +184,9 @@ func (a *App) RunListen(l net.Listener, config ...func(*http.Server)) (err error
     case <-sysCtx.Done():
         stop() // 第二次 Ctrl+C 回到默认行为：直接终止
 
-        ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+        // 停机最多等 8s。必须小于平台宽限期（docker stop 默认 10s），
+        // 否则到点被 SIGKILL，收尾代码和 defer 都来不及执行。
+        ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
         defer cancel()
 
         // Shutdown 超时只表示不再等，不关活跃连接，这里补一刀。

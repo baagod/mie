@@ -3,6 +3,7 @@ package mie
 import (
     "net"
     "net/http"
+    "strings"
     "testing"
     "time"
 )
@@ -22,9 +23,64 @@ func TestRunReturnsListenError(t *testing.T) {
     }
 }
 
-// RunListen 在给定 listener 上提供服务，并在开始服务前应用 config 回调。
-func TestRunListenServesAndAppliesConfig(t *testing.T) {
+// 只给一个证书文件时必须报错，不能静默降级成 HTTP。
+func TestRunRejectsHalfCertPair(t *testing.T) {
     a := New()
+
+    done := make(chan error, 1)
+    go func() { done <- a.Run("127.0.0.1:0", "cert.pem") }()
+
+    select {
+    case err := <-done:
+        if err == nil || !strings.Contains(err.Error(), "cert files") {
+            t.Fatalf("Run error = %v, want cert files count error", err)
+        }
+    case <-time.After(5 * time.Second):
+        t.Fatal("Run blocked instead of rejecting the cert file count")
+    }
+}
+
+// Run 不传证书时必须真的开始服务，而不是立刻返回。
+func TestRunServesHTTP(t *testing.T) {
+    done := make(chan error, 1)
+    go func() { done <- New().Run("127.0.0.1:0") }()
+
+    select {
+    case err := <-done:
+        t.Fatalf("Run returned early: %v", err)
+    case <-time.After(100 * time.Millisecond):
+    }
+}
+
+// 证书加载失败时 Run 必须关掉已建好的 listener，否则端口一直被占。
+func TestRunClosesListenerWhenTLSFails(t *testing.T) {
+    ln, err := net.Listen("tcp", "127.0.0.1:0")
+    if err != nil {
+        t.Fatalf("listen: %v", err)
+    }
+    addr := ln.Addr().String()
+    _ = ln.Close()
+
+    a := New()
+
+    if err := a.Run(addr, "nope.pem", "nope.key"); err == nil {
+        t.Fatal("Run returned nil, want cert load error")
+    }
+
+    again, err := net.Listen("tcp", addr)
+    if err != nil {
+        t.Fatalf("listener was not closed after Run failed: %v", err)
+    }
+    _ = again.Close()
+}
+
+// RunListen 在给定 listener 上提供服务，并在开始服务前应用 ServerConfig。
+func TestRunListenServesAndAppliesConfig(t *testing.T) {
+    cfg := make(chan *http.Server, 1)
+    a := New(Config{ServerConfig: func(s *http.Server) {
+        s.ReadHeaderTimeout = 0
+        cfg <- s
+    }})
     a.Handle(http.MethodGet, "/ping", He(func(c *Ctx, _ struct{}) error {
         _, _ = c.W.WriteString("pong")
         return nil
@@ -35,13 +91,9 @@ func TestRunListenServesAndAppliesConfig(t *testing.T) {
         t.Fatalf("listen: %v", err)
     }
 
-    cfg := make(chan *http.Server, 1)
     done := make(chan error, 1)
     go func() {
-        done <- a.RunListen(ln, func(s *http.Server) {
-            s.ReadHeaderTimeout = 0
-            cfg <- s
-        })
+        done <- a.RunListen(ln)
     }()
 
     select {
