@@ -24,11 +24,11 @@
 | JSON body | 6813（2357 / 26） | 5148（2270 / 25） | 2109（593 / 15） | 9644（2481 / 50） | 3210（1217 / 26） |
 | body + 四种位置来源 | 8464（3333 / 34） | 6210（3245 / 33） | 3271（1067 / 22） | 13188（2936 / 54） | 4666（2186 / 34） |
 
-“关闭访问日志”是通过 `slog.HandlerOptions{Level: slog.LevelError}` 让访问日志的 `Enabled` 为 false 实现的，代码未改。
+“关闭访问日志”是通过 `slog.HandlerOptions{Level: slog.LevelError}` 让访问日志的 `Enabled` 为 false 实现的，代码未改。现在访问日志记在 `LevelTrace`（`slog.LevelDebug - 4`），所以把 Logger 设在 `slog.LevelInfo` 也能只静默访问日志、保留业务日志。
 
 ## 3. 怎么读
 
-- 默认配置下 mie 比 huma 慢 2.3–3.2 倍，其中 1.6–3.3µs 来自每条请求一行的访问日志（`slog.TextHandler` 输出 7 个属性）；huma、fuego、gapi 默认都不记访问日志。
+- 默认配置下 mie 比 huma 慢 2.3–3.2 倍，其中 1.6–3.3µs 来自每条请求一行的访问日志（`slog.TextHandler` 输出 7 个属性）；huma、fuego、gapi 默认都不记访问日志。访问日志现在记在 `LevelTrace`，把 Logger 设在 `slog.LevelInfo` 即可静默它、保留业务日志。
 - 关掉日志后：空 GET 与 huma 只差 11%（1489 vs 1340），JSON 差 2.4 倍，混合来源差 1.9 倍。
 - 与 gapi 同档（空 GET 1.5µs vs 1.0µs，JSON 5.1 vs 3.2，混合 6.2 vs 4.7）。
 - 全面快于 fuego：约 3.0× / 1.9× / 2.1×，分配数约为其一半（11 vs 33）。
@@ -41,13 +41,13 @@
 - mie 整条 5.15µs → 框架自身约 4.1µs；huma 同路径框架开销约 1.26µs。
 - 分配热点的 `pprof -sample_index=alloc_objects` 排序：`newCtx` 6 次（`Ctx`、`store` map、`ResponseWriter`、`context.WithValue`、`Request` 副本、hex traceid）、`mime.ParseMediaType` 2 次、响应头 `Set`/`Add` 各 1 次、`Ctx.Body` 1 次、`Ctx.Set` 1 次。
 
-## 5. 待办优化（均未实施）
+## 5. 待办优化
 
 按收益/风险排序，每项可独立提交并附前后数据。
 
-1. 访问日志默认关闭或降级：`logAccess` 先判 `Enabled`，默认级别从 Info 调到 Warn，或改为 `Config` 显式开启。收益 −1.6~3.3µs、−1 分配；风险是默认行为变化。
+1. 访问日志默认降级（已实施）：`logAccess` 先判 `Enabled` 再构造属性，访问日志改记在 `LevelTrace`，默认 Logger 开在这一档，开箱仍全量可见；把 Logger 设在 `slog.LevelDebug` 只剩业务 debug、设在 `slog.LevelInfo` 连访问日志静默。同样只测空 GET：默认档 2886–2968ns / 753B / 13 allocs，设 Info 后 1647ns / 657B / 10 allocs。非标准级别（`-8`）在 `TextHandler` 中多 2 次分配（`Level.String()` 拼 `DEBUG-4`），时间无可测差异。
 2. `mime.ParseMediaType` 只解析一次：`ServeHTTP` 解析后存进 `Ctx`，`BindBody` 复用。约 −200ns、−1 分配。
-3. `store` 懒分配：首次 `Set`/`Bind` 时才 `make`。−1 分配、−48B；只读 handler 全免。
+3. `store` 懒分配（已实施）：首次 `Set` 才 `make` map，`Get`/`Bind` 在 `nil` map 上读，只读 handler 不分配。
 4. 去掉 `context.WithValue`：`Ctx` 已实现 `context.Context`，直接在 `req.WithContext(c)` 上挂载，但需在 `Ctx` 里保存 parent context 兜底 `Value`。−1 分配。
 5. traceid 懒生成：有 `X-Request-Id` 时复用，否则到第一次 `TraceID()` 或写日志时再生成。−1 分配。
 6. 不建议现在做：`Ctx` + `ResponseWriter` 池化，−2 分配，但要处理 map/chain 重置与生命周期，风险大于收益。

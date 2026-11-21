@@ -2,6 +2,7 @@ package mie
 
 import (
     "context"
+    "encoding/json/v2"
     "errors"
     "io"
     "log/slog"
@@ -447,8 +448,8 @@ func TestErrorHandlerNilLeavesResponseUntouched(t *testing.T) {
     }
 }
 
-// 锁定：客户端已取消时 handler 返回的错误不写响应，访问日志仍记一条。
-func TestCanceledRequestWritesNothing(t *testing.T) {
+// 锁定：客户端已取消时 handler 返回的错误不写响应体，状态记 499，访问日志仍记一条。
+func TestCanceledRequestWritesNoBody(t *testing.T) {
     l, buf := testLogger()
     r := New(Config{Logger: l})
     r.Get("/canceled", func(*Ctx, struct{}) (struct{}, error) {
@@ -463,14 +464,14 @@ func TestCanceledRequestWritesNothing(t *testing.T) {
     rec := httptest.NewRecorder()
     r.ServeHTTP(rec, req)
 
-    if rec.Code != http.StatusOK {
-        t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+    if rec.Code != Status499ClientClosedRequest {
+        t.Fatalf("status = %d, want %d", rec.Code, Status499ClientClosedRequest)
     }
     if rec.Body.Len() != 0 {
         t.Fatalf("body = %q, want empty", rec.Body.String())
     }
-    if !strings.Contains(buf.String(), "msg=access") {
-        t.Fatalf("日志 = %q，缺少已取消请求的访问日志", buf.String())
+    if out := buf.String(); !strings.Contains(out, "msg=access") || !strings.Contains(out, "status=499") || !strings.Contains(out, "level=INFO") {
+        t.Fatalf("日志 = %q，want msg=access、status=499、level=INFO", out)
     }
 }
 
@@ -689,5 +690,23 @@ func TestNoMatchHandlerPanicLogsOnce(t *testing.T) {
     }
     if n != 1 {
         t.Fatalf("access 日志条数 = %d, want 1\n%s", n, buf.String())
+    }
+}
+
+// 非法 UTF-8 不能把整条 JSON 吞掉。
+func TestPanicJSONKeepsInvalidUTF8(t *testing.T) {
+    p := &Panic{Error: "boom \xff", Path: "/\xff"}
+
+    raw := p.JSON()
+
+    var got struct {
+        Path  string `json:"path"`
+        Error string `json:"error"`
+    }
+    if err := json.Unmarshal([]byte(raw), &got); err != nil {
+        t.Fatalf("JSON() = %q, err = %v", raw, err)
+    }
+    if !strings.Contains(got.Error, "boom") || got.Path == "" {
+        t.Fatalf("字段丢了：%+v", got)
     }
 }

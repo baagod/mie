@@ -35,14 +35,33 @@
 - body：非 GET/HEAD 且有 body 时，先按 `Content-Type` 找解码器：`form-urlencoded` 与 `multipart/form-data` 都归参数绑定，两者直接跳过；找不到解码器返回 415 且不读 body，`Content-Type` 缺失、畸形同样 415。
 - 内置解码器只有 `application/json` 与 `application/xml`，其余媒体由应用填 `Decode`；`+json`/`+xml` 这类结构化后缀（如 `application/vnd.api+json`）回退到同 top-level 的基类型解码器。
 - body 的键名语义由解码器决定：内置 JSON 走 `encoding/json/v2`，无 tag 字段按 Go 字段名参与，键名精确匹配（大小写敏感）；未知键默认忽略，需要严格拒绝时替换 `Config.Codecs.JSON.Decode`。
-- 找到解码器才读 `c.Body()` 解码；body 默认上限 1 MiB（`Config.MaxBodyBytes`，负值关闭，multipart 不适用），超限 413；解码失败 400。multipart 的值与不超过 32 MiB 的文件留在内存，超出部分写到磁盘临时文件，请求结束统一删除（handler 自行解析产生的临时文件也一并删除）。
+- 找到解码器才读 `c.Body()` 解码；body 默认上限 1 MiB（`Config.MaxBodyBytes`，负值关闭；multipart 不适用，见「上传大小」），超限 413；解码失败 400。multipart 的值与不超过 32 MiB 的文件留在内存，超出部分写到磁盘临时文件，请求结束统一删除（handler 自行解析产生的临时文件也一并删除）。
 - `struct{}` 不绑不读 body；`*T` 由框架在解码 body 前分配，handler 拿到非 nil（含 `null` body）。
 - 绑定结果按值缓存：值类型 IN 的每层拿到独立副本，改字段不影响下游（切片/map 的底层数据仍共享，改元素可见）；`*T` 的各层指向同一对象，改对象内容下游可见。
 - 参数/头部只扫顶层字段，不展开匿名嵌入；body 的嵌入按解码器规则处理。
 
+### 上传大小
+
+multipart 的大小分布太宽（头像 2 MB、视频 2 GB），给不出全局默认值，`MaxBodyBytes` 不管它。上传路由自己用中间件限制：
+
+```go
+r.Use(He(func(c *Ctx, _ struct{}) error {
+    const maxBody = 8 << 20
+    if c.R.ContentLength > maxBody { // 先判长度：直接 413，不用读完 body
+        return Status413RequestEntityTooLarge()
+    }
+    c.R.Body = http.MaxBytesReader(c.W, c.R.Body, maxBody)
+    return c.Next()
+}))
+```
+
+超限时 `Bind` 与 `c.Body()` 返回 413，`c.Form` 按缺失返回零值。`ContentLength` 那行不能省：只靠 `MaxBytesReader` 时，若上限正好切在 multipart 的 part 头中间，标准库先报 `malformed MIME header`，客户端拿到的是 400 加一句内部解析文案；`Transfer-Encoding: chunked`（长度未知）的请求仍有这个边界。
+
+限制只能写在中间件里：`Bind` 在进入 handler 函数体之前就执行完了，写进 handler 已经晚了。
+
 ## 4. 输出与错误
 
-- error 非 nil 时忽略 OUT；OUT 为 nil 不写 body（中间件 `return nil, nil` 即放行），状态取 `c.Status`，未设置则 200。
+- error 非 nil 时忽略 OUT；OUT 为 nil（接口无值）不写 body（中间件 `return nil, nil` 即放行），状态取 `c.Status`，未设置则 200；类型化 nil 指针不算 nil，照常编码，JSON 下写出 `null`。
 - 处理器自己写过响应（直接 `c.Send`/`c.W.Write`）后又返回非 nil 的 OUT，body 会写两遍：框架在处理器返回后照常渲染 OUT。两种写法二选一；`He` 的 OUT 恒为 nil，天然没有这个问题。
 - 输出：`Formatted` 只声明格式（`Format() (media, value)`），框架必须用该格式的编码器编码，缺了报错（`JSON(v)`/`XML(v)` 是忽略 `Accept` 的捷径）。`Format()` 返回的媒体必须是 `Config.Codecs` 提供的媒体之一：这里只做精确匹配，vendor 类型（如 `application/vnd.api+json`）不会走 `Accept` 的后缀回退，会直接报没有编码器。
 - 裸值：处理器事先设了 `Content-Type` 时以它为准、不协商；否则按 `Accept` 选格式。只有 string 与 `[]byte` 有天然类型（`text/plain`、嗅探结果），天然类型能覆盖请求时优先；其余裸值没有天然类型，按 `Config.Codecs.Order` 选（未配时即 JSON）。`Accept` 里的 `+json`/`+xml` 后缀按同 top-level 的基类型匹配（`application/vnd.api+json` → `application/json`），响应仍写基类型而非 vendor 类型。有编码器就编码，没有编码器时 string/`[]byte` 按原字节写、其余报错。

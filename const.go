@@ -1,6 +1,6 @@
 package mie
 
-// 协议头名。
+// 协议头名
 const (
     HeaderVary                = "Vary"
     HeaderAccept              = "Accept"
@@ -38,3 +38,7 @@ const (
     MIMEFormUrlencoded     = "application/x-www-form-urlencoded"
     MIMEContentTypeNosniff = "nosniff"
 )
+
+// Status499ClientClosedRequest 是客户端在响应完成前断开时记的状态码（nginx 的 499）。
+// 由 finish 在请求已取消且未设置状态时补上，随 commit 写出。
+const Status499ClientClosedRequest = 499

@@ -15,7 +15,7 @@ import (
 // testLogger 返回写入内存的 Logger 及其缓冲区，便于断言日志内容。
 func testLogger() (*slog.Logger, *bytes.Buffer) {
     var buf bytes.Buffer
-    return slog.New(slog.NewTextHandler(&buf, nil)), &buf
+    return slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: LevelTrace})), &buf
 }
 
 func TestAccessLogWritesRecord(t *testing.T) {
@@ -133,7 +133,7 @@ func (h enrichHandler) WithGroup(name string) slog.Handler {
 
 func TestHandlerCanReadCtx(t *testing.T) {
     var buf bytes.Buffer
-    r := New(Config{Logger: slog.New(enrichHandler{slog.NewTextHandler(&buf, nil)})})
+    r := New(Config{Logger: slog.New(enrichHandler{slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: LevelTrace})})})
     r.Get("/users/{id}", func(*Ctx, struct{}) (struct{}, error) { return struct{}{}, nil })
 
     r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/users/42", nil))
@@ -189,8 +189,8 @@ func TestAccessLogCoversCanonicalRedirect(t *testing.T) {
     if n := strings.Count(buf.String(), "msg=access"); n != 1 {
         t.Fatalf("access 日志条数 = %d, want 1（buf=%q）", n, buf.String())
     }
-    if out := buf.String(); !strings.Contains(out, "level=INFO") {
-        t.Fatalf("日志 = %q，want level=INFO", out)
+    if out := buf.String(); !strings.Contains(out, "level=DEBUG-4") {
+        t.Fatalf("日志 = %q，want level=DEBUG-4", out)
     }
 }
 
@@ -220,8 +220,8 @@ func TestAccessLogWrittenOnceForHandledRoute(t *testing.T) {
     if n := strings.Count(buf.String(), "msg=access"); n != 1 {
         t.Fatalf("access 日志条数 = %d, want 1（buf=%q）", n, buf.String())
     }
-    if out := buf.String(); !strings.Contains(out, "level=INFO") || !strings.Contains(out, "status=200") {
-        t.Fatalf("日志 = %q，want level=INFO、status=200", out)
+    if out := buf.String(); !strings.Contains(out, "level=DEBUG-4") || !strings.Contains(out, "status=200") {
+        t.Fatalf("日志 = %q，want level=DEBUG-4、status=200", out)
     }
 }
 

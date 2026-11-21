@@ -8,23 +8,38 @@ import (
     "time"
 )
 
+// LevelTrace 是访问日志的级别，比 Debug 更低一档。
+// 默认 Logger 开在这一档，开箱就能看到访问日志；Handler 调到 Debug 只剩用户自己的日志，
+// 调到 Info 连访问日志也静默。
+const LevelTrace = slog.LevelDebug - 4
+
 // logger 是包级兜底 Logger：New 用它填充 Config.Logger 的零值，没有 App 的 Ctx 也用它。
 // 不跟随 slog.Default()，避免应用的全局配置影响框架输出。
-var logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+var logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: LevelTrace}))
 
 // logAccess 每个请求调用一次，按最终状态码分级写出访问日志。
-// Hijack 后 StatusCode 为 0。
-func (c *Ctx) logAccess(err error) {
+// 正常请求记在 LevelTrace，不跟用户自己的 Debug 日志抢同一档。
+// Hijack 后 StatusCode 为 0；panicked 表示响应已发出后 panic，状态不可信但必须留下一条。
+// 客户端中途断开时状态记 499，按客户端行为算 Info。
+func (c *Ctx) logAccess(err error, panicked bool) {
+    level := LevelTrace
     status := c.StatusCode()
-    level := slog.LevelInfo
 
     switch {
-    case status >= 500:
+    case panicked || status >= 500:
         level = slog.LevelError
     case status == http.StatusNotFound || status == http.StatusMethodNotAllowed:
         level = slog.LevelInfo
+    case status == Status499ClientClosedRequest:
+        level = slog.LevelInfo
     case status >= 400:
         level = slog.LevelWarn
+    case status == 0 || err != nil:
+        level = slog.LevelInfo
+    }
+
+    if !c.app.config.Logger.Enabled(c, level) {
+        return
     }
 
     attrs := []slog.Attr{

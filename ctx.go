@@ -210,12 +210,13 @@ func (c *Ctx) StatusCode() int {
     return c.W.StatusCode()
 }
 
-// Send 输出 v：Formatted 显式声明格式，必须有对应编码器；处理器事先设了 Content-Type 时以它为准；
+// Send 输出 v：nil 表示没有 body，只提交状态码；类型化 nil 指针交给编码器，JSON 下写出 null。
+// Formatted 显式声明格式，必须有对应编码器；处理器事先设了 Content-Type 时以它为准；
 // 裸值按 Accept 从已注册格式里选（默认 JSON，可用 Codecs.Order 改），没有编码器时 string/[]byte 按原字节写出。
 // 无法满足时 406；提交由请求收尾负责，返回的错误交给 ErrorHandler。
 func (c *Ctx) Send(v any) error {
-    if v == nil {
-        return nil // 无 body：收尾时由 finish 按 c.Status 提交
+    if v == nil { // 无 body：收尾时由 finish 按 c.Status 提交
+        return nil
     }
 
     if r, ok := v.(Formatted); ok {
@@ -324,11 +325,16 @@ func (c *Ctx) Next() error {
 // finish 是请求的统一收尾：写错误响应、提交预设状态、记一条访问日志。
 // 取消导致的错误不写响应；handlePanic 的中止路径不经过 finish。
 func (c *Ctx) finish(err error) {
+    if c.W.status == 0 && c.IsCanceled() {
+        c.Status(Status499ClientClosedRequest)
+    }
+
     if err != nil && !c.IsCanceled() {
         c.writeError(err)
     }
+
     c.W.commit()
-    c.logAccess(err)
+    c.logAccess(err, false)
 }
 
 // sendFormat 用 media 的编码器编码 v；没有编码器时，raw 允许 string/[]byte 原样写出，其余报错。

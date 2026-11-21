@@ -60,7 +60,7 @@ func (w *nopWriter) WriteHeader(code int) {
 }
 
 func newBenchApp() *App {
-	app := New(Config{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	app := New(Config{Logger: slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: LevelTrace}))})
 	app.Get("/hello", func(_ *Ctx, _ struct{}) (benchOut, error) {
 		return benchOut{OK: true}, nil
 	})

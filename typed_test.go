@@ -164,7 +164,7 @@ func TestTypedRouterPerRequestIsolation(t *testing.T) {
         return a.User, nil
     })
 
-    for i := 0; i < 2; i++ {
+    for i := range 2 {
         rec := httptest.NewRecorder()
         r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/n", nil))
 

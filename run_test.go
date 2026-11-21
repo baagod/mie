@@ -1,6 +1,7 @@
 package mie
 
 import (
+    "context"
     "net"
     "net/http"
     "strings"
@@ -126,5 +127,34 @@ func TestRunListenServesAndAppliesConfig(t *testing.T) {
         }
     case <-time.After(5 * time.Second):
         t.Fatal("RunListen did not return after listener closed")
+    }
+}
+
+// Serve 返回 ErrServerClosed 时按正常结束处理，RunListen 不把错误抛给调用方。
+func TestRunListenReturnsNilAfterShutdown(t *testing.T) {
+    srvCh := make(chan *http.Server, 1)
+    a := New(Config{ServerConfig: func(s *http.Server) { srvCh <- s }})
+
+    ln, err := net.Listen("tcp", "127.0.0.1:0")
+    if err != nil {
+        t.Fatalf("listen: %v", err)
+    }
+    defer ln.Close()
+
+    done := make(chan error, 1)
+    go func() { done <- a.RunListen(ln) }()
+
+    s := <-srvCh
+    if err := s.Shutdown(context.Background()); err != nil {
+        t.Fatalf("shutdown: %v", err)
+    }
+
+    select {
+    case err := <-done:
+        if err != nil {
+            t.Fatalf("RunListen = %v, want nil", err)
+        }
+    case <-time.After(5 * time.Second):
+        t.Fatal("RunListen 未返回")
     }
 }

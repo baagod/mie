@@ -2,6 +2,7 @@ package mie
 
 import (
     "cmp"
+    "encoding/json/jsontext"
     "encoding/json/v2"
     "fmt"
     "os"
@@ -78,12 +79,10 @@ func (p *Panic) Text() string {
     return b.String()
 }
 
-// JSON 返回单行 JSON；非法 UTF-8 会让 v2 编码失败，此时返回空串而不是半截 JSON。
+// JSON 返回单行 JSON；AllowInvalidUTF8 把非法 UTF-8 换成 U+FFFD，
+// 不会像默认 v2 那样整段编码失败。字段只有字符串、时间和整数，编码不会出错。
 func (p *Panic) JSON() string {
-    b, err := json.Marshal(p)
-    if err != nil {
-        return ""
-    }
+    b, _ := json.Marshal(p, jsontext.AllowInvalidUTF8(true))
     return string(b)
 }
 

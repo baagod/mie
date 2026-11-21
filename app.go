@@ -34,14 +34,16 @@ type Config struct {
     NoMatchHandler func(c *Ctx) error
 
     // Logger 是访问日志与框架诊断日志的落点；nil 时 New 用写 stderr 的默认 Logger。
-    // 需要按请求过滤或附加字段时，请包一层 slog.Handler。
+    // 默认 Logger 开在 LevelTrace，访问日志开箱可见；Handler 调到 Debug 只剩用户自己的日志，
+    // 调到 Info 连访问日志也静默。需要按请求过滤或附加字段时，请包一层 slog.Handler。
     Logger *slog.Logger
 
     // Codecs 声明可提供的格式与优先级；零值只提供内置 JSON、XML。
     Codecs Codecs
 
     // MaxBodyBytes 是非 multipart 请求的 body 上限，超出时读 body 返回 413。
-    // 零值在 New 中补 1MiB；负值关闭这层保护。multipart 不适用：上传大小由上传路由自行限制。
+    // 零值在 New 中补 1MiB；负值关闭这层保护。multipart 不适用：上传大小按路由差异太大，
+    // 由上传路由用中间件包 http.MaxBytesReader 限制。
     MaxBodyBytes int64
 
     // ServerConfig 在 http.Server 建好后、开始服务前调用，用来改字段或调方法。
@@ -199,13 +201,13 @@ func (a *App) serve(run func(*http.Server) error) (err error) {
 }
 
 // handlePanic 是请求边界的最后一道恢复：接住用户链、ErrorHandler 与框架自身逃出的 panic。
-// 只能由 defer 直接调用——recover 在嵌套调用里拿不到 panic。
+// 只能由 defer 直接调用，recover 在嵌套调用里拿不到 panic。
 func (a *App) handlePanic(c *Ctx, p any) {
     // 从这里逃出的 panic（包括 RecoverHandler 自己崩了）仍要留下访问日志，
     // 否则请求会从日志里消失；记完按原值抛回，让 net/http 继续兜底。
     defer func() {
         if err := recover(); err != nil {
-            c.logAccess(nil)
+            c.logAccess(nil, true)
             panic(err)
         }
     }()
