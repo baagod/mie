@@ -6,6 +6,7 @@ import (
     "github.com/baagod/mie/internal/xslices"
     "log/slog"
     "mime"
+    "net"
     "net/http"
     "os"
     "os/signal"
@@ -13,8 +14,12 @@ import (
     "time"
 )
 
-// 未配置 MaxBodyBytes 时的请求 body 上限。
-const defaultMaxBodyBytes = 1 << 20
+const (
+    // 未配置 MaxBodyBytes 时的请求 body 上限。
+    defaultMaxBodyBytes = 1 << 20
+    // 停机窗口；必须 ≤ WriteTimeout，否则多等的时间是在等已经写不出响应的连接。
+    shutdownTimeout = 8 * time.Second
+)
 
 // Config 零值即可使用；缺省项在 New 中补齐。
 type Config struct {
@@ -119,7 +124,12 @@ func (a *App) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 
 // Run 启动 HTTP 服务，收到 Interrupt/SIGTERM 后优雅关停。
-func (a *App) Run(addr string) error {
+// addr 为空时使用 ":8080"。
+func (a *App) Run(addr string) (err error) {
+    if addr == "" {
+        addr = ":8080"
+    }
+
     s := &http.Server{
         Addr:              addr,
         Handler:           a,
@@ -129,23 +139,36 @@ func (a *App) Run(addr string) error {
         IdleTimeout:       60 * time.Second,
     }
 
-    errCh := make(chan error, 1)
-    go func() { errCh <- s.ListenAndServe() }()
-
-    ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+    // 先注册信号再开始监听，避免启动瞬间的 SIGTERM 直接杀掉进程。
+    sysCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
     defer stop()
 
+    l, e := net.Listen("tcp", s.Addr)
+    if e != nil {
+        return e // 启动失败在这里就返回，不进 select。
+    }
+
+    errCh := make(chan error, 1)
+    go func() { errCh <- s.Serve(l) }()
+
     select {
-    case err := <-errCh:
+    case err = <-errCh:
         if errors.Is(err, http.ErrServerClosed) {
             return nil
         }
-        return err
-    case <-ctx.Done():
-        shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+    case <-sysCtx.Done():
+        stop() // 第二次 Ctrl+C 回到默认行为：直接终止
+
+        // 停止接收新连接并等待在途请求；超时后强制断开。
+        ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
         defer cancel()
-        return s.Shutdown(shutdownCtx)
+
+        if err = s.Shutdown(ctx); err != nil {
+            _ = s.Close()
+        }
     }
+
+    return
 }
 
 // handlePanic 是请求边界的最后一道恢复：接住用户链、ErrorHandler 与框架自身逃出的 panic。
