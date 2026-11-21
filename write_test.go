@@ -273,6 +273,24 @@ func TestWriterHijackStatus(t *testing.T) {
     if got := c2.W.StatusCode(); got != http.StatusSwitchingProtocols {
         t.Fatalf("StatusCode after 101 then Hijack = %d, want 101", got)
     }
+
+    c3, _ := newCapabilityCtx()
+    c3.W.SetStatus(http.StatusCreated)
+    if _, _, err := c3.W.Hijack(); err != nil {
+        t.Fatal(err)
+    }
+    if got := c3.W.StatusCode(); got != 0 {
+        t.Fatalf("StatusCode after SetStatus then Hijack = %d, want 0", got)
+    }
+
+    c4, _ := newCapabilityCtx()
+    c4.W.WriteHeader(http.StatusEarlyHints)
+    if _, _, err := c4.W.Hijack(); err != nil {
+        t.Fatal(err)
+    }
+    if got := c4.W.StatusCode(); got != 0 {
+        t.Fatalf("StatusCode after 103 then Hijack = %d, want 0", got)
+    }
 }
 
 func TestCtxStatusCode(t *testing.T) {

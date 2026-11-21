@@ -24,9 +24,10 @@ type ResponseWriter struct {
     discard bool
 }
 
-// StatusCode 返回最近设置的状态码（1xx 也反映）；未设置且未 Hijack 为 200，Hijack 后为 0。
+// StatusCode 返回本次响应最终会写出的状态码；没有最终响应时为 0。
+// 已写出最终头（含 101）如实返回；未写头就被 Hijack，说明不会有 HTTP 响应，返回 0。
 func (w *ResponseWriter) StatusCode() int {
-    if w.status != 0 {
+    if w.wroteHeader {
         return w.status
     }
 
@@ -34,11 +35,15 @@ func (w *ResponseWriter) StatusCode() int {
         return 0
     }
 
+    if w.status != 0 {
+        return w.status
+    }
+
     return http.StatusOK
 }
 
-// SetStatus 设置状态码：1xx 立即写出（101 会被 WriteHeader 锁成最终状态），
-// 其余码先记下，等写 body/Flush/ReadFrom 再提交；已出最终头或已 Hijack 后忽略。
+// SetStatus 设置状态码。1xx 立即经 WriteHeader 写出（仅 101 锁成最终状态）；
+// 其余码先记下，等写 body、Flush 或 ReadFrom 时提交。已出最终头或已 Hijack 后无效。
 func (w *ResponseWriter) SetStatus(code int) {
     if w.hijacked || w.wroteHeader {
         return
@@ -136,8 +141,8 @@ func (w *ResponseWriter) FlushError() error {
     }
 }
 
-// Hijack 把连接交给调用方（WebSocket、CONNECT 隧道等）：此后响应不再有 HTTP 语义。
-// StatusCode 保持已记录值，未记录时为 0。
+// Hijack 把连接交给调用方（WebSocket、CONNECT 隧道等），此后响应不再有 HTTP 语义。
+// 返回的 rw 可能含 net/http 已读入的缓冲字节：必须从 rw 读，直接读 conn 会丢数据。
 func (w *ResponseWriter) Hijack() (conn net.Conn, rw *bufio.ReadWriter, err error) {
     if h, ok := w.w.(http.Hijacker); ok {
         if conn, rw, err = h.Hijack(); err == nil {
