@@ -17,7 +17,8 @@ import (
 const (
     // 未配置 MaxBodyBytes 时的请求 body 上限。
     defaultMaxBodyBytes = 1 << 20
-    // 停机窗口；必须 ≤ WriteTimeout，否则多等的时间是在等已经写不出响应的连接。
+    // 停机最多等这么久。必须小于平台宽限期（docker stop 默认 10s），
+    // 否则到点被 SIGKILL，收尾代码和 defer 都来不及执行。
     shutdownTimeout = 8 * time.Second
 )
 
@@ -123,30 +124,43 @@ func (a *App) ServeHTTP(w http.ResponseWriter, req *http.Request) {
     }
 }
 
-// Run 启动 HTTP 服务，收到 Interrupt/SIGTERM 后优雅关停。
-// addr 为空时使用 ":8080"。
-func (a *App) Run(addr string) (err error) {
+// Run 在 addr 上监听并调用 RunListen；addr 为空时使用 ":8080"。
+// config 在开始服务前依次调用，用来调整 http.Server。
+func (a *App) Run(addr string, config ...func(*http.Server)) error {
     if addr == "" {
         addr = ":8080"
     }
 
+    l, err := net.Listen("tcp", addr)
+    if err != nil {
+        return err // 启动失败在这里就返回，不进 RunListen。
+    }
+
+    return a.RunListen(l, config...)
+}
+
+// RunListen 在 l 上提供服务，收到 Interrupt/SIGTERM 后优雅关停。
+// config 在开始服务前依次调用，用来调整 http.Server：改字段、调方法都可以。
+// 返回时 l 已关闭。TLS 请传入 tls.NewListener 包好的 listener，改 TLSConfig 不生效。
+func (a *App) RunListen(l net.Listener, config ...func(*http.Server)) (err error) {
     s := &http.Server{
-        Addr:              addr,
         Handler:           a,
+        ErrorLog:          slog.NewLogLogger(a.config.Logger.Handler(), slog.LevelError),
         ReadHeaderTimeout: 5 * time.Second,
         ReadTimeout:       10 * time.Second,
         WriteTimeout:      15 * time.Second,
-        IdleTimeout:       60 * time.Second,
+        // 必须大于前置代理的空闲超时（ALB 与 nginx 后端侧默认都是 60s），
+        // 否则代理仍可能把请求发到我们已经关掉的连接上。
+        IdleTimeout:       90 * time.Second,
     }
 
-    // 先注册信号再开始监听，避免启动瞬间的 SIGTERM 直接杀掉进程。
+    for _, c := range config {
+        c(s)
+    }
+
+    // 先注册信号再开始服务，避免启动瞬间的 SIGTERM 直接杀掉进程。
     sysCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
     defer stop()
-
-    l, e := net.Listen("tcp", s.Addr)
-    if e != nil {
-        return e // 启动失败在这里就返回，不进 select。
-    }
 
     errCh := make(chan error, 1)
     go func() { errCh <- s.Serve(l) }()
@@ -159,10 +173,10 @@ func (a *App) Run(addr string) (err error) {
     case <-sysCtx.Done():
         stop() // 第二次 Ctrl+C 回到默认行为：直接终止
 
-        // 停止接收新连接并等待在途请求；超时后强制断开。
         ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
         defer cancel()
 
+        // Shutdown 超时只表示不再等，不关活跃连接，这里补一刀。
         if err = s.Shutdown(ctx); err != nil {
             _ = s.Close()
         }
