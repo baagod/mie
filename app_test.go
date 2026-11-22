@@ -448,7 +448,7 @@ func TestErrorHandlerNilLeavesResponseUntouched(t *testing.T) {
 	}
 }
 
-// 锁定：客户端已取消时 handler 返回的错误不写响应体，状态记 499，访问日志仍记一条。
+// 锁定：取消引起的错误不写响应体，状态记 499，访问日志仍记一条。
 func TestCanceledRequestWritesNoBody(t *testing.T) {
 	l, buf := testLogger()
 	r := New(Config{Logger: l})
@@ -472,6 +472,31 @@ func TestCanceledRequestWritesNoBody(t *testing.T) {
 	}
 	if out := buf.String(); !strings.Contains(out, "msg=access") || !strings.Contains(out, "status=499") || !strings.Contains(out, "level=INFO") {
 		t.Fatalf("日志 = %q，want msg=access、status=499、level=INFO", out)
+	}
+}
+
+// 锁定：取消时 handler 报的真实错误照常写，状态码保留给日志与指标。
+func TestCanceledRealErrorKeepsStatus(t *testing.T) {
+	l, buf := testLogger()
+	r := New(Config{Logger: l})
+	r.Get("/failed", func(*Ctx, struct{}) (struct{}, error) {
+		return struct{}{}, NewError(http.StatusServiceUnavailable, "db down")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/failed", nil)
+	ctx, cancel := context.WithCancel(req.Context())
+	cancel()
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req.WithContext(ctx))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+	if !strings.Contains(rec.Body.String(), "db down") {
+		t.Fatalf("body = %q，want 错误文本", rec.Body.String())
+	}
+	if out := buf.String(); !strings.Contains(out, "status=503") || !strings.Contains(out, "level=ERROR") {
+		t.Fatalf("日志 = %q，want status=503、level=ERROR", out)
 	}
 }
 

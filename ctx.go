@@ -330,14 +330,13 @@ func (c *Ctx) Value(key any) any {
 }
 
 // finish 是请求的统一收尾：写错误响应、提交预设状态、记一条访问日志。
-// 取消导致的错误不写响应；handlePanic 的中止路径不经过 finish。
+// 取消引起的错误不写响应、记 499；其他错误照常写。handlePanic 的中止路径不经过 finish。
 func (c *Ctx) finish(err error) {
-	if c.W.status == 0 && c.IsCanceled() {
+	// 客户端已取消，而且服务器没出错，才记 499。
+	if c.IsCanceled() && (err == nil || errors.Is(err, context.Canceled)) {
 		c.Status(Status499ClientClosedRequest)
-	}
-
-	if err != nil && !c.IsCanceled() {
-		c.writeError(err)
+	} else if err != nil {
+		c.writeError(err) // 记录真实错误，不掩盖线上故障。
 	}
 
 	c.W.commit()
