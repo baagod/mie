@@ -8,13 +8,32 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
+// syncBuffer 允许请求 goroutine 写日志的同时，测试 goroutine 读取快照。
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // testLogger 返回写入内存的 Logger 及其缓冲区，便于断言日志内容。
-func testLogger() (*slog.Logger, *bytes.Buffer) {
-	var buf bytes.Buffer
+func testLogger() (*slog.Logger, *syncBuffer) {
+	var buf syncBuffer
 	return slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: LevelTrace})), &buf
 }
 
