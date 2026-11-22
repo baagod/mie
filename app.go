@@ -129,8 +129,8 @@ func (a *App) Run(addr string, certFiles ...string) error {
 		return err // 启动失败在这里就返回，不进 serve。
 	}
 
-	//goland:noinspection GoUnhandledErrorResult
 	// Serve 自己也会关；ServeTLS 在包 listener 前失败时靠这里兜住。
+	//goland:noinspection GoUnhandledErrorResult
 	defer l.Close()
 
 	if len(certFiles) == 2 {
@@ -166,7 +166,8 @@ func (a *App) serve(run func(*http.Server) error) error {
 	sysCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// 信号只负责关停；run 的返回值是唯一错误来源。
+	// 信号只负责关停；停机结果单独通过 shutdownErr 带回。run 自己报错时以它为准，不再等排空。
+	// 缓冲 1：外部关闭时 serve 不等这个结果，无缓冲会让 goroutine 永久阻塞。
 	shutdownErr := make(chan error, 1)
 	go func() {
 		<-sysCtx.Done()
@@ -174,10 +175,12 @@ func (a *App) serve(run func(*http.Server) error) error {
 
 		// 停机最多等 8s。必须小于平台宽限期（docker stop 默认 10s），
 		// 否则到点被 SIGKILL，收尾代码和 defer 都来不及执行。
+		// 不能用 sysCtx：它此刻已经取消，有在途请求时 Shutdown 会立刻返回。
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
 
-		// Shutdown 超时只表示不再等，不关活跃连接，这里补一刀。
+		// Shutdown 超时只表示不再等，不关活跃连接，这里关闭。
+		// Close 也不管 Hijack 出去的连接（WebSocket/SSE），只能靠进程退出或调用方自己关。
 		err := s.Shutdown(ctx)
 		if err != nil {
 			_ = s.Close()
@@ -192,8 +195,10 @@ func (a *App) serve(run func(*http.Server) error) error {
 	}
 
 	if sysCtx.Err() != nil {
-		// 信号触发了上面的 Shutdown；等它排空完，把它自己的结果返回给调用方。
-		return <-shutdownErr
+		// 等它排空完再返回；排空超时算停机失败，不是干净退出。
+		if err := <-shutdownErr; err != nil {
+			return fmt.Errorf("mie: shutdown: %w", err)
+		}
 	}
 
 	return nil
