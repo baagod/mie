@@ -65,8 +65,11 @@ app.Get("/me", func(c *AppCtx, _ struct{}) (User, error) {
 ### 校验
 
 - `factory == nil`：注册期 panic，与 `bind.Validate` 的失败方式一致。
+- `Router.Use` / `Router.Handle` 的 nil 中间件与处理器：注册期 panic（`mie: Use requires a non-nil middleware` / `mie: HandlerFunc must not be nil`），不留到首个请求。
+- typed 入口的 nil：`Use` 的 typed 分支与 `TypedRouter.Handle` 都会先包成非 nil 闭包，`Router` 侧检查看不到，因此由 `typedHandler` 统一判 `h == nil`，panic `mie: TypedHandler must not be nil`。
+- 工厂返回 nil：注册期无法预跑工厂（伪造 `*Ctx` 会改变只读传入 `*Ctx` 的工厂语义），因此在请求期首次用到上下文时 panic `mie: WithContext factory returned nil`。
 - IN 与中间件 IN 的一致性：完全沿用 `Router.Use` 的 `r.in` 校验，TypedRouter 不新增规则。
-- `C` 的形态：`WithContext` 检查 `C` 是否直接嵌入 `*Ctx`（处理器拿到 `*C` 由返回类型保证），失败即 `panic("mie: WithContext requires C to be a struct embedding *Ctx")`。嵌入保证 `Next()`、`Header()` 这些方法全部提升上来；命名包装、指向接口、`C = Ctx` 都被拒绝。
+- `factory == nil` 与 `C` 的形态：注册期统一 panic `("mie: WithContext requires a non-nil factory and C to be a struct embedding *Ctx")`。`C` 是否直接嵌入 `*Ctx` 由 `WithContext` 检查（处理器拿到 `*C` 由返回类型保证），嵌入保证 `Next()`、`Header()` 这些方法全部提升上来；命名包装、指向接口、`C = Ctx` 都被拒绝。
 
 ### 成本
 

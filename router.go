@@ -25,12 +25,17 @@ type Router struct {
 // 同层中间件的 IN 必须相同；带 IN 的 Use 之后本层注册的每条路由（含无输入路由）IN 必须与之一致，否则 panic。
 // 子组是新的注册面，不继承这条约束。
 func (r *Router) Use[IN any](m HandlerFunc[IN, any]) *Router {
+	if m == nil {
+		panic("mie: Use requires a non-nil middleware")
+	}
+
 	if in := reflect.TypeFor[IN](); in != reflect.TypeFor[struct{}]() {
 		if r.in != nil && r.in != in {
 			panic("mie: middleware input " + in.String() + " conflicts with " + r.in.String())
 		}
 		r.in = in
 	}
+
 	r.middlewares = append(r.middlewares, handler(m))
 	return r
 }
@@ -68,6 +73,10 @@ func (r *Router) Delete[IN, OUT any](pattern string, h HandlerFunc[IN, OUT]) *Ro
 
 // Handle 校验中间件输入与 IN 的绑定声明，然后把链注册到 ServeMux。
 func (r *Router) Handle[IN, OUT any](method, pattern string, h HandlerFunc[IN, OUT]) *Router {
+	if h == nil {
+		panic("mie: HandlerFunc must not be nil")
+	}
+
 	in := reflect.TypeFor[IN]()
 	if r.in != nil && r.in != in {
 		panic("mie: " + method + " " + pattern + " input " + in.String() +

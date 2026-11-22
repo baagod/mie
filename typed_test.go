@@ -89,17 +89,19 @@ func TestTypedRouterUsePlainMiddleware(t *testing.T) {
 }
 
 func TestTypedRouterUseRejectsForeignContext(t *testing.T) {
-	r := New()
-	app := r.WithContext(func(c *Ctx) *typedApp { return &typedApp{Ctx: c} })
+	app := New().WithContext(func(c *Ctx) *typedApp { return &typedApp{Ctx: c} })
 
-	defer func() {
-		got, _ := recover().(string)
-		if !strings.Contains(got, "*Ctx or *mie.typedApp") {
-			t.Fatalf("panic = %q, want a message naming both context types", got)
-		}
-	}()
+	mustPanicWith(t, "*Ctx or *mie.typedApp", func() {
+		app.Use(func(x int, _ struct{}) (any, error) { return nil, nil })
+	})
+}
 
-	app.Use(func(x int, _ struct{}) (any, error) { return nil, nil })
+func TestTypedRouterUseRequiresMiddleware(t *testing.T) {
+	app := New().WithContext(func(c *Ctx) *typedApp { return &typedApp{Ctx: c} })
+
+	mustPanicWith(t, "mie: TypedHandler must not be nil", func() {
+		app.Use[*typedApp, struct{}](nil)
+	})
 }
 
 func TestTypedHandlerCachesContextPerRequest(t *testing.T) {
@@ -226,7 +228,7 @@ func TestWithContextRequiresFactory(t *testing.T) {
 
 // 工厂必须返回 *C，值类型的上下文已经写不出来；这里覆盖其余三种：没嵌入 *Ctx、C 是 *Ctx、C 是指向接口的指针。
 func TestWithContextRequiresEmbeddedCtx(t *testing.T) {
-	const want = "mie: WithContext requires C to be a struct embedding *Ctx"
+	const want = "mie: WithContext requires a non-nil factory and C to be a struct embedding *Ctx"
 
 	cases := []struct {
 		name string
@@ -253,6 +255,23 @@ func TestWithContextRequiresEmbeddedCtx(t *testing.T) {
 // typedWrapper 持有 *Ctx 但不是嵌入，注册期应被拒绝。
 type typedWrapper struct {
 	Ctx *Ctx
+}
+
+// 工厂返回 nil 属于配置错误：在首次用到上下文处 panic，而不是把 nil 缓存进 store。
+func TestWithContextFactoryNilPanics(t *testing.T) {
+	var got any
+	r := New(Config{RecoverHandler: func(_ *Ctx, p *Panic) error {
+		got = p.Value
+		return nil
+	}})
+	r.WithContext(func(*Ctx) *typedApp { return nil }).
+		Get[struct{}, string]("/nil", func(*typedApp, struct{}) (string, error) { return "x", nil })
+
+	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/nil", nil))
+
+	if s, _ := got.(string); s != "mie: WithContext factory returned nil" {
+		t.Fatalf("panic = %v, want factory returned nil", got)
+	}
 }
 
 func TestTypedRouterInheritsParentMiddleware(t *testing.T) {

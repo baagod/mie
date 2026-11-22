@@ -20,23 +20,24 @@ type TypedRouter[C any] struct {
 }
 
 // WithContext 绑定应用上下文工厂，返回处理器参数为 *C 的注册面。
-// C 必须是直接嵌入 *Ctx 的结构体：嵌入把 Next()、Header() 这些方法提升上来，
-// 中间件才能推进链，处理器才能直接用它们。C 不是结构体、没嵌入 *Ctx、或 C 就是 Ctx 本身时注册期 panic。
-// 工厂每请求最多执行一次，且在首次用到上下文的位置才执行。
+// C 必须是直接嵌入 *Ctx 的结构体（值嵌入 Ctx、未嵌入 *Ctx、或 C 不是结构体时注册期 panic）：
+// 嵌入把 Next()、Header() 等方法提升上来，中间件才能推进链，处理器才能直接用它们。
+// 工厂每请求最多执行一次，必须返回新 *C 且把本次 *Ctx 写进嵌入字段（return &AppCtx{Ctx: c}）；返回 nil 在首次用到上下文时 panic。
 func (r *Router) WithContext[C any](factory func(*Ctx) *C) *TypedRouter[*C] {
-	if factory == nil {
-		panic("mie: WithContext requires a non-nil factory")
-	}
-
-	if t := reflect.TypeFor[C](); t.Kind() == reflect.Struct {
+	if t := reflect.TypeFor[C](); factory != nil && t.Kind() == reflect.Struct {
 		for f := range t.Fields() {
 			if f.Anonymous && f.Type == reflect.TypeFor[*Ctx]() {
-				return &TypedRouter[*C]{r: r.snapshot(""), factory: factory}
+				return &TypedRouter[*C]{r: r.snapshot(""), factory: func(c *Ctx) *C {
+					if tc := factory(c); tc != nil {
+						return tc
+					}
+					panic("mie: WithContext factory returned nil")
+				}}
 			}
 		}
 	}
 
-	panic("mie: WithContext requires C to be a struct embedding *Ctx")
+	panic("mie: WithContext requires a non-nil factory and C to be a struct embedding *Ctx")
 }
 
 // Use 追加中间件，只影响之后注册的路由。
@@ -93,6 +94,9 @@ func (r *TypedRouter[C]) Handle[IN, OUT any](method, pattern string, h TypedHand
 // typedHandler 把应用签名的处理器包成普通处理器：C 由工厂构造并缓存，IN 用绑定好的那份。
 // 缓存键是 typedCtxKey[C]：C 恒为指针，整条链共享同一对象。
 func typedHandler[C any, IN, OUT any](factory func(*Ctx) C, h TypedHandler[C, IN, OUT]) HandlerFunc[IN, OUT] {
+	if h == nil {
+		panic("mie: TypedHandler must not be nil")
+	}
 	return func(c *Ctx, in IN) (OUT, error) {
 		if tc, ok := c.store[typedCtxKey[C]{}]; ok {
 			return h(tc.(C), in)

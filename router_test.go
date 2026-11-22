@@ -237,6 +237,26 @@ func TestRouteDoublePointerInputPanics(t *testing.T) {
 	})
 }
 
+// nil 处理器在注册期就 panic：Router 的中间件、路由与 TypedRouter 的路由三条入口一致。
+func TestNilHandlerPanicsAtRegistration(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		reg  func(a *App)
+		want string
+	}{
+		{"router-use", func(a *App) { a.Use[struct{}](nil) }, "Use requires a non-nil middleware"},
+		{"router-route", func(a *App) { a.Get[struct{}, string]("/nil", nil) }, "HandlerFunc must not be nil"},
+		{"typed-route", func(a *App) {
+			a.WithContext(func(c *Ctx) *typedApp { return &typedApp{Ctx: c} }).
+				Get[struct{}, string]("/nil", nil)
+		}, "TypedHandler must not be nil"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mustPanicWith(t, tt.want, func() { tt.reg(New()) })
+		})
+	}
+}
+
 func mustPanicWith(t *testing.T, want string, f func()) {
 	t.Helper()
 	defer func() {
