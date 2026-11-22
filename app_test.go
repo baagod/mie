@@ -577,10 +577,9 @@ func TestPanicAfterWriteAbortsResponse(t *testing.T) {
 		panic("boom")
 	})
 
-	s := httptest.NewServer(r)
-	defer s.Close()
+	s := httptest.NewTestServer(t, r)
 
-	resp, err := http.Get(s.URL + "/half")
+	resp, err := s.Client().Get(s.URL + "/half")
 	if err == nil {
 		defer resp.Body.Close()
 		if _, rerr := io.ReadAll(resp.Body); rerr == nil {
@@ -655,8 +654,8 @@ func TestWriteErrorAfterHijackLeavesConnectionAlone(t *testing.T) {
 		return struct{}{}, NewError(http.StatusBadRequest, "late")
 	})
 
-	s := httptest.NewServer(r)
-	defer s.Close()
+	s := httptest.NewTestServer(t, r)
+	s.Start()
 
 	conn, err := net.Dial("tcp", s.Listener.Addr().String())
 	if err != nil {
