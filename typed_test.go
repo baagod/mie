@@ -217,13 +217,9 @@ func TestTypedMiddlewareBindsInput(t *testing.T) {
 }
 
 func TestWithContextRequiresFactory(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("want panic on nil factory")
-		}
-	}()
-
-	New().WithContext[Ctx](nil)
+	mustPanicWith(t, "mie: WithContext requires a non-nil factory and C to be a struct embedding *Ctx", func() {
+		New().WithContext[typedApp](nil)
+	})
 }
 
 // 工厂必须返回 *C，值类型的上下文已经写不出来；这里覆盖其余三种：没嵌入 *Ctx、C 是 *Ctx、C 是指向接口的指针。
