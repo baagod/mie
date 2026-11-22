@@ -49,7 +49,7 @@
 2. `mime.ParseMediaType` 只解析一次：`ServeHTTP` 解析后存进 `Ctx`，`BindBody` 复用。约 −200ns、−1 分配。
 3. `store` 懒分配（已实施）：首次 `Set` 才 `make` map，`Get`/`Bind` 在 `nil` map 上读，只读 handler 不分配。
 4. 去掉 `context.WithValue`：`Ctx` 已实现 `context.Context`，直接在 `req.WithContext(c)` 上挂载，但需在 `Ctx` 里保存 parent context 兜底 `Value`。−1 分配。
-5. traceid 懒生成：有 `X-Request-Id` 时复用，否则到第一次 `TraceID()` 或写日志时再生成。−1 分配。
+5. traceid 懒生成：到第一次 `TraceID()` 或写日志时再生成。−1 分配。
 6. 不建议现在做：`Ctx` + `ResponseWriter` 池化，−2 分配，但要处理 map/chain 重置与生命周期，风险大于收益。
 
 ## 6. 复现

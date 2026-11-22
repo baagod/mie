@@ -31,7 +31,7 @@ func TestHeaderAndTypeChain(t *testing.T) {
 	}
 }
 
-// 锁定：请求没带 X-Request-Id 时只生成 TraceID，不往响应里补头。
+// 锁定：TraceID 自动生成 32 位十六进制，不往响应里补头。
 func TestTraceIDGeneratedWithoutResponseHeader(t *testing.T) {
 	r := New()
 	var id string
@@ -44,15 +44,15 @@ func TestTraceIDGeneratedWithoutResponseHeader(t *testing.T) {
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/trace", nil))
 
 	if got := rec.Header().Get(HeaderXRequestID); got != "" {
-		t.Fatalf("响应头 %s = %q, want empty", HeaderXRequestID, got)
+		t.Fatalf("响应头 X-Request-Id = %q, want empty", got)
 	}
 	if len(id) != 32 {
 		t.Fatalf("TraceID len = %d, want 32", len(id))
 	}
 }
 
-// 锁定：请求带了 X-Request-Id 时复用，但不往响应里重复写。
-func TestTraceIDReusedWithoutResponseHeader(t *testing.T) {
+// 锁定：客户端传的 X-Request-Id 不会被当成 TraceID，也不往响应里重复写。
+func TestTraceIDIgnoresRequestHeader(t *testing.T) {
 	r := New()
 	var id string
 	r.Get("/trace", func(c *Ctx, _ struct{}) (struct{}, error) {
@@ -66,10 +66,27 @@ func TestTraceIDReusedWithoutResponseHeader(t *testing.T) {
 	r.ServeHTTP(rec, req)
 
 	if got := rec.Header().Get(HeaderXRequestID); got != "" {
-		t.Fatalf("响应头 %s = %q, want empty", HeaderXRequestID, got)
+		t.Fatalf("响应头 X-Request-Id = %q, want empty", got)
 	}
-	if id != "trace-1" {
-		t.Fatalf("TraceID = %q, want %q", id, "trace-1")
+	if id == "trace-1" || len(id) != 32 {
+		t.Fatalf("TraceID = %q, want 32 位生成的 ID", id)
+	}
+}
+
+// 锁定：中间件可以用 SetTraceID 接入自己的追踪格式。
+func TestSetTraceID(t *testing.T) {
+	r := New()
+	var id string
+	r.Get("/trace", func(c *Ctx, _ struct{}) (struct{}, error) {
+		c.SetTraceID("my-format:42")
+		id = c.TraceID()
+		return struct{}{}, nil
+	})
+
+	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/trace", nil))
+
+	if id != "my-format:42" {
+		t.Fatalf("TraceID = %q, want %q", id, "my-format:42")
 	}
 }
 
@@ -113,7 +130,7 @@ func TestCtxGet(t *testing.T) {
 	})
 }
 
-// 锁定：Value 容器未命中时回退请求 context；同键同时存在时容器优先。
+// 锁定：Get 容器优先、未命中回退请求 context；Value 只读请求 context。
 func TestCtxValueFallsBackToRequestContext(t *testing.T) {
 	type outerKey struct{}
 
@@ -126,8 +143,11 @@ func TestCtxValueFallsBackToRequestContext(t *testing.T) {
 	}
 
 	c.Set(outerKey{}, "inner")
-	if got := c.Value(outerKey{}); got != "inner" {
-		t.Fatalf("Value = %v, want %q", got, "inner")
+	if got := c.Get[string](outerKey{}); got != "inner" {
+		t.Fatalf("Get = %q, want %q", got, "inner")
+	}
+	if got := c.Value(outerKey{}); got != "outer" {
+		t.Fatalf("Value = %v, want %q", got, "outer")
 	}
 }
 
@@ -177,7 +197,7 @@ func TestCtxFormArrayParseFailure(t *testing.T) {
 	}
 }
 
-// 锁定：Path 是实际路径，Pattern 是不带方法前缀的模板。
+// 锁定：Path 是实际路径，Pattern 是不带方法前缀的模板；HEAD 命中 GET 路由时同样不带前缀。
 func TestCtxPathAndPattern(t *testing.T) {
 	r := New()
 	var path, pattern string
@@ -186,13 +206,15 @@ func TestCtxPathAndPattern(t *testing.T) {
 		return struct{}{}, nil
 	})
 
-	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/user/42", nil))
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(method, "/user/42", nil))
 
-	if path != "/user/42" {
-		t.Fatalf("Path = %q, want %q", path, "/user/42")
-	}
-	if pattern != "/user/{id}" {
-		t.Fatalf("Pattern = %q, want %q", pattern, "/user/{id}")
+		if path != "/user/42" {
+			t.Fatalf("%s: Path = %q, want %q", method, path, "/user/42")
+		}
+		if pattern != "/user/{id}" {
+			t.Fatalf("%s: Pattern = %q, want %q", method, pattern, "/user/{id}")
+		}
 	}
 }
 

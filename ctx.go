@@ -48,26 +48,22 @@ type Ctx struct {
 }
 
 // newCtx 创建请求上下文，并把 *Ctx 放进请求 context。
-// TraceID 复用合法的 X-Request-Id（不超过 128 字节），否则生成 32 位十六进制随机值。
+// TraceID 在此生成 32 位十六进制随机值；需要接入自己的追踪体系时用 SetTraceID 覆盖。
 func newCtx(w http.ResponseWriter, req *http.Request, a *App) *Ctx {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+
 	c := &Ctx{
-		index:   -1,
-		traceid: req.Header.Get(HeaderXRequestID),
-		start:   time.Now(),
+		W:       &ResponseWriter{w: w},
 		app:     a,
+		index:   -1,
+		start:   time.Now(),
+		traceid: hex.EncodeToString(b[:]),
 	}
 
 	// 路由闭包靠 context 取回 Ctx；ServeMux 把 Pattern/PathValue 写进请求副本，
 	// 所以必须用 WithContext 的副本。
 	c.R = req.WithContext(context.WithValue(req.Context(), ctxKey{}, c))
-	c.W = &ResponseWriter{w: w}
-
-	if c.traceid == "" || len(c.traceid) > 128 {
-		var b [16]byte
-		_, _ = rand.Read(b[:])
-		c.traceid = hex.EncodeToString(b[:])
-	}
-
 	return c
 }
 
@@ -97,28 +93,22 @@ func (c *Ctx) Set(key, value any) *Ctx {
 	return c
 }
 
-// Get 读取 Set 存入的 key 值；未设置或类型不符时返回零值。
-func (c *Ctx) Get[T any](key any) T {
-	v, _ := c.Value(key).(T)
+// Get 读取 Set 存入的值；没有或类型不符时回退请求 context，仍不符返回零值。
+func (c *Ctx) Get[T any](key any) (v T) {
+	if raw, ok := c.store[key].(T); ok {
+		return raw
+	}
+	v, _ = c.Value(key).(T)
 	return v
 }
 
-// Deadline 转发请求 context 的截止时间。
-func (c *Ctx) Deadline() (time.Time, bool) { return c.R.Context().Deadline() }
-
-// Done 返回请求 context 的取消信号。
-func (c *Ctx) Done() <-chan struct{} { return c.R.Context().Done() }
-
-// Err 返回请求 context 的错误。
-func (c *Ctx) Err() error { return c.R.Context().Err() }
-
-// Value 先读 Ctx 的容器，再回退到请求 context；实现 context.Context 契约。
-func (c *Ctx) Value(key any) any {
-	if v, ok := c.store[key]; ok {
-		return v
-	}
-	return c.R.Context().Value(key)
+// SetTraceID 覆盖当前请求的追踪 ID；默认由框架生成，中间件可按自己的格式设置。
+func (c *Ctx) SetTraceID(id string) {
+	c.traceid = id
 }
+
+// TraceID 返回当前请求的追踪 ID。
+func (c *Ctx) TraceID() string { return c.traceid }
 
 // IsCanceled 判断请求是否因客户端取消而结束；不覆盖 deadline 超时。
 func (c *Ctx) IsCanceled() bool { return errors.Is(c.R.Context().Err(), context.Canceled) }
@@ -129,8 +119,14 @@ func (c *Ctx) Path() string {
 }
 
 // Pattern 返回命中的路由模板，如 /user/{id}；未命中路由时为空串。
-func (c *Ctx) Pattern() string {
-	return strings.TrimPrefix(c.R.Pattern, c.R.Method+" ")
+// HEAD 命中 GET 路由时 r.Pattern 仍是 "GET /user/{id}"，不能拿 c.R.Method 去剥。
+func (c *Ctx) Pattern() (p string) {
+	if p = c.R.Pattern; !strings.HasPrefix(p, "/") {
+		if _, rest, ok := strings.Cut(p, " "); ok {
+			return rest
+		}
+	}
+	return
 }
 
 // Param 返回路径参数的值。
@@ -168,9 +164,6 @@ func (c *Ctx) RemoteIP() string {
 	}
 	return c.R.RemoteAddr
 }
-
-// TraceID 返回请求的追踪 ID：复用 X-Request-Id 或自动生成。
-func (c *Ctx) TraceID() string { return c.traceid }
 
 // Header 设置响应头，返回 Ctx 以便链式调用。
 func (c *Ctx) Header(name, value string) *Ctx {
@@ -320,6 +313,20 @@ func (c *Ctx) Next() error {
 		return errors.New("mie: Next called after the end of the chain")
 	}
 	return c.chain[c.index](c)
+}
+
+// Deadline 转发请求 context 的截止时间。
+func (c *Ctx) Deadline() (time.Time, bool) { return c.R.Context().Deadline() }
+
+// Done 返回请求 context 的取消信号。
+func (c *Ctx) Done() <-chan struct{} { return c.R.Context().Done() }
+
+// Err 返回请求 context 的错误。
+func (c *Ctx) Err() error { return c.R.Context().Err() }
+
+// Value 实现 context.Context：只读请求 context，不暴露 Ctx 容器。
+func (c *Ctx) Value(key any) any {
+	return c.R.Context().Value(key)
 }
 
 // finish 是请求的统一收尾：写错误响应、提交预设状态、记一条访问日志。

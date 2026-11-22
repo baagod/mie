@@ -52,9 +52,10 @@ func TestAccessLogWritesRecord(t *testing.T) {
 			want: []string{"level=ERROR", "msg=access", "status=201", `error="late failure"`, "traceid=trace-1"},
 		},
 		{
+			// 未命中路由时不经过中间件，traceid 只能由框架生成。
 			name: "unmatched",
 			path: "/missing",
-			want: []string{"level=INFO", "msg=access", "status=404", "path=/missing", "latency=", "traceid=trace-1", "ip=192.0.2.1"},
+			want: []string{"level=INFO", "msg=access", "status=404", "path=/missing", "latency=", "traceid=", "ip=192.0.2.1"},
 		},
 		{
 			name:    "panic",
@@ -71,12 +72,15 @@ func TestAccessLogWritesRecord(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			l, buf := testLogger()
 			r := New(Config{Logger: l})
+			r.Use(He(func(c *Ctx, _ struct{}) error {
+				c.SetTraceID("trace-1")
+				return c.Next()
+			}))
 			if tc.pattern != "" {
 				r.Get(tc.pattern, tc.handler)
 			}
 
 			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
-			req.Header.Set(HeaderXRequestID, "trace-1")
 			r.ServeHTTP(httptest.NewRecorder(), req)
 
 			out := buf.String()
