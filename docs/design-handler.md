@@ -69,6 +69,8 @@ r.Use(He(func(c *Ctx, _ struct{}) error {
 - handler error、bind error 都交给 `Config.ErrorHandler`，最终由 `writeError` 写响应（唯一错误出口）。
 - bind 错误：来源绑定与解码失败 400；不支持的 `Content-Type` 415；`http.MaxBytesReader` 超限由 `Ctx.Body()` 映射 413；其它读取错误（连接中断等）500。
 - panic 走 `Config.RecoverHandler`。
+- 响应已提交（状态或 body 已写出）后再返回错误：状态码不再改变，错误文本追加到 body 末尾，访问日志记 Error；这种情况属于 handler 自身矛盾，框架不做补救。
+- 错误体固定是纯文本；用户已设 `Content-Type` 时沿用、不覆盖，只有 `text/plain` 会补 `nosniff`。
 
 ## 5. 应用上下文（TypedRouter）
 

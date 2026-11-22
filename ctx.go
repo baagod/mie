@@ -359,7 +359,7 @@ func (c *Ctx) sendFormat(v any, media string, raw bool) error {
     return errors.New("mie: no encoder for " + media)
 }
 
-// writeError 是所有错误响应的唯一出口；错误文本会原样写给客户端，内部细节不要放进 error。
+// writeError 是所有错误响应的唯一出口；错误文本会原样写给客户端。
 func (c *Ctx) writeError(err error) {
     if err == nil {
         return
@@ -388,9 +388,7 @@ func (c *Ctx) writeError(err error) {
         }
     }
 
-    if c.W.wroteHeader {
-        c.LogWarn("mie: error after response committed", "error", err)
-    } else {
+    if !c.W.wroteHeader {
         c.W.WriteHeader(status)
     }
 

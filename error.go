@@ -5,7 +5,7 @@ import (
 )
 
 // Error 让 handler 返回指定 HTTP 状态码的错误。
-// Text 会原样写给客户端，不要放内部细节。
+// Text 会原样写给客户端。
 type Error struct {
     Status int
     Text   string

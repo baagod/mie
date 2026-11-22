@@ -1,241 +1,238 @@
 package mie
 
 import (
-    "cmp"
-    "context"
-    "errors"
-    "fmt"
-    "github.com/baagod/mie/internal/xslices"
-    "log/slog"
-    "mime"
-    "net"
-    "net/http"
-    "os"
-    "os/signal"
-    "syscall"
-    "time"
+	"cmp"
+	"context"
+	"errors"
+	"fmt"
+	"github.com/baagod/mie/internal/xslices"
+	"log/slog"
+	"mime"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 )
 
-// 未配置 MaxBodyBytes 时的请求 body 上限。
 const defaultMaxBodyBytes = 1 << 20
 
-// Config 零值即可使用；缺省项在 New 中补齐。
+// 零值可用，缺省项在 New 补齐。
 type Config struct {
-    // ErrorHandler 处理用户链返回的错误。panic 与 404/405 有独立出口，不经过这里。
-    ErrorHandler func(c *Ctx, err error) error
+	// ErrorHandler 只处理用户链返回的错误；panic 与 404/405 各有独立出口。
+	ErrorHandler func(c *Ctx, err error) error
 
-    // RecoverHandler 把恢复到的 panic 转成错误（交给 writeError）；
-    // 未配置时默认记日志并写 500。响应已提交时不再写，框架直接中止连接。
-    RecoverHandler func(c *Ctx, p *Panic) error
+	// RecoverHandler 把恢复到的 panic 转成错误，仍交给 writeError 写出。
+	// 缺省记日志并返回 500；响应已提交时不再写，框架直接中止连接。
+	RecoverHandler func(c *Ctx, p *Panic) error
 
-    // NoMatchHandler 在 net/http 写 404/405 之前接管。
-    // 写 body 时自行设置 Content-Type，不需要时用 c.W.Header().Del 删除。
-    // 未配置时保留 net/http 默认的 404/405。
-    NoMatchHandler func(c *Ctx) error
+	// NoMatchHandler 在 net/http 写出 404/405 之前接管。
+	// 接管时 Content-Type 已是 text/plain，要别的类型自行覆盖；缺省保留 net/http 的 404/405。
+	NoMatchHandler func(c *Ctx) error
 
-    // Logger 是访问日志与框架诊断日志的落点；nil 时 New 用写 stderr 的默认 Logger。
-    // 默认 Logger 开在 LevelTrace，访问日志开箱可见；Handler 调到 Debug 只剩用户自己的日志，
-    // 调到 Info 连访问日志也静默。需要按请求过滤或附加字段时，请包一层 slog.Handler。
-    Logger *slog.Logger
+	// Logger 是访问日志与框架日志的落点，nil 时写 stderr。
+	// 默认开在 LevelTrace：访问日志可见；Handler 调到 Debug 只剩自己的日志，调到 Info 则全部静默。
+	Logger *slog.Logger
 
-    // Codecs 声明可提供的格式与优先级；零值只提供内置 JSON、XML。
-    Codecs Codecs
+	// Codecs 声明可提供的格式与优先级；零值只提供内置 JSON、XML。
+	Codecs Codecs
 
-    // MaxBodyBytes 是非 multipart 请求的 body 上限，超出时读 body 返回 413。
-    // 零值在 New 中补 1MiB；负值关闭这层保护。multipart 不适用：上传大小按路由差异太大，
-    // 由上传路由用中间件包 http.MaxBytesReader 限制。
-    MaxBodyBytes int64
+	// MaxBodyBytes 是非 multipart 请求的 body 上限，超出时读 body 返回 413。
+	// 零值补 1MiB，负值关闭；multipart 不经过这里，由上传路由用中间件包 http.MaxBytesReader 限制。
+	MaxBodyBytes int64
 
-    // ServerConfig 在 http.Server 建好后、开始服务前调用，用来改字段或调方法。
-    ServerConfig func(*http.Server)
+	// ServerConfig 在 Server 建好后、开始服务前调用。
+	ServerConfig func(*http.Server)
 }
 
-// App 持有 ServeMux、配置与生命周期方法；注册面见 Router。
 type App struct {
-    *Router
-    mux    *http.ServeMux
-    config Config
+	*Router
+	mux    *http.ServeMux
+	config Config
 }
 
-// New 创建 App；最多一个 Config，多传会 panic。panic 的恢复见 handlePanic。
+// New 最多接受一个 Config，多传 panic。
 func New(cfg ...Config) *App {
-    if len(cfg) > 1 {
-        panic("mie: New accepts at most one Config")
-    }
+	if len(cfg) > 1 {
+		panic("mie: New accepts at most one Config")
+	}
 
-    c := xslices.First(cfg)
+	c := xslices.First(cfg)
 
-    if c.ErrorHandler == nil {
-        c.ErrorHandler = defaultErrorHandler
-    }
+	if c.ErrorHandler == nil {
+		c.ErrorHandler = defaultErrorHandler
+	}
 
-    if c.RecoverHandler == nil {
-        c.RecoverHandler = defaultRecoverHandler
-    }
+	if c.RecoverHandler == nil {
+		c.RecoverHandler = defaultRecoverHandler
+	}
 
-    if c.Logger == nil {
-        c.Logger = logger
-    }
+	if c.Logger == nil {
+		c.Logger = logger
+	}
 
-    if c.MaxBodyBytes == 0 {
-        c.MaxBodyBytes = defaultMaxBodyBytes
-    }
+	if c.MaxBodyBytes == 0 {
+		c.MaxBodyBytes = defaultMaxBodyBytes
+	}
 
-    c.Codecs.resolve()
+	c.Codecs.resolve()
 
-    a := &App{mux: http.NewServeMux(), config: c}
-    a.Router = &Router{app: a}
-    return a
+	a := &App{mux: http.NewServeMux(), config: c}
+	a.Router = &Router{app: a}
+	return a
 }
 
-// ServeHTTP 包装 body 上限、创建 Ctx、安装 NoMatch 钩子、执行 ServeMux，并为未进入用户链的请求补收尾。
 func (a *App) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-    if req.Body != nil && req.Body != http.NoBody && a.config.MaxBodyBytes > 0 {
-        if ct, _, _ := mime.ParseMediaType(req.Header.Get(HeaderContentType)); ct != MIMEMultipartForm {
-            req.Body = http.MaxBytesReader(w, req.Body, a.config.MaxBodyBytes)
-        }
-    }
+	if req.Body != nil && req.Body != http.NoBody && a.config.MaxBodyBytes > 0 {
+		if ct, _, _ := mime.ParseMediaType(req.Header.Get(HeaderContentType)); ct != MIMEMultipartForm {
+			req.Body = http.MaxBytesReader(w, req.Body, a.config.MaxBodyBytes)
+		}
+	}
 
-    c := newCtx(w, req, a)
+	c := newCtx(w, req, a)
 
-    defer func() {
-        // multipart 的文件可能落到磁盘临时文件，请求结束（含 panic）先删。
-        if f := c.R.MultipartForm; f != nil {
-            _ = f.RemoveAll()
-        }
-        if p := recover(); p != nil {
-            a.handlePanic(c, p)
-        }
-    }()
+	defer func() {
+		// multipart 文件可能落到磁盘，请求结束（含 panic）先删。
+		if f := c.R.MultipartForm; f != nil {
+			_ = f.RemoveAll()
+		}
+		if p := recover(); p != nil {
+			a.handlePanic(c, p)
+		}
+	}()
 
-    // 挂上 NoMatchHandler：ServeMux 自己写出的 404/405 会在 writer 层被截下来交给钩子，
-    // 默认错误体不再发出。
-    var err error
-    if a.config.NoMatchHandler != nil {
-        c.W.noMatch = func() {
-            err = a.config.NoMatchHandler(c)
-        }
-    }
+	// ServeMux 自己写的 404/405 在 writer 层被截下交给钩子，默认错误体不再发出。
+	var err error
+	if a.config.NoMatchHandler != nil {
+		c.W.noMatch = func() {
+			err = a.config.NoMatchHandler(c)
+		}
+	}
 
-    a.mux.ServeHTTP(c.W, c.R)
+	a.mux.ServeHTTP(c.W, c.R)
 
-    // c.chain 只由命中路由的闭包赋值；为 nil 说明请求没进用户链
-    // （404/405/规范化重定向），在这里补访问日志。
-    if c.chain == nil {
-        c.finish(err)
-    }
+	// chain 只由命中路由的闭包赋值；nil 表示请求没进用户链（404/405/重定向），在这里补收尾。
+	if c.chain == nil {
+		c.finish(err)
+	}
 }
 
-// Run 在 addr 上监听；addr 为空时使用 ":8080"。
-// certFiles 为空表示 HTTP；按 cert、key 顺序传两个文件路径则为 HTTPS。
+// Run 在 addr 上监听，空则 ":8080"。certFiles 传两个路径（cert、key）时走 HTTPS。
 func (a *App) Run(addr string, certFiles ...string) error {
-    if len(certFiles) != 0 && len(certFiles) != 2 {
-        return fmt.Errorf("mie: Run needs 0 or 2 cert files (cert, key), got %d", len(certFiles))
-    }
+	if len(certFiles) != 0 && len(certFiles) != 2 {
+		return fmt.Errorf("mie: Run needs 0 or 2 cert files (cert, key), got %d", len(certFiles))
+	}
 
-    l, err := net.Listen("tcp", cmp.Or(addr, ":8080"))
-    if err != nil {
-        return err // 启动失败在这里就返回，不进 serve。
-    }
+	l, err := net.Listen("tcp", cmp.Or(addr, ":8080"))
+	if err != nil {
+		return err // 启动失败在这里就返回，不进 serve。
+	}
 
-    //goland:noinspection GoUnhandledErrorResult
-    defer l.Close() // Serve 关过也无害；ServeTLS 在包 listener 前失败时靠这里兜住。
+	//goland:noinspection GoUnhandledErrorResult
+	// Serve 自己也会关；ServeTLS 在包 listener 前失败时靠这里兜住。
+	defer l.Close()
 
-    if len(certFiles) == 2 {
-        return a.serve(func(s *http.Server) error { return s.ServeTLS(l, certFiles[0], certFiles[1]) })
-    }
+	if len(certFiles) == 2 {
+		return a.serve(func(s *http.Server) error { return s.ServeTLS(l, certFiles[0], certFiles[1]) })
+	}
 
-    return a.RunListen(l)
+	return a.RunListen(l)
 }
 
-// RunListen 在 l 上提供服务，收到 Interrupt/SIGTERM 后优雅关停。
-// 返回时 l 已关闭。TLS 请传入 tls.NewListener 包好的 listener。
+// RunListen 在 l 上服务，收到 Interrupt/SIGTERM 后优雅关停，返回时 l 已关闭。
+// TLS 请用 tls.NewListener 包好再传。
 func (a *App) RunListen(l net.Listener) error {
-    return a.serve(func(s *http.Server) error { return s.Serve(l) })
+	return a.serve(func(s *http.Server) error { return s.Serve(l) })
 }
 
-// serve 建好 http.Server，在 run 上跑服务，收到 Interrupt/SIGTERM 后优雅关停。
-func (a *App) serve(run func(*http.Server) error) (err error) {
-    s := &http.Server{
-        Handler:           a,
-        ErrorLog:          slog.NewLogLogger(a.config.Logger.Handler(), slog.LevelError),
-        ReadHeaderTimeout: 5 * time.Second,
-        ReadTimeout:       10 * time.Second,
-        WriteTimeout:      15 * time.Second,
-        // 必须大于前置代理的空闲超时（ALB 与 nginx 后端侧默认都是 60s），
-        // 否则代理仍可能把请求发到我们已经关掉的连接上。
-        IdleTimeout: 90 * time.Second,
-    }
+func (a *App) serve(run func(*http.Server) error) error {
+	s := &http.Server{
+		Handler:           a,
+		ErrorLog:          slog.NewLogLogger(a.config.Logger.Handler(), slog.LevelError),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		// 必须大于前置代理的空闲超时（ALB 与 nginx 后端侧默认都是 60s），
+		// 否则代理仍可能把请求发到我们已经关掉的连接上。
+		IdleTimeout: 90 * time.Second,
+	}
 
-    if c := a.config.ServerConfig; c != nil {
-        c(s)
-    }
+	if c := a.config.ServerConfig; c != nil {
+		c(s)
+	}
 
-    // 先注册信号再开始服务，避免启动瞬间的 SIGTERM 直接杀掉进程。
-    sysCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-    defer stop()
+	// 先注册信号再开始服务，避免启动瞬间的 SIGTERM 直接杀掉进程。
+	sysCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-    errCh := make(chan error, 1)
-    go func() { errCh <- run(s) }()
+	// 信号只负责关停；run 的返回值是唯一错误来源。
+	shutdownErr := make(chan error, 1)
+	go func() {
+		<-sysCtx.Done()
+		stop() // 第二次 Ctrl+C 回到默认行为：直接终止
 
-    select {
-    case err = <-errCh:
-        if errors.Is(err, http.ErrServerClosed) {
-            return nil
-        }
-    case <-sysCtx.Done():
-        stop() // 第二次 Ctrl+C 回到默认行为：直接终止
+		// 停机最多等 8s。必须小于平台宽限期（docker stop 默认 10s），
+		// 否则到点被 SIGKILL，收尾代码和 defer 都来不及执行。
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
 
-        // 停机最多等 8s。必须小于平台宽限期（docker stop 默认 10s），
-        // 否则到点被 SIGKILL，收尾代码和 defer 都来不及执行。
-        ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-        defer cancel()
+		// Shutdown 超时只表示不再等，不关活跃连接，这里补一刀。
+		err := s.Shutdown(ctx)
+		if err != nil {
+			_ = s.Close()
+		}
 
-        // Shutdown 超时只表示不再等，不关活跃连接，这里补一刀。
-        if err = s.Shutdown(ctx); err != nil {
-            _ = s.Close()
-        }
-    }
+		shutdownErr <- err
+	}()
 
-    return
+	if err := run(s); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		_ = s.Close() // run 自己失败，不会有人再来关连接
+		return err
+	}
+
+	if sysCtx.Err() != nil {
+		// 信号触发了上面的 Shutdown；等它排空完，把它自己的结果返回给调用方。
+		return <-shutdownErr
+	}
+
+	return nil
 }
 
-// handlePanic 是请求边界的最后一道恢复：接住用户链、ErrorHandler 与框架自身逃出的 panic。
-// 只能由 defer 直接调用，recover 在嵌套调用里拿不到 panic。
+// handlePanic 是请求边界的最后一道恢复，接住用户链、ErrorHandler 与框架自己逃出的 panic。
+// 只能由 defer 直接调用：嵌套调用里的 recover 拿不到 panic。
 func (a *App) handlePanic(c *Ctx, p any) {
-    // 从这里逃出的 panic（包括 RecoverHandler 自己崩了）仍要留下访问日志，
-    // 否则请求会从日志里消失；记完按原值抛回，让 net/http 继续兜底。
-    defer func() {
-        if err := recover(); err != nil {
-            c.logAccess(nil, true)
-            panic(err)
-        }
-    }()
+	// 这里逃出的 panic（含 RecoverHandler 自己崩）也要留访问日志，否则请求会从日志里消失；
+	// 记完按原值抛回，交给 net/http 兜底。
+	defer func() {
+		if err := recover(); err != nil {
+			c.logAccess(nil, true)
+			panic(err)
+		}
+	}()
 
-    // 链已被 panic 终止：把游标推到链尾，恢复再调 Next() 会直接报错。
-    c.index = len(c.chain)
+	// 链已终止：游标推到链尾，恢复后再调 Next() 会直接报错。
+	c.index = len(c.chain)
 
-    if p == http.ErrAbortHandler {
-        panic(p) // 调用方要求中止连接，不写响应，原样抛回。
-    }
+	if p == http.ErrAbortHandler {
+		panic(p) // 调用方要求中止连接，不写响应。
+	}
 
-    err := a.config.RecoverHandler(c, NewPanic(c, p))
-    if c.W.wroteHeader || c.W.hijacked {
-        // 响应已经发出，状态不可信：再写只会污染半截响应，按中止交给 net/http。
-        panic(http.ErrAbortHandler)
-    }
+	err := a.config.RecoverHandler(c, NewPanic(c, p))
+	if c.W.wroteHeader || c.W.hijacked {
+		// 响应已发出，状态不可信：再写只会污染半截响应，按中止交给 net/http。
+		panic(http.ErrAbortHandler)
+	}
 
-    // 响应还没写：恢复器给出的错误交 finish 写响应并收尾（默认 500）。
-    c.finish(err)
+	c.finish(err)
 }
 
-// defaultErrorHandler 原样放行，真正的响应由 writeError 写出。
+// defaultErrorHandler 原样放行，响应由 writeError 写出。
 func defaultErrorHandler(_ *Ctx, err error) error {
-    return err
+	return err
 }
 
-// defaultRecoverHandler 记录 Panic 并返回 500 错误。
 func defaultRecoverHandler(c *Ctx, info *Panic) error {
-    c.LogError("PANIC RECOVERED", "detail", info.Text())
-    return Status500InternalServerError()
+	c.LogError("PANIC RECOVERED", "detail", info.Text())
+	return Status500InternalServerError()
 }

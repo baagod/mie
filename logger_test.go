@@ -41,6 +41,17 @@ func TestAccessLogWritesRecord(t *testing.T) {
             notWant: []string{"latency=2562047h"},
         },
         {
+            name:    "error after commit",
+            pattern: "/late",
+            path:    "/late",
+            handler: func(c *Ctx, _ struct{}) (struct{}, error) {
+                c.W.WriteHeader(http.StatusCreated)
+                _, _ = c.W.WriteString("created")
+                return struct{}{}, errors.New("late failure")
+            },
+            want: []string{"level=ERROR", "msg=access", "status=201", `error="late failure"`, "traceid=trace-1"},
+        },
+        {
             name: "unmatched",
             path: "/missing",
             want: []string{"level=INFO", "msg=access", "status=404", "path=/missing", "latency=", "traceid=trace-1", "ip=192.0.2.1"},
@@ -240,7 +251,7 @@ func TestLoggerReceivesFrameworkLogs(t *testing.T) {
     r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/late", nil))
 
     out := buf.String()
-    for _, want := range []string{"PANIC RECOVERED", "mie: error after response committed", "msg=access"} {
+    for _, want := range []string{"PANIC RECOVERED", "msg=access", "status=201", `error="late failure"`} {
         if !strings.Contains(out, want) {
             t.Fatalf("日志 = %q，缺少 %q", out, want)
         }
