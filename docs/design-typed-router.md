@@ -64,7 +64,6 @@ app.Get("/me", func(c *AppCtx, _ struct{}) (User, error) {
 
 ### 校验
 
-- `factory == nil`：注册期 panic，与 `bind.Validate` 的失败方式一致。
 - `Router.Use` / `Router.Handle` 的 nil 中间件与处理器：注册期 panic（`mie: Use requires a non-nil middleware` / `mie: HandlerFunc must not be nil`），不留到首个请求。
 - typed 入口的 nil：`Use` 的 typed 分支与 `TypedRouter.Handle` 都会先包成非 nil 闭包，`Router` 侧检查看不到，因此由 `typedHandler` 统一判 `h == nil`，panic `mie: TypedHandler must not be nil`。
 - 工厂返回 nil：注册期无法预跑工厂（伪造 `*Ctx` 会改变只读传入 `*Ctx` 的工厂语义），因此在请求期首次用到上下文时 panic `mie: WithContext factory returned nil`。
