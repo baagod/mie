@@ -394,6 +394,8 @@ func (c *Ctx) writeError(err error) {
 		h.Set(HeaderContentType, MIMETextPlainUTF8)
 		h.Set(HeaderXContentTypeOptions, MIMEContentTypeNosniff)
 		c.W.WriteHeader(status)
+	} else {
+		c.LogWarn("mie: error after response committed", "error", err)
 	}
 
 	if _, e := c.W.WriteString(err.Error()); e != nil {
