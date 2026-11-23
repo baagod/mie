@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // 锁定：Header/Type 返回 Ctx，可以链式调用。
@@ -396,5 +397,39 @@ func TestBindPathOnlySkipsMultipartBody(t *testing.T) {
 	}
 	if body.n != 0 {
 		t.Fatalf("body read = %d bytes, want 0", body.n)
+	}
+}
+
+func TestCtxContextForwarding(t *testing.T) {
+	type key struct{}
+	deadline := time.Now().Add(time.Hour)
+	parent, cancel := context.WithDeadline(context.WithValue(context.Background(), key{}, "v"), deadline)
+	defer cancel()
+
+	c := newTestCtx(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil).WithContext(parent))
+
+	if got, ok := c.Deadline(); !ok || !got.Equal(deadline) {
+		t.Fatalf("Deadline = %v/%v, want %v/true", got, ok, deadline)
+	}
+	if got := c.Value(key{}); got != "v" {
+		t.Fatalf("Value = %v, want v", got)
+	}
+	select {
+	case <-c.Done():
+		t.Fatal("Done closed before cancel")
+	default:
+	}
+	if err := c.Err(); err != nil {
+		t.Fatalf("Err = %v, want nil", err)
+	}
+
+	cancel()
+	select {
+	case <-c.Done():
+	default:
+		t.Fatal("Done not closed after cancel")
+	}
+	if err := c.Err(); err != context.Canceled {
+		t.Fatalf("Err = %v, want context.Canceled", err)
 	}
 }

@@ -404,7 +404,33 @@ func TestBindFormContentTypeMismatchIsIgnored(t *testing.T) {
 		t.Fatalf("status=%d served=%v, want 200 且 handler 执行", rec.Code, served)
 	}
 	if got.Name != "" {
-		t.Fatalf("Name = %q, want 零值（不读 body、不报错）", got.Name)
+		t.Fatalf("Name = %q, want 零值（JSON 键 name 与字段 Name 不匹配，body 仍会先被解码）", got.Name)
+	}
+}
+
+func TestBindPathInputStillDecodesBody(t *testing.T) {
+	type in struct {
+		ID   int    `path:"id"`
+		Name string `json:"name"`
+	}
+
+	var got in
+	r := New()
+	r.Post("/items/{id}", func(c *Ctx, v in) (string, error) {
+		got = v
+		return v.Name, nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/items/7", strings.NewReader(`{"name":"alice"}`))
+	req.Header.Set(HeaderContentType, MIMEJSON)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != "alice" {
+		t.Fatalf("status/body = %d/%q, want 200/alice", rec.Code, rec.Body.String())
+	}
+	if got.ID != 7 || got.Name != "alice" {
+		t.Fatalf("bound = %+v, want ID=7 Name=alice", got)
 	}
 }
 

@@ -47,6 +47,23 @@ func TestSendCommitsPresetStatus(t *testing.T) {
 	}
 }
 
+func TestSendAfterInformationalWritesBodyWithFinalStatus(t *testing.T) {
+	spy := &headerCodeSpy{h: make(http.Header)}
+	c := newTestCtx(spy, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	c.Status(http.StatusEarlyHints)
+	if err := c.Send(map[string]int{"id": 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := c.StatusCode(); got != http.StatusOK {
+		t.Fatalf("StatusCode = %d, want %d", got, http.StatusOK)
+	}
+	if want := []int{http.StatusEarlyHints, http.StatusOK}; !slices.Equal(spy.codes, want) {
+		t.Fatalf("wire codes = %v, want %v", spy.codes, want)
+	}
+}
+
 func TestSendJSONMarshalError(t *testing.T) {
 	r := New()
 	r.Handle(http.MethodGet, "/bad", He(func(c *Ctx, _ struct{}) error {

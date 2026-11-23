@@ -30,7 +30,7 @@
 - 未导出字段、空 tag 一律跳过；标量，或指针实现 `encoding.TextUnmarshaler` 的类型（`time.Time`、`netip.Addr`、`net.IP` 等）才能绑定，字符串交给该接口解析、解析失败 400；`*multipart.FileHeader` / `[]*multipart.FileHeader` 走文件通道（缺失 nil，单字段收到多个文件 400）；`[]*T` 这类元素层指针、以及取元素后仍不是标量/TextUnmarshaler 的类型，是声明错误，注册时报 panic。
 - 字段可加指针（`*int`、`*time.Time`、`*[]int`，多层亦可）：来源缺失保持 nil；值为空串时按类型解析，字符串得到指向空串的指针，数字、时间等解析失败返回 400 且保持 nil（集合类型保留空串元素，如 `?tags=` → `[""]`）。
 - 多值来源：切片写全部、数组按序填充（超出丢弃、不足补零）、标量只取第一个；命名切片/数组本身实现 `TextUnmarshaler` 时（如 `net.IP`）按一个值整体解析、多余值丢弃（空值也算第一个值，不会被跳过，如 `?ip=&ip=::1` 得到零值），`[]time.Time`、`[2]time.Time` 这类则逐元素解析。
-- 只有 `form` 字段才解析参数：先查 URL（`url.ParseQuery`，非法转义 400），命中不读 body；未命中才解析 body（urlencoded 走 `ParseForm`，会因此读掉 body，框架不还原 `c.R.Body`；multipart 走 `ParseMultipartForm`，缺 boundary、part 损坏都 400）。纯 `header`/`path` 的 IN 既不解 URL 也不读 body。解析结果按请求缓存在 `bind.FormCache`，`Bind` 与 `Ctx.Form` 共用，URL 与 body 各最多解析一次。
+- 只有 `form` 字段才解析参数：先查 URL（`url.ParseQuery`，非法转义 400），命中不读 body；未命中才解析 body（urlencoded 走 `ParseForm`，会因此读掉 body，框架不还原 `c.R.Body`；multipart 走 `ParseMultipartForm`，缺 boundary、part 损坏都 400）。纯 `header`/`path` 的 IN 不解析 URL/form 参数；但 `Bind` 在非 GET/HEAD 且 `ContentLength != 0` 时仍会先走 body 解码（`struct{}` 除外）：有对应解码器（如 JSON/XML）时 body 会被读取，解码失败照常 400。解析结果按请求缓存在 `bind.FormCache`，`Bind` 与 `Ctx.Form` 共用，URL 与 body 各最多解析一次。
 - 不建 IN 而只取单个参数时用 `Ctx.Form[T]`：同名 URL 参数优先于表单参数（整体替换，含空值），URL 命中时不读 body，未命中时读取并消费 body（框架不还原 `c.R.Body`）；缺失或解析失败返回零值。`T` 可为标量、`TextUnmarshaler` 或它们的切片/数组/指针，元素层指针按零值返回；`T` 为 `*multipart.FileHeader` / `[]*multipart.FileHeader` 时取上传文件（不读 URL 参数，单类型收到多个文件返回零值）。
 - body：非 GET/HEAD 且有 body 时，先按 `Content-Type` 找解码器：`form-urlencoded` 与 `multipart/form-data` 都归参数绑定，两者直接跳过；找不到解码器返回 415 且不读 body，`Content-Type` 缺失、畸形同样 415。
 - 内置解码器只有 `application/json` 与 `application/xml`，其余媒体由应用填 `Decode`；`+json`/`+xml` 这类结构化后缀（如 `application/vnd.api+json`）回退到同 top-level 的基类型解码器。
@@ -62,6 +62,7 @@ r.Use(He(func(c *Ctx, _ struct{}) error {
 ## 4. 输出与错误
 
 - error 非 nil 时忽略 OUT；OUT 为 nil（接口无值）不写 body（中间件 `return nil, nil` 即放行），状态取 `c.Status`，未设置则 200；类型化 nil 指针不算 nil，照常编码，JSON 下写出 `null`。
+- 204/304 按 HTTP 不允许 body：用 `He`（或让 OUT 为 nil）只设状态/头；返回非 nil OUT 时 `Send` 跳过编码，不写 body，也不触发 `net/http` 的 `ErrBodyNotAllowed`。
 - 处理器自己写过响应（直接 `c.Send`/`c.W.Write`）后又返回非 nil 的 OUT，body 会写两遍：框架在处理器返回后照常渲染 OUT。两种写法二选一；`He` 的 OUT 恒为 nil，天然没有这个问题。
 - 输出：`Formatted` 只声明格式（`Format() (media, value)`），框架必须用该格式的编码器编码，缺了报错（`JSON(v)`/`XML(v)` 是忽略 `Accept` 的捷径）。`Format()` 返回的媒体必须是 `Config.Codecs` 提供的媒体之一：这里只做精确匹配，vendor 类型（如 `application/vnd.api+json`）不会走 `Accept` 的后缀回退，会直接报没有编码器。
 - 裸值：处理器事先设了 `Content-Type` 时以它为准、不协商；否则按 `Accept` 选格式。只有 string 与 `[]byte` 有天然类型（`text/plain`、嗅探结果），天然类型能覆盖请求时优先；其余裸值没有天然类型，按 `Config.Codecs.Order` 选（未配时即 JSON）。`Accept` 里的 `+json`/`+xml` 后缀按同 top-level 的基类型匹配（`application/vnd.api+json` → `application/json`），响应仍写基类型而非 vendor 类型。有编码器就编码，没有编码器时 string/`[]byte` 按原字节写、其余报错。
@@ -69,8 +70,8 @@ r.Use(He(func(c *Ctx, _ struct{}) error {
 - handler error、bind error 都交给 `Config.ErrorHandler`，最终由 `writeError` 写响应（唯一错误出口）。
 - bind 错误：来源绑定与解码失败 400；不支持的 `Content-Type` 415；`http.MaxBytesReader` 超限由 `Ctx.Body()` 映射 413；其它读取错误（连接中断等）500。
 - panic 走 `Config.RecoverHandler`。
-- 响应已提交（状态或 body 已写出）后再返回错误：状态码不再改变，错误文本追加到 body 末尾，访问日志记 Error；这种情况属于 handler 自身矛盾，框架不做补救。
-- 错误体固定是纯文本；用户已设 `Content-Type` 时沿用、不覆盖，只有 `text/plain` 会补 `nosniff`。
+- 响应已提交（状态或 body 已写出）后再返回错误属于 handler 违约：状态码与 `Content-Type` 不再改变，错误文本原样追加到 body 末尾，访问日志记 Error；框架不转义、不保证该路径的安全性，调用方必须保证提交后不再返回 error。
+- 错误响应未提交时，错误体固定为 `text/plain; charset=utf-8` + `nosniff`；调用方设置的 `Content-Type` 会被覆盖，避免错误文本按 HTML/JSON 等类型解释。
 
 ## 5. 应用上下文（TypedRouter）
 

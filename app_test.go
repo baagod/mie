@@ -399,18 +399,25 @@ func TestWriteErrorKeepsWrittenResponse(t *testing.T) {
 	}
 }
 
-func TestRouteCommitsPresetStatus(t *testing.T) {
-	r := New()
-	r.Get("/no-content", func(c *Ctx, _ struct{}) (struct{}, error) {
-		c.Status(http.StatusNoContent)
-		return struct{}{}, nil
-	})
+func TestSendSkipsBodyForStatusesWithoutBody(t *testing.T) {
+	for _, status := range []int{http.StatusSwitchingProtocols, http.StatusNoContent, http.StatusNotModified} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			r := New()
+			r.Get("/no-content", func(c *Ctx, _ struct{}) (struct{}, error) {
+				c.Status(status)
+				return struct{}{}, nil
+			})
 
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/no-content", nil))
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/no-content", nil))
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+			if rec.Code != status {
+				t.Fatalf("status = %d, want %d", rec.Code, status)
+			}
+			if got := rec.Body.String(); got != "" {
+				t.Fatalf("body = %q, want empty", got)
+			}
+		})
 	}
 }
 
@@ -530,24 +537,27 @@ func TestCanceledErrorSkipsErrorHandler(t *testing.T) {
 	}
 }
 
-func TestWriteErrorKeepsCustomContentType(t *testing.T) {
+func TestWriteErrorOverridesContentType(t *testing.T) {
 	r := New()
-	r.Get("/json", func(c *Ctx, _ struct{}) (struct{}, error) {
-		c.Header(HeaderContentType, "application/json")
-		return struct{}{}, NewError(http.StatusBadRequest, "bad input")
+	r.Get("/html", func(c *Ctx, _ struct{}) (struct{}, error) {
+		c.Header(HeaderContentType, MIMETextHTMLUTF8)
+		return struct{}{}, NewError(http.StatusBadRequest, "<script>alert(1)</script>")
 	})
 
 	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/json", nil))
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/html", nil))
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
-	if got := rec.Header().Get(HeaderContentType); got != "application/json" {
-		t.Fatalf("Content-Type = %q, want %q", got, "application/json")
+	if got := rec.Header().Get(HeaderContentType); got != MIMETextPlainUTF8 {
+		t.Fatalf("Content-Type = %q, want %q", got, MIMETextPlainUTF8)
 	}
-	if got := rec.Header().Get(HeaderXContentTypeOptions); got != "" {
-		t.Fatalf("X-Content-Type-Options = %q, want empty", got)
+	if got := rec.Header().Get(HeaderXContentTypeOptions); got != MIMEContentTypeNosniff {
+		t.Fatalf("X-Content-Type-Options = %q, want %q", got, MIMEContentTypeNosniff)
+	}
+	if got := rec.Body.String(); got != "<script>alert(1)</script>" {
+		t.Fatalf("body = %q, want %q", got, "<script>alert(1)</script>")
 	}
 }
 

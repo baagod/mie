@@ -14,7 +14,7 @@ app := c.Get[*AppCtx](userKey{})   // 运行期，要自己约定 key
 `WithContext[C]` 让应用在**注册期**声明一次「怎么从 `*Ctx` 造出 `*C`」，之后处理器直接收 `*C`，类型在编译期确定。
 
 ```go
-app := r.WithContext(func(c *mux.Ctx) *AppCtx {
+app := r.WithContext(func(c *mie.Ctx) *AppCtx {
     return &AppCtx{Ctx: c, DB: globalDB, User: c.Get[*User](userKey)}
 })
 
@@ -39,7 +39,7 @@ app.Get("/me", func(c *AppCtx, _ struct{}) (User, error) {
 ## 已确认的决定
 
 - **D1 工厂执行时机：懒执行。** `factory` 懒在 `typedHandler` 的闭包里：该路由第一次处理请求时才执行，没人用 `C` 的路由不执行工厂；工厂内 panic 落在链内，`c.index` 能反映停在哪个中间件。
-- **D2 中间件签名：`Use` 同时收 `func(*Ctx, IN)` 与 `func(C, IN)` 两种形状。** 前者直接进链，不构造 `C`；后者在本位置构造 `C` 后调用，靠 `C` 上的 `Next()` 推进链（由嵌入 `*mux.Ctx` 提升而来）。两者之外的形状在注册期 panic——union 不允许类型参数，`C` 没法当约束，编译期拦不住。`WithContext` 收的是结构体 `C`，处理器拿到 `*C`，值类型的上下文在签名层就写不出来；`C` 没直接嵌入 `*Ctx` 则注册期 panic。
+- **D2 中间件签名：`Use` 同时收 `func(*Ctx, IN)` 与 `func(C, IN)` 两种形状。** 前者直接进链，不构造 `C`；后者在本位置构造 `C` 后调用，靠 `C` 上的 `Next()` 推进链（由嵌入 `*mie.Ctx` 提升而来）。两者之外的形状在注册期 panic——union 不允许类型参数，`C` 没法当约束，编译期拦不住。`WithContext` 收的是结构体 `C`，处理器拿到 `*C`，值类型的上下文在签名层就写不出来；`C` 没直接嵌入 `*Ctx` 则注册期 panic。
 - **D3 `WithContext` 返回快照。** 复制 `prefix`/`middlewares`（与 `Group` 走同一个 `Router.snapshot`；`in` 不随快照继承），typed 面 `Use` 不外溢到原 `Router`，两个 `WithContext` 互不影响。
 - **D4 工厂签名保持 `func(*Ctx) C`，不返回 error。** 拒绝请求只发生在中间件（不调 `Next` 即可）；工厂只做组装，`typedHandler` 里没有新的错误分支。
 
@@ -79,7 +79,7 @@ app.Get("/me", func(c *AppCtx, _ struct{}) (User, error) {
 
 - 同一个 `Router` 调两次 `WithContext`、不同 `C`：两个独立键，互不影响。
 - 工厂看到的是**首次被调用那一刻**的 `store`。D1 懒执行下工厂在链上首次使用 `C` 的位置运行，所以它依赖的中间件（如写入 `*User` 的鉴权）必须排在首个用到 `C` 的元素之前（typed 中间件或 typed 处理器），否则工厂读到空值。
-- 处理器上下文恒为 `*C`，`C` 必须直接嵌入 `*Ctx`；`C = Ctx` 不放行（`Ctx` 没有嵌入自己），要直接用 `*Ctx` 就用 `Router`。多层嵌入（间接嵌入）也不放行，需要在每层都直接写 `*mux.Ctx`。
+- 处理器上下文恒为 `*C`，`C` 必须直接嵌入 `*Ctx`；`C = Ctx` 不放行（`Ctx` 没有嵌入自己），要直接用 `*Ctx` 就用 `Router`。多层嵌入（间接嵌入）也不放行，需要在每层都直接写 `*mie.Ctx`。
 - `Ctx` 不跨请求，`store` 随请求结束，不存在跨请求串值。
 
 ## 组合

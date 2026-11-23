@@ -212,6 +212,13 @@ func (c *Ctx) Send(v any) error {
 		return nil
 	}
 
+	// 101 是唯一作为最终响应的 1xx；其余 1xx 只是中间响应，body 属于后续最终状态，不能跳。
+	// 204/304 按 HTTP 不允许 body；跳过编码，避免 net/http 的 ErrBodyNotAllowed 被当成框架错误。
+	switch c.W.StatusCode() {
+	case http.StatusSwitchingProtocols, http.StatusNoContent, http.StatusNotModified:
+		return nil
+	}
+
 	if r, ok := v.(Formatted); ok {
 		media, value := r.Format()
 		return c.sendFormat(value, media, false) // 显式格式覆盖 Accept，不设 Vary。
@@ -365,14 +372,15 @@ func (c *Ctx) sendFormat(v any, media string, raw bool) error {
 	return errors.New("mie: no encoder for " + media)
 }
 
-// writeError 是所有错误响应的唯一出口；错误文本会原样写给客户端。
+// writeError 是所有错误响应的唯一出口。
+// 未提交时错误体固定为 text/plain + nosniff，避免错误文本按调用方设置的 HTML/JSON 等类型解释；
+// 已提交时状态码与 Content-Type 不再改变，错误文本追加到 body 末尾。
 func (c *Ctx) writeError(err error) {
 	if err == nil {
 		return
 	}
 
-	c.index = len(c.chain)
-	if c.W.hijacked {
+	if c.index = len(c.chain); c.W.hijacked {
 		c.LogWarn("mie: error after hijack", "error", err)
 		return
 	}
@@ -382,19 +390,9 @@ func (c *Ctx) writeError(err error) {
 		status = e.Status
 	}
 
-	h := c.W.Header()
-	if ct := h.Get(HeaderContentType); ct == "" {
-		// 没有 Content-Type 时选 text/plain，并加 nosniff，避免错误文本被当成 HTML 渲染。
+	if h := c.W.Header(); !c.W.wroteHeader {
 		h.Set(HeaderContentType, MIMETextPlainUTF8)
 		h.Set(HeaderXContentTypeOptions, MIMEContentTypeNosniff)
-	} else if t, _, e := mime.ParseMediaType(ct); e == nil && t == "text/plain" {
-		// 只有 text/plain 会被嗅探成 HTML；用户已声明该类型时补 nosniff。
-		if h.Get(HeaderXContentTypeOptions) == "" {
-			h.Set(HeaderXContentTypeOptions, MIMEContentTypeNosniff)
-		}
-	}
-
-	if !c.W.wroteHeader {
 		c.W.WriteHeader(status)
 	}
 
