@@ -60,7 +60,6 @@ func newCtx(w http.ResponseWriter, req *http.Request, a *App) *Ctx {
 	return c
 }
 
-// release 把上下文恢复成零值，只保留复用的 ResponseWriter；归还到池前调用。
 // release 把上下文清成零值并返回自身，供归还池使用。
 // 只有确认没有其他 goroutine 仍持有 c 时才能调用：流式响应、Hijack 后继续写、
 // 超时后仍在运行的处理器都会在归还后继续访问它，此时应标记 abandoned，
