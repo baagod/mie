@@ -19,15 +19,13 @@ type TypedRouter[C any] struct {
 	factory func(*Ctx) C
 }
 
-// mieCtxCarrier 是私有标记接口：指针嵌入（含跨层）后，*Ctx 的 mieCtx() 才会进值 C 的方法集。
-// 值嵌入 Ctx 只把方法提升给 *C、不提升给 C，所以断言在值上才能区分两种嵌入。
+// mieCtxCarrier 判定 C 是否指针嵌入了 *Ctx：值嵌入时方法只提升给 *C，值 C 拿不到 mieCtx。
 type mieCtxCarrier interface{ mieCtx() *Ctx }
 
 func (c *Ctx) mieCtx() *Ctx { return c }
 
-// WithContext 绑定应用上下文工厂，返回处理器参数为 *C 的注册面。
-// C 必须通过指针嵌入拿到 *Ctx（可直接嵌或跨层嵌，顶层值嵌入注册期 panic）；跨层只校验最外层，链上任何一层值嵌入 Ctx 都会拷贝上下文，由契约保证。
-// 工厂每请求最多执行一次，必须返回新 *C 并把本次 *Ctx 写进嵌入字段（return &AppCtx{Ctx: c}）；返回 nil 会 panic 出明确文案，漏写该字段则在首次调用提升方法时 nil 解引用。
+// WithContext 为每个请求用 factory 构造上下文 C，处理器接收 *C。
+// C 必须嵌入 *Ctx，多层嵌套也必须遵循，否则会导致运行时上下文状态不一致。
 func (r *Router) WithContext[C any](factory func(*Ctx) *C) *TypedRouter[*C] {
 	if t := reflect.TypeFor[C](); factory != nil && t.Kind() == reflect.Struct && t.Implements(reflect.TypeFor[mieCtxCarrier]()) {
 		return &TypedRouter[*C]{r: r.snapshot(""), factory: func(c *Ctx) *C {
@@ -37,7 +35,6 @@ func (r *Router) WithContext[C any](factory func(*Ctx) *C) *TypedRouter[*C] {
 			panic("mie: WithContext factory returned nil")
 		}}
 	}
-
 	panic("mie: WithContext requires a non-nil factory and C to be a struct embedding *Ctx")
 }
 
