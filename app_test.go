@@ -14,6 +14,112 @@ import (
 	"time"
 )
 
+func TestCtxReuseResetsState(t *testing.T) {
+	r := New()
+
+	requests := 0
+	var firstTrace string
+	seen := make(map[*Ctx]struct{})
+	r.Get("/pool", He(func(c *Ctx, _ struct{}) error {
+		requests++
+		seen[c] = struct{}{}
+		if requests == 1 {
+			firstTrace = c.TraceID()
+			c.Set("leak", "x")
+			c.Status(http.StatusCreated)
+			return c.Send("one")
+		}
+
+		if v := c.Get[string]("leak"); v != "" {
+			t.Errorf("store leaked into next request: %q", v)
+		}
+		if c.TraceID() == firstTrace {
+			t.Error("trace id reused across requests")
+		}
+		if got := c.StatusCode(); got != http.StatusOK {
+			t.Errorf("status = %d, want 200", got)
+		}
+		return c.Send("two")
+	}))
+
+	for i := 0; i < 50; i++ {
+		want := "two"
+		if i == 0 {
+			want = "one"
+		}
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/pool", nil))
+		if got := rec.Body.String(); got != want {
+			t.Fatalf("request %d: body = %q, want %q", i, got, want)
+		}
+	}
+
+	if len(seen) > 5 {
+		t.Fatalf("50 requests used %d distinct *Ctx, want at most 5; pooling is not reusing contexts", len(seen))
+	}
+}
+
+// panic 请求也要把上下文清零后归还，不能把半截状态带进下一个请求。
+func TestCtxReuseAfterPanic(t *testing.T) {
+	r := New(Config{RecoverHandler: func(*Ctx, *Panic) error { return Status500InternalServerError() }})
+
+	r.Get("/panics", He(func(c *Ctx, _ struct{}) error {
+		c.Set("leak", "x")
+		c.Status(http.StatusCreated)
+		panic("boom")
+	}))
+	r.Get("/clean", He(func(c *Ctx, _ struct{}) error {
+		if v := c.Get[string]("leak"); v != "" {
+			t.Errorf("store leaked after panic: %q", v)
+		}
+		if got := c.StatusCode(); got != http.StatusOK {
+			t.Errorf("status after panic = %d, want 200", got)
+		}
+		return c.Send("ok")
+	}))
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/panics", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("panic request status = %d, want 500", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/clean", nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "ok" {
+		t.Fatalf("after panic: status = %d, body = %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCtxReuseAfterAbort(t *testing.T) {
+	r := New()
+
+	var seen []*Ctx
+	r.Get("/abort", He(func(c *Ctx, _ struct{}) error {
+		seen = append(seen, c)
+		panic(http.ErrAbortHandler)
+	}))
+
+	for range 20 {
+		func() {
+			defer func() {
+				if p := recover(); p != http.ErrAbortHandler {
+					t.Fatalf("panic = %v, want http.ErrAbortHandler", p)
+				}
+			}()
+			r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/abort", nil))
+		}()
+	}
+
+	distinct := make(map[*Ctx]struct{}, len(seen))
+	for _, c := range seen {
+		distinct[c] = struct{}{}
+	}
+	if len(distinct) > 2 {
+		t.Fatalf("20 aborted requests used %d distinct *Ctx, want at most 2; aborted contexts are not returned to the pool", len(distinct))
+	}
+}
+
 func TestRouteParam(t *testing.T) {
 	r := New()
 	r.Handle(http.MethodGet, "/users/{id}", He(func(c *Ctx, _ struct{}) error {

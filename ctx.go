@@ -2,12 +2,13 @@ package mie
 
 import (
 	"context"
-	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/baagod/mie/render"
 	"io"
+	"math/rand/v2"
 	"mime"
 	"net"
 	"net/http"
@@ -34,7 +35,7 @@ type reqBody struct {
 }
 
 // Ctx 是一次请求的上下文，包装响应写入器与请求，并承载中间件游标。
-// Ctx 只在处理本次请求的 goroutine 内使用，不要跨 goroutine 共享。
+// 由框架池化复用：只在本次请求内使用，不要跨 goroutine 共享，也不要带出请求生命周期。
 type Ctx struct {
 	W *ResponseWriter // 响应写入器
 	R *http.Request   // 带 Ctx 的请求副本
@@ -48,24 +49,41 @@ type Ctx struct {
 	form    bind.FormCache
 }
 
-// newCtx 创建请求上下文，并把 *Ctx 放进请求 context。
-// TraceID 在此生成 32 位十六进制随机值；需要接入自己的追踪体系时用 SetTraceID 覆盖。
+// newCtx 从池中取上下文（没有则新建），并装上本次请求。
+// TraceID 在 reset 里生成 32 位十六进制随机值；需要接入自己的追踪体系时用 SetTraceID 覆盖。
 func newCtx(w http.ResponseWriter, req *http.Request, a *App) *Ctx {
-	var b [16]byte
-	_, _ = rand.Read(b[:])
-
-	c := &Ctx{
-		W:       &ResponseWriter{w: w},
-		app:     a,
-		index:   -1,
-		start:   time.Now(),
-		traceid: hex.EncodeToString(b[:]),
+	c, _ := a.pool.Get().(*Ctx)
+	if c == nil {
+		c = &Ctx{W: new(ResponseWriter)}
 	}
-
-	// 路由闭包靠 context 取回 Ctx；ServeMux 把 Pattern/PathValue 写进请求副本，
-	// 所以必须用 WithContext 的副本。
-	c.R = req.WithContext(context.WithValue(req.Context(), ctxKey{}, c))
+	c.reset(w, req, a)
 	return c
+}
+
+// release 把上下文恢复成零值，只保留复用的 ResponseWriter；归还到池前调用。
+// release 把上下文清成零值并返回自身，供归还池使用。
+// 只有确认没有其他 goroutine 仍持有 c 时才能调用：流式响应、Hijack 后继续写、
+// 超时后仍在运行的处理器都会在归还后继续访问它，此时应标记 abandoned，
+// 等最后一个使用者结束后再释放。
+func (c *Ctx) release() *Ctx {
+	*c.W = ResponseWriter{}
+	*c = Ctx{W: c.W, store: c.store}
+	clear(c.store)
+	return c
+}
+
+// reset 给上下文装上本次请求的值；复用对象在归还时已由 release 清零。
+func (c *Ctx) reset(w http.ResponseWriter, req *http.Request, a *App) {
+	var b [16]byte
+	binary.LittleEndian.PutUint64(b[:8], rand.Uint64())
+	binary.LittleEndian.PutUint64(b[8:], rand.Uint64())
+
+	c.app = a
+	c.index = -1
+	c.start = time.Now()
+	c.traceid = hex.EncodeToString(b[:])
+	c.R = req.WithContext(context.WithValue(req.Context(), ctxKey{}, c)) // 路由闭包靠 context 取回 Ctx
+	c.W.w = w
 }
 
 // Body 返回请求体：首次调用读取并缓存，后续调用返回同一份结果（包括读取错误）。

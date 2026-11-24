@@ -25,17 +25,17 @@ type mieCtxCarrier interface{ mieCtx() *Ctx }
 func (c *Ctx) mieCtx() *Ctx { return c }
 
 // WithContext 为每个请求用 factory 构造上下文 C，处理器接收 *C。
-// C 必须嵌入 *Ctx，多层嵌套也必须遵循，否则会导致运行时上下文状态不一致。
-func (r *Router) WithContext[C any](factory func(*Ctx) *C) *TypedRouter[*C] {
-	if t := reflect.TypeFor[C](); factory != nil && t.Kind() == reflect.Struct && t.Implements(reflect.TypeFor[mieCtxCarrier]()) {
-		return &TypedRouter[*C]{r: r.snapshot(""), factory: func(c *Ctx) *C {
-			if tc := factory(c); tc != nil {
-				return tc
-			}
-			panic("mie: WithContext factory returned nil")
-		}}
+// C 必须是通过指针链嵌入 *Ctx 的结构体；值嵌入或命名字段在编译期被拒绝，指针上下文在注册期被拒绝。
+func (r *Router) WithContext[C mieCtxCarrier](factory func(*Ctx) *C) *TypedRouter[*C] {
+	if factory == nil || reflect.TypeFor[C]().Kind() != reflect.Struct {
+		panic("mie: WithContext requires a non-nil factory and a struct context")
 	}
-	panic("mie: WithContext requires a non-nil factory and C to be a struct embedding *Ctx")
+	return &TypedRouter[*C]{r: r.snapshot(""), factory: func(c *Ctx) *C {
+		if tc := factory(c); tc != nil && (*tc).mieCtx() == c {
+			return tc
+		}
+		panic("mie: WithContext factory returned nil or a *C with wrong *Ctx")
+	}}
 }
 
 // Use 追加中间件，只影响之后注册的路由。

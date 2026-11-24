@@ -12,13 +12,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 )
 
 const defaultMaxBodyBytes = 1 << 20
 
-// 零值可用，缺省项在 New 补齐。
+// Config 零值可用，缺省项在 New 补齐。
 type Config struct {
 	// ErrorHandler 只处理用户链返回的错误；panic 与 404/405 各有独立出口。
 	ErrorHandler func(c *Ctx, err error) error
@@ -50,6 +51,7 @@ type App struct {
 	*Router
 	mux    *http.ServeMux
 	config Config
+	pool   sync.Pool
 }
 
 // New 最多接受一个 Config，多传 panic。
@@ -93,10 +95,14 @@ func (a *App) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	c := newCtx(w, req, a)
 
 	defer func() {
+		// handlePanic 可能重抛（如 ErrAbortHandler），用内层 defer 保证一定归还。
+		defer func() { a.pool.Put(c.release()) }()
+
 		// multipart 文件可能落到磁盘，请求结束（含 panic）先删。
 		if f := c.R.MultipartForm; f != nil {
 			_ = f.RemoveAll()
 		}
+
 		if p := recover(); p != nil {
 			a.handlePanic(c, p)
 		}
@@ -110,10 +116,9 @@ func (a *App) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	a.mux.ServeHTTP(c.W, c.R)
-
-	// chain 只由命中路由的闭包赋值；nil 表示请求没进用户链（404/405/重定向），在这里补收尾。
-	if c.chain == nil {
+	// 启动 HTTP 服务。
+	// chain 只有命中路由闭包时赋值；nil 表示请求未进入处理器（404/405/重定向），在这里补收尾。
+	if a.mux.ServeHTTP(c.W, c.R); c.chain == nil {
 		c.finish(err)
 	}
 }

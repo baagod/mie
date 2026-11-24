@@ -217,52 +217,25 @@ func TestTypedMiddlewareBindsInput(t *testing.T) {
 }
 
 func TestWithContextRequiresFactory(t *testing.T) {
-	mustPanicWith(t, "mie: WithContext requires a non-nil factory and C to be a struct embedding *Ctx", func() {
+	mustPanicWith(t, "mie: WithContext requires a non-nil factory", func() {
 		New().WithContext[typedApp](nil)
 	})
 }
 
-// 工厂必须返回 *C，值类型的上下文已经写不出来；这里覆盖其余五种：命名字段、值嵌入 Ctx、C 是 *Ctx、C = Ctx、C 是指向接口的指针。
-func TestWithContextRequiresEmbeddedCtx(t *testing.T) {
-	const want = "mie: WithContext requires a non-nil factory and C to be a struct embedding *Ctx"
-
-	cases := []struct {
-		name string
-		f    func()
-	}{
-		{"wrapper", func() { New().WithContext(func(c *Ctx) *typedWrapper { return &typedWrapper{Ctx: c} }) }},
-		{"value-embed", func() { New().WithContext(func(*Ctx) *typedValueApp { return &typedValueApp{} }) }},
-		{"ptr-type", func() { New().WithContext(func(*Ctx) **Ctx { return nil }) }},
-		{"identity", func() { New().WithContext(func(c *Ctx) *Ctx { return c }) }},
-		{"interface", func() { New().WithContext(func(*Ctx) *error { return nil }) }},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			defer func() {
-				if p := recover(); p != want {
-					t.Fatalf("panic = %v, want %q", p, want)
-				}
-			}()
-
-			tc.f()
-		})
-	}
-}
-
-// typedWrapper 持有 *Ctx 但不是嵌入，注册期应被拒绝。
-type typedWrapper struct {
-	Ctx *Ctx
-}
-
-// typedValueApp 值嵌入 Ctx：工厂只能拷贝一份上下文，注册期应被拒绝。
-type typedValueApp struct {
-	Ctx
+// 指针类型能过接口约束（*Ctx 自身有 mieCtx），但 C 必须是结构体。
+func TestWithContextRejectsPointerContext(t *testing.T) {
+	mustPanicWith(t, "mie: WithContext requires a non-nil factory and a struct context", func() {
+		New().WithContext(func(c *Ctx) **Ctx { return &c })
+	})
 }
 
 // typedBase 指针嵌入 *Ctx；typedNestedApp 值嵌入 typedBase 属于允许的跨层形态。
 type typedBase struct{ *Ctx }
 type typedNestedApp struct{ typedBase }
+
+// typedValueInner 值嵌入 Ctx；typedValueNested 指针嵌入它，能通过约束，但持有的是 Ctx 拷贝。
+type typedValueInner struct{ Ctx }
+type typedValueNested struct{ *typedValueInner }
 
 // 工厂返回 nil 属于配置错误：在首次用到上下文处 panic，而不是把 nil 缓存进 store。
 func TestWithContextFactoryNilPanics(t *testing.T) {
@@ -276,8 +249,45 @@ func TestWithContextFactoryNilPanics(t *testing.T) {
 
 	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/nil", nil))
 
-	if s, _ := got.(string); s != "mie: WithContext factory returned nil" {
-		t.Fatalf("panic = %v, want factory returned nil", got)
+	if s, _ := got.(string); s != "mie: WithContext factory returned nil or a *C with wrong *Ctx" {
+		t.Fatalf("panic = %v, want factory returned nil or wrong *Ctx", got)
+	}
+}
+
+// 工厂返回的 *C 里的 *Ctx 必须就是本次请求的 c；遗忘字段或值嵌入拷贝都会在这里暴露。
+func TestWithContextRejectsCopiedCtx(t *testing.T) {
+	const want = "mie: WithContext factory returned nil or a *C with wrong *Ctx"
+
+	cases := []struct {
+		name string
+		run  func(r *App)
+	}{
+		{"nil-ctx", func(r *App) {
+			r.WithContext(func(*Ctx) *typedApp { return &typedApp{} }).
+				Get[struct{}, string]("/x", func(*typedApp, struct{}) (string, error) { return "x", nil })
+		}},
+		{"nested-value", func(r *App) {
+			r.WithContext(func(*Ctx) *typedValueNested {
+				return &typedValueNested{typedValueInner: &typedValueInner{}}
+			}).Get[struct{}, string]("/x", func(*typedValueNested, struct{}) (string, error) { return "x", nil })
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got any
+			r := New(Config{RecoverHandler: func(_ *Ctx, p *Panic) error {
+				got = p.Value
+				return nil
+			}})
+			tc.run(r)
+
+			r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", nil))
+
+			if s, _ := got.(string); s != want {
+				t.Fatalf("panic = %v, want %q", got, want)
+			}
+		})
 	}
 }
 

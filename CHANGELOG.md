@@ -2,6 +2,18 @@
 
 mie 的用户可见变更记录。格式参考 [Keep a Changelog](https://keepachangelog.com/)；已发布的条目只追加，不重写。
 
+## [Unreleased]
+
+### Changed
+
+**`WithContext` 的 `C` 改为编译期约束。** 签名从 `WithContext[C any]` 变为 `WithContext[C mieCtxCarrier]`（未导出接口）。值嵌入 `Ctx`、命名字段包装、`C = Ctx` 以前是注册期 panic，现在是编译错误；指针上下文（如 `**Ctx`）能过约束，但 `C` 不是结构体，仍在注册期 panic。通过指针链嵌入的写法不受影响。`factory == nil` 同样在注册期 panic；两处共用消息 `mie: WithContext requires a non-nil factory and a struct context`。
+
+**请求上下文改为复用。** `Ctx` 与 `ResponseWriter` 从 `sync.Pool` 取用，请求结束（含 panic）时清零并放回。处理器不得把 `*Ctx` 或其派生引用带出请求生命周期；跨请求持有会读到后续请求的状态。
+
+### Fixed
+
+**嵌套值嵌入不再静默拷贝上下文。** `type Inner struct{ Ctx }` + `type Outer struct{ *Inner }` 这类写法仍能通过编译，但工厂返回的 `*Outer` 持有的是 `Ctx` 的拷贝。现在首次用到上下文时会校验 `mieCtx()` 是否指回本次请求的 `*Ctx`，不等（包括未填 `Ctx` 字段的 nil 指针）就 panic `mie: WithContext factory returned nil or a *C with wrong *Ctx`，不再让链状态静默分叉。
+
 ## [0.3.0] - 2026-11-25
 
 ### Added
