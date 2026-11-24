@@ -39,7 +39,7 @@ app.Get("/me", func(c *AppCtx, _ struct{}) (User, error) {
 ## 已确认的决定
 
 - **D1 工厂执行时机：懒执行。** `factory` 懒在 `typedHandler` 的闭包里：该路由第一次处理请求时才执行，没人用 `C` 的路由不执行工厂；工厂内 panic 落在链内，`c.index` 能反映停在哪个中间件。
-- **D2 中间件签名：`Use` 同时收 `func(*Ctx, IN)` 与 `func(C, IN)` 两种形状。** 前者直接进链，不构造 `C`；后者在本位置构造 `C` 后调用，靠 `C` 上的 `Next()` 推进链（由嵌入 `*mie.Ctx` 提升而来）。两者之外的形状在注册期 panic——union 不允许类型参数，`C` 没法当约束，编译期拦不住。`WithContext` 收的是结构体 `C`，处理器拿到 `*C`，值类型的上下文在签名层就写不出来；`C` 没直接嵌入 `*Ctx` 则注册期 panic。
+- **D2 中间件签名：`Use` 同时收 `func(*Ctx, IN)` 与 `func(C, IN)` 两种形状。** 前者直接进链，不构造 `C`；后者在本位置构造 `C` 后调用，靠 `C` 上的 `Next()` 推进链（由嵌入 `*mie.Ctx` 提升而来）。两者之外的形状在注册期 panic——union 不允许类型参数，`C` 没法当约束，编译期拦不住。`WithContext` 收的是结构体 `C`，处理器拿到 `*C`，值类型的上下文在签名层就写不出来；`C` 没通过指针嵌入拿到 `*Ctx` 则注册期 panic（跨层只校验最外层，见下文边界）。
 - **D3 `WithContext` 返回快照。** 复制 `prefix`/`middlewares`（与 `Group` 走同一个 `Router.snapshot`；`in` 不随快照继承），typed 面 `Use` 不外溢到原 `Router`，两个 `WithContext` 互不影响。
 - **D4 工厂签名保持 `func(*Ctx) C`，不返回 error。** 拒绝请求只发生在中间件（不调 `Next` 即可）；工厂只做组装，`typedHandler` 里没有新的错误分支。
 
@@ -68,7 +68,7 @@ app.Get("/me", func(c *AppCtx, _ struct{}) (User, error) {
 - typed 入口的 nil：`Use` 的 typed 分支与 `TypedRouter.Handle` 都会先包成非 nil 闭包，`Router` 侧检查看不到，因此由 `typedHandler` 统一判 `h == nil`，panic `mie: TypedHandler must not be nil`。
 - 工厂返回 nil：注册期无法预跑工厂（伪造 `*Ctx` 会改变只读传入 `*Ctx` 的工厂语义），因此在请求期首次用到上下文时 panic `mie: WithContext factory returned nil`。
 - IN 与中间件 IN 的一致性：完全沿用 `Router.Use` 的 `r.in` 校验，TypedRouter 不新增规则。
-- `factory == nil` 与 `C` 的形态：注册期统一 panic `("mie: WithContext requires a non-nil factory and C to be a struct embedding *Ctx")`。`C` 是否直接嵌入 `*Ctx` 由 `WithContext` 检查（处理器拿到 `*C` 由返回类型保证），嵌入保证 `Next()`、`Header()` 这些方法全部提升上来；命名包装、指向接口、`C = Ctx` 都被拒绝。
+- `factory == nil` 与 `C` 的形态：注册期统一 panic `("mie: WithContext requires a non-nil factory and C to be a struct embedding *Ctx")`。是否「指针嵌入」由值类型 `C` 是否实现私有接口 `mieCtxCarrier` 判定：`*Ctx` 的 `mieCtx()` 经指针嵌入提升到值 `C`，值嵌入只提升到 `*C`，所以断言在值上就能区分两种嵌入；命名包装、值嵌入 `Ctx`、`C = Ctx`、指向接口的指针都被拒绝。跨层嵌入允许，但只校验最外层能否拿到方法，链上任何一层值嵌入 `Ctx` 都会拷贝上下文，由契约保证不这么写。
 
 ### 成本
 
@@ -79,7 +79,7 @@ app.Get("/me", func(c *AppCtx, _ struct{}) (User, error) {
 
 - 同一个 `Router` 调两次 `WithContext`、不同 `C`：两个独立键，互不影响。
 - 工厂看到的是**首次被调用那一刻**的 `store`。D1 懒执行下工厂在链上首次使用 `C` 的位置运行，所以它依赖的中间件（如写入 `*User` 的鉴权）必须排在首个用到 `C` 的元素之前（typed 中间件或 typed 处理器），否则工厂读到空值。
-- 处理器上下文恒为 `*C`，`C` 必须直接嵌入 `*Ctx`；`C = Ctx` 不放行（`Ctx` 没有嵌入自己），要直接用 `*Ctx` 就用 `Router`。多层嵌入（间接嵌入）也不放行，需要在每层都直接写 `*mie.Ctx`。
+- 处理器上下文恒为 `*C`，`C` 必须通过指针嵌入拿到 `*Ctx`（直接嵌或跨层嵌）；`C = Ctx` 不放行（`Ctx` 没有嵌入自己），要直接用 `*Ctx` 就用 `Router`。跨层时框架只校验最外层，链上每一层都必须是指针嵌入 `*Ctx`，任何一层值嵌入 `Ctx` 都会拷贝上下文、让状态分叉。
 - `Ctx` 不跨请求，`store` 随请求结束，不存在跨请求串值。
 
 ## 组合
@@ -95,4 +95,4 @@ app.Get("/me", func(c *AppCtx, _ struct{}) (User, error) {
 
 ## 测试
 
-行为用例在 `typed_test.go`，这里只记不显然的三条：`C` 不是「直接嵌入 `*Ctx` 的结构体」时注册期 panic；typed 中间件与处理器共享同一份绑定缓存；typed 面是快照，父层之后再 `Use` 不进 typed 面。
+行为用例在 `typed_test.go`，这里只记不显然的三条：`C` 没有通过指针嵌入拿到 `*Ctx`（含跨层）时注册期 panic；typed 中间件与处理器共享同一份绑定缓存；typed 面是快照，父层之后再 `Use` 不进 typed 面。

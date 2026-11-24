@@ -222,7 +222,7 @@ func TestWithContextRequiresFactory(t *testing.T) {
 	})
 }
 
-// 工厂必须返回 *C，值类型的上下文已经写不出来；这里覆盖其余三种：没嵌入 *Ctx、C 是 *Ctx、C 是指向接口的指针。
+// 工厂必须返回 *C，值类型的上下文已经写不出来；这里覆盖其余五种：命名字段、值嵌入 Ctx、C 是 *Ctx、C = Ctx、C 是指向接口的指针。
 func TestWithContextRequiresEmbeddedCtx(t *testing.T) {
 	const want = "mie: WithContext requires a non-nil factory and C to be a struct embedding *Ctx"
 
@@ -231,6 +231,8 @@ func TestWithContextRequiresEmbeddedCtx(t *testing.T) {
 		f    func()
 	}{
 		{"wrapper", func() { New().WithContext(func(c *Ctx) *typedWrapper { return &typedWrapper{Ctx: c} }) }},
+		{"value-embed", func() { New().WithContext(func(*Ctx) *typedValueApp { return &typedValueApp{} }) }},
+		{"ptr-type", func() { New().WithContext(func(*Ctx) **Ctx { return nil }) }},
 		{"identity", func() { New().WithContext(func(c *Ctx) *Ctx { return c }) }},
 		{"interface", func() { New().WithContext(func(*Ctx) *error { return nil }) }},
 	}
@@ -253,6 +255,15 @@ type typedWrapper struct {
 	Ctx *Ctx
 }
 
+// typedValueApp 值嵌入 Ctx：工厂只能拷贝一份上下文，注册期应被拒绝。
+type typedValueApp struct {
+	Ctx
+}
+
+// typedBase 指针嵌入 *Ctx；typedNestedApp 值嵌入 typedBase 属于允许的跨层形态。
+type typedBase struct{ *Ctx }
+type typedNestedApp struct{ typedBase }
+
 // 工厂返回 nil 属于配置错误：在首次用到上下文处 panic，而不是把 nil 缓存进 store。
 func TestWithContextFactoryNilPanics(t *testing.T) {
 	var got any
@@ -267,6 +278,23 @@ func TestWithContextFactoryNilPanics(t *testing.T) {
 
 	if s, _ := got.(string); s != "mie: WithContext factory returned nil" {
 		t.Fatalf("panic = %v, want factory returned nil", got)
+	}
+}
+
+// 跨层指针嵌入是允许的：typedNestedApp 值嵌入 typedBase 时拷贝的是 *Ctx 指针，整链仍共享真实 *Ctx。
+func TestWithContextAcceptsNestedPointerEmbed(t *testing.T) {
+	r := New()
+	app := r.WithContext(func(c *Ctx) *typedNestedApp {
+		return &typedNestedApp{typedBase: typedBase{Ctx: c}}
+	})
+	app.Use(func(a *typedNestedApp, _ struct{}) (any, error) { return nil, a.Next() })
+	app.Get("/nested", func(a *typedNestedApp, _ struct{}) (string, error) { return "nested", nil })
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nested", nil))
+
+	if rec.Code != http.StatusOK || rec.Body.String() != "nested" {
+		t.Fatalf("status = %d, body = %s, want 200 and nested", rec.Code, rec.Body.String())
 	}
 }
 
