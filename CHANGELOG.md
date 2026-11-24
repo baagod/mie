@@ -2,7 +2,22 @@
 
 mie 的用户可见变更记录。格式参考 [Keep a Changelog](https://keepachangelog.com/)；已发布的条目只追加，不重写。
 
-## [Unreleased]
+## [0.2.0] - 2026-11-25
+
+**破坏性变更：响应格式入口移到 `render` 包。** 0.1.0 的 `mie.JSON`、`mie.XML`、`mie.Formatted`、`mie.Media` 与 `Codecs.Order []Media` 不再存在；升级时按下面逐项替换：
+
+- `mie.JSON(v)` → `render.JSON(v)`
+- `mie.XML(v)` → `render.XML(v)`
+- `mie.Formatted` → `render.Formatted`（自定义格式实现该接口）
+- `mie.Media` / `mie.MediaJSON` 等 → `render.MediaJSON` 等常量；`Codecs.Order` 改为 `[]string`
+
+### Changed
+
+- **`Codecs.Order` 接受 `[]string`，未知媒体在 `New` 时 panic。** 以前只有 `Media` 常量能赋给 `Order`，拼写错误在编译期被挡住；现在任何字符串都能写进去。`New` 解析时精确匹配媒体名，拼错或带参数（如 `application/json; charset=utf-8`）会 panic，已知但未实现的媒体仍被跳过。
+
+### Removed
+
+- **`mie` 不再导出格式入口。** `JSON`、`XML`、`Formatted` 与 `Media` 移到新包 `render`；`mie.MIME*` 保留为 `render.Media*` 的别名，值不变。
 
 ## [0.1.0] - 2026-11-24
 
