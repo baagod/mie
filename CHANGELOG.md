@@ -2,6 +2,20 @@
 
 mie 的用户可见变更记录。格式参考 [Keep a Changelog](https://keepachangelog.com/)；已发布的条目只追加，不重写。
 
+## [0.3.0] - 2026-11-25
+
+### Added
+
+`WithContext` 接受跨层指针嵌入。 以前只有直接嵌入 `*Ctx` 的结构体能注册，`type App struct{ Base }`（`Base` 内嵌 `*Ctx`）会在注册期 panic，现在这种写法可用。注册期改为检查值 `C` 是否实现了私有接口 `mieCtxCarrier`：指针嵌入把 `*Ctx` 的 `mieCtx()` 提升到值 `C`，值嵌入只提升到 `*C`，两种形态仍能区分。
+
+### Changed
+
+**`WithContext` 的校验从 “扫描顶层匿名字段” 改为 “值类型方法集”。**
+
+### Known issues
+
+跨层嵌入值 `Ctx`，注册仍会通过。例如 `type Inner struct{ Ctx }`、`type Outer struct{ *Inner }`：`Outer` 从 `*Inner` 拿到提升的 `mieCtx()`，注册成功，但它持有的是 `Ctx` 的拷贝。框架只校验最外层；这种写法要求每一层都用指针嵌入。
+
 ## [0.2.0] - 2026-11-25
 
 **破坏性变更：响应格式入口移到 `render` 包。** 0.1.0 的 `mie.JSON`、`mie.XML`、`mie.Formatted`、`mie.Media` 与 `Codecs.Order []Media` 不再存在；升级时按下面逐项替换：
@@ -13,11 +27,11 @@ mie 的用户可见变更记录。格式参考 [Keep a Changelog](https://keepac
 
 ### Changed
 
-- **`Codecs.Order` 接受 `[]string`，未知媒体在 `New` 时 panic。** 以前只有 `Media` 常量能赋给 `Order`，拼写错误在编译期被挡住；现在任何字符串都能写进去。`New` 解析时精确匹配媒体名，拼错或带参数（如 `application/json; charset=utf-8`）会 panic，已知但未实现的媒体仍被跳过。
+**`Codecs.Order` 接受 `[]string`，未知媒体在 `New` 时 panic。** 以前只有 `Media` 常量能赋给 `Order`，拼写错误在编译期被挡住；现在任何字符串都能写进去。`New` 解析时精确匹配媒体名，拼错或带参数（如 `application/json; charset=utf-8`）会 panic，已知但未实现的媒体仍被跳过。
 
 ### Removed
 
-- **`mie` 不再导出格式入口。** `JSON`、`XML`、`Formatted` 与 `Media` 移到新包 `render`；`mie.MIME*` 保留为 `render.Media*` 的别名，值不变。
+**`mie` 不再导出格式入口。** `JSON`、`XML`、`Formatted` 与 `Media` 移到新包 `render`；`mie.MIME*` 保留为 `render.Media*` 的别名，值不变。
 
 ## [0.1.0] - 2026-11-24
 
@@ -51,4 +65,4 @@ mie 的用户可见变更记录。格式参考 [Keep a Changelog](https://keepac
 
 ### Deliberate omissions
 
-- **不做 OpenAPI**，这是框架之外的关注点。
+**不做 OpenAPI**，这是框架之外的关注点。
