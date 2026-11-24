@@ -1,5 +1,7 @@
 package mie
 
+import "github.com/baagod/mie/render"
+
 // 协议头名
 const (
 	HeaderVary                = "Vary"
@@ -13,10 +15,10 @@ const (
 const (
 	MIMEAny                = "*/*"
 	MIMEAppAny             = "application/*"
-	MIMEXML                = "application/xml"
-	MIMEJSON               = "application/json"
-	MIMETOML               = "application/toml"
-	MIMEYAML               = "application/yaml"
+	MIMEXML                = render.MediaXML
+	MIMEJSON               = render.MediaJSON
+	MIMETOML               = render.MediaTOML
+	MIMEYAML               = render.MediaYAML
 	MIMETextCSS            = "text/css"
 	MIMETextCSV            = "text/csv"
 	MIMEImagePNG           = "image/png"
@@ -25,10 +27,10 @@ const (
 	MIMEImageJPEG          = "image/jpeg"
 	MIMEImageWebP          = "image/webp"
 	MIMETextPlain          = "text/plain"
-	MIMEMsgPack            = "application/msgpack"
-	MIMEProtobuf           = "application/x-protobuf"
-	MIMECBOR               = "application/cbor"
-	MIMEBSON               = "application/bson"
+	MIMEMsgPack            = render.MediaMsgPack
+	MIMEProtobuf           = render.MediaProtobuf
+	MIMECBOR               = render.MediaCBOR
+	MIMEBSON               = render.MediaBSON
 	MIMETextHTMLUTF8       = MIMETextHTML + "; charset=utf-8"
 	MIMEMultipartForm      = "multipart/form-data"
 	MIMETextPlainUTF8      = MIMETextPlain + "; charset=utf-8"

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/baagod/mie/render"
 	"io"
 	"mime"
 	"net"
@@ -204,7 +205,7 @@ func (c *Ctx) StatusCode() int {
 }
 
 // Send 输出 v：nil 表示没有 body，只提交状态码；类型化 nil 指针交给编码器，JSON 下写出 null。
-// Formatted 显式声明格式，必须有对应编码器；处理器事先设了 Content-Type 时以它为准；
+// render.Formatted 显式声明格式，必须有对应编码器；处理器事先设了 Content-Type 时以它为准；
 // 裸值按 Accept 从已注册格式里选（默认 JSON，可用 Codecs.Order 改），没有编码器时 string/[]byte 按原字节写出。
 // 无法满足时 406；提交由请求收尾负责，返回的错误交给 ErrorHandler。
 func (c *Ctx) Send(v any) error {
@@ -219,7 +220,7 @@ func (c *Ctx) Send(v any) error {
 		return nil
 	}
 
-	if r, ok := v.(Formatted); ok {
+	if r, ok := v.(render.Formatted); ok {
 		media, value := r.Format()
 		return c.sendFormat(value, media, false) // 显式格式覆盖 Accept，不设 Vary。
 	}

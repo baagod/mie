@@ -6,22 +6,9 @@ import (
 	"slices"
 )
 
-type Media string
-
-const (
-	MediaJSON     Media = MIMEJSON
-	MediaXML      Media = MIMEXML
-	MediaTOML     Media = MIMETOML
-	MediaYAML     Media = MIMEYAML
-	MediaMsgPack  Media = MIMEMsgPack
-	MediaProtobuf Media = MIMEProtobuf
-	MediaCBOR     Media = MIMECBOR
-	MediaBSON     Media = MIMEBSON
-)
-
-var mediaOffers = [8]Media{
-	MediaJSON, MediaXML, MediaTOML, MediaYAML,
-	MediaMsgPack, MediaProtobuf, MediaCBOR, MediaBSON,
+var mediaOffers = [8]string{
+	MIMEJSON, MIMEXML, MIMETOML, MIMEYAML,
+	MIMEMsgPack, MIMEProtobuf, MIMECBOR, MIMEBSON,
 }
 
 // Encoder 把值编码成媒体类型的字节；Content-Type 由格式的媒体类型决定。
@@ -49,7 +36,8 @@ type Codecs struct {
 
 	// Order 是 Accept 通配时的优先级：列出的媒体按此顺序排在前，其余按声明序
 	// （JSON、XML、TOML、YAML、MsgPack、Protobuf、CBOR、BSON）追加。
-	Order []Media
+	// 条目必须是裸媒体类型（小写、不带参数），否则 New 会 panic。
+	Order []string
 
 	parsed  []string         // 由 New 填充的有序媒体名，运行时只读它。
 	entries map[string]Codec // 由 New 填充的媒体表，运行时只读它。
@@ -106,15 +94,14 @@ func (c *Codecs) resolve() {
 		MIMECBOR: c.CBOR, MIMEBSON: c.BSON,
 	}
 
-	for i, o := range c.Order {
-		media := string(o)
+	for i, media := range c.Order {
 		codec, ok := c.entries[media]
 
 		if !ok {
 			panic("mie: Order lists unknown media " + media)
 		}
 
-		if slices.Contains(c.Order[:i], o) {
+		if slices.Contains(c.Order[:i], media) {
 			panic("mie: Order lists " + media + " twice")
 		}
 
@@ -123,9 +110,8 @@ func (c *Codecs) resolve() {
 		}
 	}
 
-	for _, s := range mediaOffers {
-		media := string(s)
-		if !slices.Contains(c.Order, s) && c.entries[media].Encode != nil {
+	for _, media := range mediaOffers {
+		if !slices.Contains(c.Order, media) && c.entries[media].Encode != nil {
 			parsed = append(parsed, media)
 		}
 	}

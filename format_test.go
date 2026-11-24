@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"errors"
+	"github.com/baagod/mie/render"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -96,7 +97,7 @@ type xmlUser struct{ Name string }
 // 自定义渲染器只声明格式：框架用该格式的编码器编码，Accept 被忽略，也不设 Vary。
 func TestSendFormattedDeclaresFormat(t *testing.T) {
 	r := New()
-	r.Get("/user", func(c *Ctx, _ struct{}) (Formatted, error) {
+	r.Get("/user", func(c *Ctx, _ struct{}) (render.Formatted, error) {
 		return customFormatted{media: MIMEXML, value: xmlUser{Name: "bob"}}, nil
 	})
 
@@ -122,7 +123,7 @@ func TestSendFormattedDeclaresFormat(t *testing.T) {
 // 声明的格式没有编码器、值也不是字节：这是代码写错了，报错而不是悄悄换个格式。
 func TestSendFormattedWithoutEncoderFails(t *testing.T) {
 	r := New()
-	r.Get("/raw", func(c *Ctx, _ struct{}) (Formatted, error) {
+	r.Get("/raw", func(c *Ctx, _ struct{}) (render.Formatted, error) {
 		return customFormatted{media: "application/x-unknown", value: struct{ A int }{1}}, nil
 	})
 
@@ -145,7 +146,7 @@ func TestSendFormattedBytesWithoutEncoderFails(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := New()
-			r.Get("/raw", func(c *Ctx, _ struct{}) (Formatted, error) {
+			r.Get("/raw", func(c *Ctx, _ struct{}) (render.Formatted, error) {
 				return customFormatted{media: "text/csv", value: value}, nil
 			})
 
@@ -283,7 +284,7 @@ func TestSendNegotiatesStructByAccept(t *testing.T) {
 func TestSendBareValueFollowsOrder(t *testing.T) {
 	type user struct{ Name string }
 
-	ordered := New(Config{Codecs: Codecs{Order: []Media{MediaXML, MediaJSON}}})
+	ordered := New(Config{Codecs: Codecs{Order: []string{render.MediaXML, render.MediaJSON}}})
 	ordered.Get("/user", func(c *Ctx, _ struct{}) (user, error) { return user{Name: "alice"}, nil })
 
 	plain := New()
@@ -494,7 +495,7 @@ func TestSendFormattedUsesConfiguredEncoder(t *testing.T) {
 	r := New(Config{Codecs: Codecs{MsgPack: Codec{Encode: func(any) ([]byte, error) {
 		return []byte("msgpack"), nil
 	}}}})
-	r.Get("/user", func(c *Ctx, _ struct{}) (Formatted, error) {
+	r.Get("/user", func(c *Ctx, _ struct{}) (render.Formatted, error) {
 		return customFormatted{media: MIMEMsgPack, value: map[string]string{"name": "bob"}}, nil
 	})
 
@@ -517,7 +518,7 @@ func TestCodecsOrderControlsPriority(t *testing.T) {
 	r := New(Config{Codecs: Codecs{
 		TOML:    Codec{Encode: func(any) ([]byte, error) { return []byte("toml"), nil }},
 		MsgPack: Codec{Encode: func(any) ([]byte, error) { return []byte("msgpack"), nil }},
-		Order:   []Media{MediaMsgPack, MediaTOML},
+		Order:   []string{render.MediaMsgPack, render.MediaTOML},
 	}})
 	png := []byte("\x89PNG\r\n\x1a\nraw-bytes")
 	r.Get("/png", func(c *Ctx, _ struct{}) ([]byte, error) { return png, nil })
@@ -542,15 +543,15 @@ func TestCodecsResolveOrder(t *testing.T) {
 	tests := []struct {
 		name string
 		cfg  Codecs
-		ord  []Media
+		ord  []string
 		want []string
 	}{
 		{"default", Codecs{}, nil, []string{MIMEJSON, MIMEXML}},
 		{"media appended", Codecs{MsgPack: Codec{Encode: enc}}, nil, []string{MIMEJSON, MIMEXML, MIMEMsgPack}},
 		{"declaration order", Codecs{YAML: Codec{Encode: enc}, TOML: Codec{Encode: enc}}, nil, []string{MIMEJSON, MIMEXML, MIMETOML, MIMEYAML}},
-		{"order pulls media forward", Codecs{MsgPack: Codec{Encode: enc}}, []Media{MediaMsgPack}, []string{MIMEMsgPack, MIMEJSON, MIMEXML}},
-		{"order reorders builtins", Codecs{}, []Media{MediaXML, MediaJSON}, []string{MIMEXML, MIMEJSON}},
-		{"order skips unimplemented", Codecs{}, []Media{MediaMsgPack}, []string{MIMEJSON, MIMEXML}},
+		{"order pulls media forward", Codecs{MsgPack: Codec{Encode: enc}}, []string{render.MediaMsgPack}, []string{MIMEMsgPack, MIMEJSON, MIMEXML}},
+		{"order reorders builtins", Codecs{}, []string{render.MediaXML, render.MediaJSON}, []string{MIMEXML, MIMEJSON}},
+		{"order skips unimplemented", Codecs{}, []string{render.MediaMsgPack}, []string{MIMEJSON, MIMEXML}},
 		{"decode-only media not offered", Codecs{MsgPack: Codec{Decode: func([]byte, any) error { return nil }}}, nil, []string{MIMEJSON, MIMEXML}},
 		{"all media", Codecs{TOML: Codec{Encode: enc}, YAML: Codec{Encode: enc}, MsgPack: Codec{Encode: enc}, Protobuf: Codec{Encode: enc}, CBOR: Codec{Encode: enc}, BSON: Codec{Encode: enc}}, nil, []string{MIMEJSON, MIMEXML, MIMETOML, MIMEYAML, MIMEMsgPack, MIMEProtobuf, MIMECBOR, MIMEBSON}},
 	}
@@ -573,8 +574,8 @@ func TestCodecsOrderRejectsBadInput(t *testing.T) {
 		name string
 		cfg  Config
 	}{
-		{"unknown media", Config{Codecs: Codecs{Order: []Media{"application/x-unknown"}}}},
-		{"duplicate media", Config{Codecs: Codecs{Order: []Media{MediaJSON, MediaJSON}}}},
+		{"unknown media", Config{Codecs: Codecs{Order: []string{"application/x-unknown"}}}},
+		{"duplicate media", Config{Codecs: Codecs{Order: []string{render.MediaJSON, render.MediaJSON}}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			defer func() {
@@ -624,8 +625,8 @@ func TestSendUnregisteredFormatIs406(t *testing.T) {
 
 func TestJSONForcesJSON(t *testing.T) {
 	r := New()
-	r.Get("/user", func(c *Ctx, _ struct{}) (Formatted, error) {
-		return JSON(map[string]string{"name": "bob"}), nil
+	r.Get("/user", func(c *Ctx, _ struct{}) (render.Formatted, error) {
+		return render.JSON(map[string]string{"name": "bob"}), nil
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/user", nil)
@@ -651,8 +652,8 @@ func TestJSONUsesConfiguredEncoder(t *testing.T) {
 	r := New(Config{Codecs: Codecs{JSON: Codec{Encode: func(any) ([]byte, error) {
 		return []byte(`custom`), nil
 	}}}})
-	r.Get("/user", func(c *Ctx, _ struct{}) (Formatted, error) {
-		return JSON(struct{}{}), nil
+	r.Get("/user", func(c *Ctx, _ struct{}) (render.Formatted, error) {
+		return render.JSON(struct{}{}), nil
 	})
 
 	rec := httptest.NewRecorder()
@@ -668,8 +669,8 @@ func TestJSONUsesConfiguredEncoder(t *testing.T) {
 
 func TestXMLForcesXML(t *testing.T) {
 	r := New()
-	r.Get("/user", func(c *Ctx, _ struct{}) (Formatted, error) {
-		return XML(xmlUser{Name: "bob"}), nil
+	r.Get("/user", func(c *Ctx, _ struct{}) (render.Formatted, error) {
+		return render.XML(xmlUser{Name: "bob"}), nil
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/user", nil)
@@ -689,8 +690,8 @@ func TestXMLUsesConfiguredEncoder(t *testing.T) {
 	r := New(Config{Codecs: Codecs{XML: Codec{Encode: func(any) ([]byte, error) {
 		return []byte("<custom/>"), nil
 	}}}})
-	r.Get("/user", func(c *Ctx, _ struct{}) (Formatted, error) {
-		return XML(xmlUser{Name: "bob"}), nil
+	r.Get("/user", func(c *Ctx, _ struct{}) (render.Formatted, error) {
+		return render.XML(xmlUser{Name: "bob"}), nil
 	})
 
 	rec := httptest.NewRecorder()
