@@ -2,7 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/baagod/mie.svg)](https://pkg.go.dev/github.com/baagod/mie)
 
-一个基于 Go `net/http` 的框架，旨在提供更简洁的 API 设计与开发体验。
+一个基于 `net/http` 的 Go HTTP 框架，旨在提供更简洁的 API 设计与开发体验。
 
 > 我猛地扑到电脑前，双手颤抖着抚摸屏幕上的代码块，就像是在抚摸神明的经文。
 > 
@@ -48,7 +48,9 @@ func main() {
 
 mie 会根据 `in` 字段 `tag`，按顺序绑定：`body` → `form` ( `url` 优先 ) → `cookie` → `header` → `path`。
 
-然而，在一些场景下，我们并不始终需要绑定输入或必须返回错误。例如，只想在中间件返回错误，并且只在最终处理器返回响应体时，可以这样做：
+然而，在一些场景中，我们并不始终需要绑定输入或必须返回错误。此时，可以通过将输入类型为 `struct{}` 忽略绑定。
+
+例如，如果只想在中间件返回错误，并只在最终处理器返回响应体时，可以这样做：
 
 ```go
 r.Use(mie.He(func(c *mie.Ctx, _ struct{}) error {
@@ -59,5 +61,3 @@ r.Get("/hello", mie.Ho(func(c *mie.Ctx, _ struct{}) string {
     return "hello"
 }))
 ```
-
-通过将输入指定为 `struct{}` 类型，即可忽略绑定。
