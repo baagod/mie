@@ -33,6 +33,23 @@ func TestHeAdapter(t *testing.T) {
 	}
 }
 
+func TestHoAdapter(t *testing.T) {
+	type in struct {
+		ID int `path:"id"`
+	}
+
+	r := New()
+	r.Get("/ho/{id}", Ho(func(c *Ctx, v in) int {
+		return v.ID * 2
+	}))
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ho/7", nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "14" {
+		t.Fatalf("status=%d body=%q, want 200 14", rec.Code, rec.Body.String())
+	}
+}
+
 func TestOUTRules(t *testing.T) {
 	r := New()
 	r.Get("/zero", func(c *Ctx, _ struct{}) (int, error) { return 0, nil })
