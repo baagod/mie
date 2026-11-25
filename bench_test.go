@@ -59,8 +59,28 @@ func (w *nopWriter) WriteHeader(code int) {
 	}
 }
 
-func newBenchApp() *App {
-	app := New(Config{Logger: slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: LevelTrace}))})
+// benchLogger 代表开箱配置：访问日志真的格式化一遍（7 个属性、TextHandler），再把字节丢掉。
+func benchLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: LevelTrace}))
+}
+
+// benchServe 只对带 body 的请求复位 body，免得给 GET 凭空塞一个 body 触发 MaxBytesReader。
+func benchServe(b *testing.B, app *App, req *http.Request) {
+	w := newNopWriter()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		w.reset()
+		if req.Body != http.NoBody {
+			resetBody(req)
+		}
+		app.ServeHTTP(w, req)
+	}
+}
+
+func newBenchApp(l *slog.Logger) *App {
+	app := New(Config{Logger: l})
 	app.Get("/hello", func(_ *Ctx, _ struct{}) (benchOut, error) {
 		return benchOut{OK: true}, nil
 	})
@@ -77,47 +97,46 @@ func resetBody(req *http.Request) {
 	req.Body = io.NopCloser(bytes.NewReader(benchBody))
 }
 
-func BenchmarkPlaintext(b *testing.B) {
-	app := newBenchApp()
-	req := httptest.NewRequest(http.MethodGet, "/hello", nil)
-	w := newNopWriter()
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for b.Loop() {
-		w.reset()
-		app.ServeHTTP(w, req)
-	}
+func benchPlainReq() *http.Request {
+	return httptest.NewRequest(http.MethodGet, "/hello", nil)
 }
 
-func BenchmarkJSONBody(b *testing.B) {
-	app := newBenchApp()
+func benchJSONReq() *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/json", bytes.NewReader(benchBody))
 	req.Header.Set(HeaderContentType, MIMEJSON)
-	w := newNopWriter()
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for b.Loop() {
-		w.reset()
-		resetBody(req)
-		app.ServeHTTP(w, req)
-	}
+	return req
 }
 
-func BenchmarkBindSources(b *testing.B) {
-	app := newBenchApp()
+func benchFullReq() *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/full?page=3&sort=name", bytes.NewReader(benchBody))
 	req.Header.Set(HeaderContentType, MIMEJSON)
 	req.Header.Set("X-Tag", "t")
 	req.Header.Set("Cookie", "sid=abc")
-	w := newNopWriter()
+	return req
+}
 
-	b.ReportAllocs()
-	b.ResetTimer()
-	for b.Loop() {
-		w.reset()
-		resetBody(req)
-		app.ServeHTTP(w, req)
-	}
+// 同一负载测两档 Logger：开箱配置（访问日志全量格式化）与 slog.DiscardHandler（Enabled 恒 false）。
+
+func BenchmarkPlaintext(b *testing.B) {
+	benchServe(b, newBenchApp(benchLogger()), benchPlainReq())
+}
+
+func BenchmarkPlaintextNoLog(b *testing.B) {
+	benchServe(b, newBenchApp(slog.New(slog.DiscardHandler)), benchPlainReq())
+}
+
+func BenchmarkJSONBody(b *testing.B) {
+	benchServe(b, newBenchApp(benchLogger()), benchJSONReq())
+}
+
+func BenchmarkJSONBodyNoLog(b *testing.B) {
+	benchServe(b, newBenchApp(slog.New(slog.DiscardHandler)), benchJSONReq())
+}
+
+func BenchmarkBindSources(b *testing.B) {
+	benchServe(b, newBenchApp(benchLogger()), benchFullReq())
+}
+
+func BenchmarkBindSourcesNoLog(b *testing.B) {
+	benchServe(b, newBenchApp(slog.New(slog.DiscardHandler)), benchFullReq())
 }
