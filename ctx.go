@@ -20,8 +20,6 @@ import (
 )
 
 type (
-	// ctxKey 是请求 context 中存放 *Ctx 的键
-	ctxKey struct{}
 	// bodyKey 是 store 中缓存 Body 读取结果的键
 	bodyKey struct{}
 	// bindKey 是 store 中缓存已绑定 IN 的键；按 IN 类型分别缓存
@@ -38,7 +36,7 @@ type reqBody struct {
 // 由框架池化复用：只在本次请求内使用，不要跨 goroutine 共享，也不要带出请求生命周期。
 type Ctx struct {
 	W *ResponseWriter // 响应写入器
-	R *http.Request   // 带 Ctx 的请求副本
+	R *http.Request   // 本次请求；不复制、不改写
 
 	app     *App
 	chain   []Handler
@@ -81,7 +79,7 @@ func (c *Ctx) reset(w http.ResponseWriter, req *http.Request, a *App) {
 	c.index = -1
 	c.start = time.Now()
 	c.traceid = hex.EncodeToString(b[:])
-	c.R = req.WithContext(context.WithValue(req.Context(), ctxKey{}, c)) // 路由闭包靠 context 取回 Ctx
+	c.R = req
 	c.W.w = w
 }
 
@@ -408,7 +406,7 @@ func (c *Ctx) writeError(err error) {
 		status = e.Status
 	}
 
-	if h := c.W.Header(); !c.W.wroteHeader {
+	if h := c.W.Header(); !c.W.written {
 		h.Set(HeaderContentType, MIMETextPlainUTF8)
 		h.Set(HeaderXContentTypeOptions, MIMEContentTypeNosniff)
 		c.W.WriteHeader(status)

@@ -335,7 +335,7 @@ func TestCtxStatusInformationalIsImmediate(t *testing.T) {
 	if got := c.StatusCode(); got != http.StatusEarlyHints {
 		t.Fatalf("StatusCode = %d, want 103", got)
 	}
-	if c.W.wroteHeader {
+	if c.W.written {
 		t.Fatal("1xx must not commit the final header")
 	}
 

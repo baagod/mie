@@ -109,18 +109,24 @@ func (a *App) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}()
 
 	// ServeMux 自己写的 404/405 在 writer 层被截下交给钩子，默认错误体不再发出。
-	var err error
 	if a.config.NoMatchHandler != nil {
-		c.W.noMatch = func() {
-			err = a.config.NoMatchHandler(c)
+		c.W.mux.noMatch = func() {
+			c.W.mux.noMatchErr = a.config.NoMatchHandler(c)
 		}
 	}
 
-	// 启动 HTTP 服务。
-	// chain 只有命中路由闭包时赋值；nil 表示请求未进入处理器（404/405/重定向），在这里补收尾。
-	if a.mux.ServeHTTP(c.W, c.R); c.chain == nil {
-		c.finish(err)
+	a.mux.ServeHTTP(c.W, c.R)
+
+	// 404/405 的钩子在 mux 内部执行，错误只能先存在 writer 上，这里取出来当本次的 err。
+	err := c.W.mux.noMatchErr
+
+	if c.chain = c.W.mux.chain; c.chain != nil {
+		if err = c.Next(); err != nil && !c.IsCanceled() {
+			err = a.config.ErrorHandler(c, err)
+		}
 	}
+
+	c.finish(err)
 }
 
 // Run 在 addr 上监听，空则 ":8080"。certFiles 传两个路径（cert、key）时走 HTTPS。
@@ -229,7 +235,7 @@ func (a *App) handlePanic(c *Ctx, p any) {
 	}
 
 	err := a.config.RecoverHandler(c, NewPanic(c, p))
-	if c.W.wroteHeader || c.W.hijacked {
+	if c.W.written || c.W.hijacked {
 		// 响应已发出，状态不可信：再写只会污染半截响应，按中止交给 net/http。
 		panic(http.ErrAbortHandler)
 	}

@@ -9,25 +9,37 @@ import (
 	"time"
 )
 
-// ResponseWriter 包装底层 http.ResponseWriter：跟踪状态码与提交状态，并承载 NoMatch 接管。
-type ResponseWriter struct {
-	w           http.ResponseWriter
-	status      int  // 最近设置的状态码；0 表示未设置（默认 200）
-	wroteHeader bool // 最终状态是否已写出
-	hijacked    bool // 连接是否已交给调用方
+type muxState struct {
+	chain []Handler // 非 nil 即命中，App.ServeHTTP 据此派发
 
 	// noMatch 由 App 在启用 NoMatchHandler 时挂上：ServeMux 自写的 404/405 先交给钩子，
-	// 默认错误体不再发给客户端；钩子从 w.status/StatusCode() 读状态码。
+	// 默认错误体不再发给客户端；钩子从 ResponseWriter.status/StatusCode() 读状态码。
 	noMatch func()
+
+	// noMatchErr 存钩子返回的错误，App.ServeHTTP 在 mux 返回后取出来收尾。
+	noMatchErr error
 
 	// discard 在钩子接管后置位：http.Error 紧随 WriteHeader 的默认文本要被丢弃。
 	discard bool
 }
 
+// ResponseWriter 包装底层 http.ResponseWriter：跟踪状态码与提交状态，并承载 NoMatch 接管。
+type ResponseWriter struct {
+	w        http.ResponseWriter
+	status   int  // 最近设置的状态码；0 表示未设置（默认 200）
+	written  bool // 最终状态是否已写出
+	hijacked bool // 连接是否已交给调用方
+
+	// mux 是穿过 ServeMux 边界的交接区：它只把 writer 交给自己注册的处理器，
+	// 命中的链与 404/405 的接管状态都只能从这里过。命中时注册的闭包写入 chain，
+	// App.ServeHTTP 读它派发；404/405 与规范化重定向不会被写入，chain 保持 nil。
+	mux muxState
+}
+
 // StatusCode 返回本次响应最终会写出的状态码；没有最终响应时为 0。
 // 已写出最终头（含 101）如实返回；未写头就被 Hijack，说明不会有 HTTP 响应，返回 0。
 func (w *ResponseWriter) StatusCode() int {
-	if w.wroteHeader {
+	if w.written {
 		return w.status
 	}
 
@@ -45,7 +57,7 @@ func (w *ResponseWriter) StatusCode() int {
 // SetStatus 设置状态码。1xx 立即经 WriteHeader 写出（仅 101 锁成最终状态）；
 // 其余码先记下，等写 body、Flush 或 ReadFrom 时提交。已出最终头或已 Hijack 后无效。
 func (w *ResponseWriter) SetStatus(code int) {
-	if w.hijacked || w.wroteHeader {
+	if w.hijacked || w.written {
 		return
 	}
 
@@ -70,21 +82,21 @@ func (w *ResponseWriter) WriteHeader(code int) {
 	// ServeMux 自己写 404/405 时交给钩子：先摘掉钩子再调，避免钩子里 writeError
 	// 再写 404/405 时重新进入本分支递归；http.Error 预置的 Content-Type/nosniff
 	// 与 405 的 Allow 保留不动，接管后响应头归钩子。
-	if f := w.noMatch; f != nil && (code == http.StatusNotFound || code == http.StatusMethodNotAllowed) {
-		w.noMatch = nil
+	if f := w.mux.noMatch; f != nil && (code == http.StatusNotFound || code == http.StatusMethodNotAllowed) {
+		w.mux.noMatch = nil
 		w.status = code
 		f()
 
-		w.discard = true
+		w.mux.discard = true
 		// 这里不提交：钩子静默时交给 ServeHTTP 的 finish 提交拦截到的 404/405；
 		// 钩子写过响应时 commit 自然是 no-op。
 		return
 	}
 
-	if !w.wroteHeader {
+	if !w.written {
 		checkStatus(code)
 		if w.status = code; code >= 200 || code == 101 {
-			w.wroteHeader = true
+			w.written = true
 		}
 	}
 
@@ -93,7 +105,7 @@ func (w *ResponseWriter) WriteHeader(code int) {
 
 // Write 写响应体；接管期间丢弃默认错误体。
 func (w *ResponseWriter) Write(p []byte) (int, error) {
-	if w.discard {
+	if w.mux.discard {
 		// http.Error 在 WriteHeader 后还会 Fprintln 一段默认文本，丢弃它。
 		return len(p), nil
 	}
@@ -180,7 +192,7 @@ func (w *ResponseWriter) EnableFullDuplex() error {
 // commit 保证写 body/Flush 前先出最终头（0 或 1xx 补 200）；Hijack 后不再写头。
 // 101 已由 WriteHeader 锁成最终状态，不会走到这里。
 func (w *ResponseWriter) commit() {
-	if w.hijacked || w.wroteHeader {
+	if w.hijacked || w.written {
 		return
 	}
 

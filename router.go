@@ -88,19 +88,10 @@ func (r *Router) Handle[IN, OUT any](method, pattern string, h HandlerFunc[IN, O
 	}
 
 	chain := slices.Concat(r.middlewares, []Handler{handler(h)})
-
-	r.app.mux.Handle(method+" "+r.join(pattern), http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
-		// Ctx 由 ServeHTTP 创建并挂在 context 上；这里只负责跑链。
-		c := req.Context().Value(ctxKey{}).(*Ctx)
-		c.chain = chain
-		c.W.noMatch = nil // 进入路由闭包后，404/405 都算业务响应。
-
-		err := c.Next()
-		if err != nil && !c.IsCanceled() {
-			err = r.app.config.ErrorHandler(c, err)
-		}
-
-		c.finish(err)
+	r.app.mux.Handle(method+" "+r.join(pattern), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		rw := w.(*ResponseWriter)
+		rw.mux.chain = chain
+		rw.mux.noMatch = nil
 	}))
 
 	return r
