@@ -25,7 +25,7 @@ type mieCtxCarrier interface{ mieCtx() *Ctx }
 func (c *Ctx) mieCtx() *Ctx { return c }
 
 // WithContext 为每个请求用 factory 构造上下文 C，处理器接收 *C。
-// C 必须是通过指针链嵌入 *Ctx 的结构体；值嵌入或命名字段在编译期被拒绝，指针上下文在注册期被拒绝。
+// C 必须嵌入 *Ctx 结构体。
 func (r *Router) WithContext[C mieCtxCarrier](factory func(*Ctx) *C) *TypedRouter[*C] {
 	if factory == nil || reflect.TypeFor[C]().Kind() != reflect.Struct {
 		panic("mie: WithContext requires a non-nil factory and a struct context")
