@@ -4,68 +4,69 @@
 
 ## 1. 测量条件
 
-- 时间：2026-11-18；Windows 11；Intel i7-8700K；Go 1.27.3；GOMAXPROCS=12。
-- 命令：`go test -run '^$' -bench . -benchmem -count=3`，取三轮中位数。
+- 时间：2026-11-25；Windows 11；Intel i7-8700K；Go 1.27.4；GOMAXPROCS=12。
+- 命令：`go test -run '^$' -bench . -benchmem -count=5`，取中位数。
 - 写入器：`nopWriter`（复用 header map，避免 `httptest.ResponseRecorder` 的分配）；不含网络、TLS 与真实编码器差异。
+- 本表三列全部由仓库外 `../benchcmp` 在同一进程、同一 harness 里跑出（`replace github.com/baagod/mie => ../mux`），跨库倍率只在这张表内成立。仓库根目录的 `bench_test.go` 跑同样的 mie 两档，绝对数低 10–20%（请求构造与 writer 细节不同），只用于本仓库的回归跟踪。
+- 三列都关闭访问日志：`mie` 用 `slog.New(slog.DiscardHandler)`（`Enabled` 恒 false，框架零日志开销），huma 与 fursy 本来就不内置访问日志。mie 开箱配置（`TextHandler(io.Discard)` 开在 `LevelTrace`，日志真格式化一遍再丢字节、不付 `write(2)`）只在 `bench_test.go` 里跟踪，不进对比表——见 §3 末尾。
+- 路由地板：同一进程里给每个路由库注册单条路由 + 一次 `WriteString`，不含绑定与 JSON，用来把「路由层」从「框架层」里减出来。
 - 三个场景，payload 相同（8 字段 JSON，约 120 字节）：
   1. `GET /hello`，`IN = struct{}`，只测路由 + 收尾。
   2. `POST /json`，JSON body 解到 8 字段 struct。
   3. `POST /full?page=3&sort=name` + `X-Tag` + `Cookie: sid=abc`，同时覆盖 body、query、header、cookie。
-- 对照组：huma v2.40.0（humago 适配 `http.ServeMux`）、fuego v0.21.0、gapi v0.0.0-20260703124147（alpha）。
-- 跨库对照代码在仓库外 `../benchcmp`（`replace github.com/baagod/mie => ../mux`），避免把参照库依赖带进本仓库；本仓库根目录的 `bench_test.go` 提供 mie 侧基准。
+- 对照组：huma v2.40.0（humago 适配 `http.ServeMux`）、fursy v0.7.0（自研 radix）。跨库对照代码在仓库外 `../benchcmp`，避免把参照库依赖带进本仓库。
 
 ## 2. 结果
 
 单位：ns/op，括号内为 B/op 与 allocs/op。
 
-| 场景 | mie（默认配置） | mie（关闭访问日志） | huma | fuego | gapi |
-|---|---|---|---|---|---|
-| 空 GET | 3137（755 / 12） | 1489（673 / 11） | 1340（280 / 9） | 4512（962 / 33） | 1016（569 / 8） |
-| JSON body | 6813（2357 / 26） | 5148（2270 / 25） | 2109（593 / 15） | 9644（2481 / 50） | 3210（1217 / 26） |
-| body + 四种位置来源 | 8464（3333 / 34） | 6210（3245 / 33） | 3271（1067 / 22） | 13188（2936 / 54） | 4666（2186 / 34） |
+| 场景 | mie | huma | fursy |
+|---|---|---|---|
+| 空 GET | 1017（465 / 8） | 1315（280 / 9） | 410（42 / 4） |
+| JSON body | 3936（1575 / 17） | 2130（593 / 15） | 2713（907 / 13） |
+| body + 四种位置来源 | 4195（1776 / 19） | 3148（1066 / 22） | 3515（1542 / 19） |
 
-“关闭访问日志”是通过 `slog.HandlerOptions{Level: slog.LevelError}` 让访问日志的 `Enabled` 为 false 实现的，代码未改。现在访问日志记在 `LevelTrace`（`slog.LevelDebug - 4`），所以把 Logger 设在 `slog.LevelInfo` 也能只静默访问日志、保留业务日志。
+路由地板（单条路由 + 一次 `WriteString`）：`http.ServeMux` 129（8 / 1）、chi v5.5.0 362（376 / 3）、fursy 179（24 / 2）。
+
+三列同一天、同一 harness、都关闭访问日志，可以直接比。
 
 ## 3. 怎么读
 
-- 默认配置下 mie 比 huma 慢 2.3–3.2 倍，其中 1.6–3.3µs 来自每条请求一行的访问日志（`slog.TextHandler` 输出 7 个属性）；huma、fuego、gapi 默认都不记访问日志。访问日志现在记在 `LevelTrace`，把 Logger 设在 `slog.LevelInfo` 即可静默它、保留业务日志。
-- 关掉日志后：空 GET 与 huma 只差 11%（1489 vs 1340），JSON 差 2.4 倍，混合来源差 1.9 倍。
-- 与 gapi 同档（空 GET 1.5µs vs 1.0µs，JSON 5.1 vs 3.2，混合 6.2 vs 4.7）。
-- 全面快于 fuego：约 3.0× / 1.9× / 2.1×，分配数约为其一半（11 vs 33）。
-- 分配是主要短板：空 GET 11 次对 huma 9 次、gapi 8 次；JSON 路径 25 次对 huma 15 次。
+- 先减地板（各自耗时 − 各自路由地板）：mie 888 / 3807 / 4066ns，huma 1186 / 2001 / 3019ns，fursy 231 / 2534 / 3336ns。这组数才是「框架层」的对比：mie 的空 GET 比 huma 省 25%，比 fursy 多 3.8 倍。
+- 端到端（含路由）：空 GET 比 huma 快 23%、比 fursy 慢 2.5 倍；JSON body 慢 huma 1.85 倍、慢 fursy 1.45 倍；四种来源慢 huma 1.33 倍、慢 fursy 1.19 倍。来源越多差距越小——说明差距集中在空请求的固定开销（ctx 建立、收尾、响应编码），不在绑定本身。
+- 分配：8 / 17 / 19 次对 huma 9 / 15 / 22、fursy 4 / 13 / 19。字节方向相反：465 / 1575 / 1776B 对 huma 280 / 593 / 1066B，其中约 310B 来自 `context.WithValue` 挂 `Ctx` 与 `Request` 副本。
+- 开箱价（`LevelTrace`，日志真格式化一遍）：空 GET 2701、JSON 5682、四种来源 6261ns，比关日志多付 1.6–1.8µs。它不属于对比列，因为 huma 与 fursy 都不内置访问日志；这组数只在 `bench_test.go` 与 §5 的默认级别决策里用。
 
 ## 4. 差距拆解（JSON 路径）
 
-- 裸 `json.Unmarshal` 到 8 字段 struct：0.85µs / 0 分配（`encoding/json/v2`）。
-- `io.ReadAll` + `Unmarshal`：1.05µs / 2 分配。
-- mie 整条 5.15µs → 框架自身约 4.1µs；huma 同路径框架开销约 1.26µs。
-- 分配热点的 `pprof -sample_index=alloc_objects` 排序：`newCtx` 6 次（`Ctx`、`store` map、`ResponseWriter`、`context.WithValue`、`Request` 副本、hex traceid）、`mime.ParseMediaType` 2 次、响应头 `Set`/`Add` 各 1 次、`Ctx.Body` 1 次、`Ctx.Set` 1 次。
+- 裸 `json.Unmarshal` 到 8 字段 struct：0.85µs / 0 分配（`encoding/json/v2`），约 JSON 场景 3936ns 的 22%。
+- 框架侧每请求分配（关访问日志，`pprof -sample_index=alloc_space`）：`Request.WithContext` 310B、`context.WithValue` 48B、hex traceid 35B、响应头 `Set`/`Add` 各 16/14B、`bytes.Clone` 13B、`ServeHTTP` 里 `var err error` 被 noMatch 闭包捕获而逃逸 16B。
+- 输入侧：`io.ReadAll` 501B（body 只有 96B）、`mime.ParseMediaType` 82B、`http.MaxBytesReader` 65B。
+- 来源侧：`url.ParseQuery` 380B、`readCookies` 212B（单个 cookie）。
 
 ## 5. 待办优化
 
 按收益/风险排序，每项可独立提交并附前后数据。
 
-1. 访问日志默认降级（已实施）：`logAccess` 先判 `Enabled` 再构造属性，访问日志改记在 `LevelTrace`，默认 Logger 开在这一档，开箱仍全量可见；把 Logger 设在 `slog.LevelDebug` 只剩业务 debug、设在 `slog.LevelInfo` 连访问日志静默。同样只测空 GET：默认档 2886–2968ns / 753B / 13 allocs，设 Info 后 1647ns / 657B / 10 allocs。非标准级别（`-8`）在 `TextHandler` 中多 2 次分配（`Level.String()` 拼 `DEBUG-4`），时间无可测差异。
-2. `mime.ParseMediaType` 只解析一次：`ServeHTTP` 解析后存进 `Ctx`，`BindBody` 复用。约 −200ns、−1 分配。
-3. `store` 懒分配（已实施）：首次 `Set` 才 `make` map，`Get`/`Bind` 在 `nil` map 上读，只读 handler 不分配。
-4. 去掉 `context.WithValue`：`Ctx` 已实现 `context.Context`，直接在 `req.WithContext(c)` 上挂载，但需在 `Ctx` 里保存 parent context 兜底 `Value`。−1 分配。
-5. traceid 懒生成：到第一次 `TraceID()` 或写日志时再生成。−1 分配。
-6. 不建议现在做：`Ctx` + `ResponseWriter` 池化，−2 分配，但要处理 map/chain 重置与生命周期，风险大于收益。
+1. `mime.ParseMediaType` 只解析一次：`ServeHTTP` 解析后存进 `Ctx`，`BindBody` 复用。约 −200ns、−1 分配。
+2. 去掉 `context.WithValue`：`Ctx` 已实现 `context.Context`，直接在 `req.WithContext(c)` 上挂载，但需在 `Ctx` 里保存 parent context 兜底 `Value`。−1 分配、−310B。
+3. traceid 懒生成：到第一次 `TraceID()` 或写日志时再生成，尤其在没有访问日志时。−1 分配、−35B。
+4. 默认访问日志级别：现在是 `LevelTrace`，改 `LevelInfo` 只静默成功请求（§3 的 1.6µs），4xx/5xx 照记。
 
 ## 6. 复现
 
 ```bash
-# 本仓库：mie 三个基准
+# 本仓库：三段负载 × 两档 Logger（开箱 / 无访问日志），共六个基准
 go test -run '^$' -bench . -benchmem -count=5 .
 
-# 跨库对照（网络受限时用镜像与 GOSUMDB=off）
+# 跨库对照：三列 + 路由地板
 cd ../benchcmp
-GOPROXY=https://goproxy.cn,direct GOSUMDB=off go test -run '^$' -bench . -benchmem -count=3
+GOPROXY=https://goproxy.cn,direct GOSUMDB=off go test -run '^$' -bench . -benchmem -count=5
 ```
 
 ## 7. 边界与未测
 
-- 全程 `nopWriter`，没有网络与 TLS；真实请求中 1.5µs 约占 1ms 总耗时的 0.15%，差距会被 RTT 摊薄。
-- 未跑 `-cpu=1/8/32`，未用 benchstat 做显著性检验。
-- fuego 只能用发布 tag（v0.21.0）；`refs/http/fuego@main` 与它相差 20 个文件，性能量级一致，不做逐行等价声明。
-- gapi 为 alpha 版本，其 API 与性能都可能变化。
+- 全程 `nopWriter`，没有网络与 TLS；真实请求中这 1µs 量级的差距会被 RTT 摊薄（约占 1ms 总耗时的 0.1%）。
+- 未跑 `-cpu=1/8/32`，未用 benchstat 做显著性检验；同机噪声较大（同一基准重复跑可差 5–10%）。
+- fursy 用发布 tag v0.7.0（radix 自研路由）。它的 `Box` 只把 body 交给内部 `binding`，query/header/cookie 要在处理器里手读；mie 与 huma 由 struct tag 驱动。三列断言的字段相同（`page`、`sid`），但绑定工作量略有差异。
+- fursy 的 `GET /hello` 不绑定任何来源，其路由地板也是三者里最低的 179ns，空 GET 的差距被这两点放大。
