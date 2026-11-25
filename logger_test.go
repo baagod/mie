@@ -182,6 +182,9 @@ func TestNewDefaultsLogger(t *testing.T) {
 	if r.config.Logger == nil {
 		t.Fatal("New 应填入默认 Logger")
 	}
+	if !r.config.Logger.Enabled(context.Background(), LevelTrace) {
+		t.Fatal("默认 Logger 应开在 LevelTrace")
+	}
 
 	l, _ := testLogger()
 	r = New(Config{Logger: l})
@@ -225,21 +228,6 @@ func TestAccessLogCoversCanonicalRedirect(t *testing.T) {
 	}
 	if out := buf.String(); !strings.Contains(out, "level=DEBUG-4") {
 		t.Fatalf("日志 = %q，want level=DEBUG-4", out)
-	}
-}
-
-// 锁定：Ctx 没有 App 时，Log 不 panic，退回框架自己的 logger。
-func TestLogWithoutAppFallsBackToDefault(t *testing.T) {
-	var buf bytes.Buffer
-	prev := logger
-	logger = slog.New(slog.NewTextHandler(&buf, nil))
-	t.Cleanup(func() { logger = prev })
-
-	c := &Ctx{R: httptest.NewRequest(http.MethodGet, "/orphan", nil)}
-	c.LogInfo("orphan log")
-
-	if !strings.Contains(buf.String(), "orphan log") {
-		t.Fatalf("日志 = %q，缺少 orphan log", buf.String())
 	}
 }
 

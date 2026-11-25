@@ -71,7 +71,7 @@ func New(cfg ...Config) *App {
 	}
 
 	if c.Logger == nil {
-		c.Logger = logger
+		c.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: LevelTrace}))
 	}
 
 	if c.MaxBodyBytes == 0 {

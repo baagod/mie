@@ -10,6 +10,8 @@ mie 的用户可见变更记录。格式参考 [Keep a Changelog](https://keepac
 
 **请求上下文改为复用。** `Ctx` 与 `ResponseWriter` 从 `sync.Pool` 取用，请求结束（含 panic）时清零并放回。处理器不得把 `*Ctx` 或其派生引用带出请求生命周期；跨请求持有会读到后续请求的状态。
 
+**`Ctx.Log` 不再有包级兜底。** 包级 `logger` 变量删除，默认 Logger 在 `New` 里就地构造（`TextHandler(os.Stderr)`，仍开在 `LevelTrace`），零值配置的输出不变。没有 App 的 `Ctx` 调 `Log`，从原来的静默写 stderr 改为 nil deref panic。
+
 ### Fixed
 
 **嵌套值嵌入不再静默拷贝上下文。** `type Inner struct{ Ctx }` + `type Outer struct{ *Inner }` 这类写法仍能通过编译，但工厂返回的 `*Outer` 持有的是 `Ctx` 的拷贝。现在首次用到上下文时会校验 `mieCtx()` 是否指回本次请求的 `*Ctx`，不等（包括未填 `Ctx` 字段的 nil 指针）就 panic `mie: WithContext factory returned nil or a *C with wrong *Ctx`，不再让链状态静默分叉。

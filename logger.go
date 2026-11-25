@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
 	"time"
 )
 
@@ -12,10 +11,6 @@ import (
 // 默认 Logger 开在这一档，开箱就能看到访问日志；Handler 调到 Debug 只剩用户自己的日志，
 // 调到 Info 连访问日志也静默。
 const LevelTrace = slog.LevelDebug - 4
-
-// logger 是包级兜底 Logger：New 用它填充 Config.Logger 的零值，没有 App 的 Ctx 也用它。
-// 不跟随 slog.Default()，避免应用的全局配置影响框架输出。
-var logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: LevelTrace}))
 
 // logAccess 每个请求调用一次，按最终状态码与是否带错误分级写出访问日志。
 // 正常请求记在 LevelTrace，不跟用户自己的 Debug 日志抢同一档。
@@ -58,12 +53,8 @@ func (c *Ctx) logAccess(err error, panicked bool) {
 	c.app.config.Logger.LogAttrs(c, level, "access", attrs...)
 }
 
-// Log 是框架日志的统一出口，落到 Config.Logger；没有 App 的 Ctx 退回包级 logger。
+// Log 是框架日志的统一出口，落到 Config.Logger。
 func (c *Ctx) Log(level slog.Level, msg string, args ...any) {
-	if c.app == nil {
-		logger.Log(c, level, msg, args...)
-		return
-	}
 	c.app.config.Logger.Log(c, level, msg, args...)
 }
 
