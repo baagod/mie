@@ -48,7 +48,6 @@ type Ctx struct {
 }
 
 // newCtx 从池中取上下文（没有则新建），并装上本次请求。
-// TraceID 在 reset 里生成 32 位十六进制随机值；需要接入自己的追踪体系时用 SetTraceID 覆盖。
 func newCtx(w http.ResponseWriter, req *http.Request, a *App) *Ctx {
 	c, _ := a.pool.Get().(*Ctx)
 	if c == nil {
@@ -71,14 +70,9 @@ func (c *Ctx) release() *Ctx {
 
 // reset 给上下文装上本次请求的值；复用对象在归还时已由 release 清零。
 func (c *Ctx) reset(w http.ResponseWriter, req *http.Request, a *App) {
-	var b [16]byte
-	binary.LittleEndian.PutUint64(b[:8], rand.Uint64())
-	binary.LittleEndian.PutUint64(b[8:], rand.Uint64())
-
 	c.app = a
 	c.index = -1
 	c.start = time.Now()
-	c.traceid = hex.EncodeToString(b[:])
 	c.R = req
 	c.W.w = w
 }
@@ -123,8 +117,16 @@ func (c *Ctx) SetTraceID(id string) {
 	c.traceid = id
 }
 
-// TraceID 返回当前请求的追踪 ID。
-func (c *Ctx) TraceID() string { return c.traceid }
+// TraceID 返回当前请求的追踪 ID
+func (c *Ctx) TraceID() string {
+	if c.traceid == "" {
+		var b [16]byte
+		binary.LittleEndian.PutUint64(b[:8], rand.Uint64())
+		binary.LittleEndian.PutUint64(b[8:], rand.Uint64())
+		c.traceid = hex.EncodeToString(b[:])
+	}
+	return c.traceid
+}
 
 // IsCanceled 判断请求是否因客户端取消而结束；不覆盖 deadline 超时。
 func (c *Ctx) IsCanceled() bool { return errors.Is(c.R.Context().Err(), context.Canceled) }

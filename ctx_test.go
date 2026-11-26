@@ -91,6 +91,28 @@ func TestSetTraceID(t *testing.T) {
 	}
 }
 
+// 锁定：TraceID 首次读取时生成并缓存，同一请求内两次读取必须是同一个值。
+func TestTraceIDStableWithinRequest(t *testing.T) {
+	r := New()
+	var first, second string
+	r.Get("/trace", func(c *Ctx, _ struct{}) (struct{}, error) {
+		if c.traceid != "" {
+			t.Fatalf("traceid 应在首次读取时才生成，进入处理器时 = %q", c.traceid)
+		}
+
+		first = c.TraceID()
+		second = c.TraceID()
+
+		return struct{}{}, nil
+	})
+
+	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/trace", nil))
+
+	if first != second || len(first) != 32 {
+		t.Fatalf("TraceID = %q / %q, want 32 位且两次相同", first, second)
+	}
+}
+
 // 锁定：Get 按类型读回 Set 写入的值；未设置或类型不符时返回零值，不 panic。
 func TestCtxGet(t *testing.T) {
 	type user struct{ ID int }
