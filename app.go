@@ -32,8 +32,7 @@ type Config struct {
 	// 接管时 Content-Type 已是 text/plain，要别的类型自行覆盖；缺省保留 net/http 的 404/405。
 	NoMatchHandler func(c *Ctx) error
 
-	// Logger 是访问日志与框架日志的落点，nil 时写 stderr。
-	// 默认开在 LevelTrace：访问日志可见；Handler 调到 Debug 只剩自己的日志，调到 Info 则全部静默。
+	// Logger 是访问日志与框架日志的落点，默认开 LevelTrace。nil 时写 stderr。
 	Logger *slog.Logger
 
 	// Codecs 声明可提供的格式与优先级；零值只提供内置 JSON、XML。

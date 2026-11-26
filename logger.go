@@ -7,15 +7,11 @@ import (
 	"time"
 )
 
-// LevelTrace 是访问日志的级别，比 Debug 更低一档。
-// 默认 Logger 开在这一档，开箱就能看到访问日志；Handler 调到 Debug 只剩用户自己的日志，
-// 调到 Info 连访问日志也静默。
+// LevelTrace 是访问日志的级别，比 Debug 低一档。
 const LevelTrace = slog.LevelDebug - 4
 
-// logAccess 每个请求调用一次，按最终状态码与是否带错误分级写出访问日志。
-// 正常请求记在 LevelTrace，不跟用户自己的 Debug 日志抢同一档。
+// logAccess 每个请求调用一次，按状态码分级写访问日志。
 // Hijack 后 StatusCode 为 0；panicked 表示响应已发出后 panic，状态不可信但必须留下一条。
-// 客户端中途断开时状态记 499，按客户端行为算 Info。
 func (c *Ctx) logAccess(err error, panicked bool) {
 	level := LevelTrace
 	status := c.StatusCode()
@@ -23,8 +19,13 @@ func (c *Ctx) logAccess(err error, panicked bool) {
 	switch {
 	case panicked || status >= 500:
 		level = slog.LevelError
-	case status == 0, status == http.StatusNotFound, status == http.StatusMethodNotAllowed, status == Status499ClientClosedRequest:
+	case status == 0, status == Status499ClientClosedRequest:
 		level = slog.LevelInfo
+	case status == http.StatusNotFound, status == http.StatusMethodNotAllowed:
+		// 命中路由的 404/405 是处理器自己判的失败，升到 Info；没命中的留在 LevelTrace。
+		if c.Pattern() != "" {
+			level = slog.LevelInfo
+		}
 	case status >= 400:
 		level = slog.LevelWarn
 	case err != nil:

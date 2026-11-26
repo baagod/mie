@@ -72,9 +72,21 @@ func TestAccessLogWritesRecord(t *testing.T) {
 		},
 		{
 			// 未命中路由时不经过中间件，traceid 只能由框架生成。
+			// 这一档记在 LevelTrace，Info 下静默，见 TestAccessLogSilentOnRouteMiss。
 			name: "unmatched",
 			path: "/missing",
-			want: []string{"level=INFO", "msg=access", "status=404", "path=/missing", "latency=", "traceid=", "ip=192.0.2.1"},
+			want: []string{"level=DEBUG-4", "msg=access", "status=404", "path=/missing", "latency=", "traceid=", "ip=192.0.2.1"},
+		},
+		{
+			// 路由命中、处理器自己返回 404：不算「调用方拿到默认错误体」，仍记在 Info。
+			name:    "business 404",
+			pattern: "/user/{id}",
+			path:    "/user/42",
+			handler: func(c *Ctx, _ struct{}) (struct{}, error) {
+				c.Status(http.StatusNotFound)
+				return struct{}{}, nil
+			},
+			want: []string{"level=INFO", "msg=access", "status=404", "pattern=/user/{id}", "traceid=trace-1"},
 		},
 		{
 			name:    "panic",
@@ -114,6 +126,22 @@ func TestAccessLogWritesRecord(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// 锁定：路由没命中（404）与方法不对（405）不算需要留痕的请求，Info 下不写访问日志。
+func TestAccessLogSilentOnRouteMiss(t *testing.T) {
+	var buf syncBuffer
+	l := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	r := New(Config{Logger: l})
+	r.Get("/only-get", func(*Ctx, struct{}) (struct{}, error) { return struct{}{}, nil })
+
+	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/missing", nil))
+	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/only-get", nil))
+
+	if out := buf.String(); out != "" {
+		t.Fatalf("404/405 不应写访问日志，实际 = %q", out)
 	}
 }
 

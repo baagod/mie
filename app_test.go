@@ -292,7 +292,8 @@ func TestNoMatchHandlerAccessLog(t *testing.T) {
 	if n := strings.Count(logs, "msg=access"); n != 2 {
 		t.Fatalf("access logs = %d, want 2\n%s", n, logs)
 	}
-	for _, want := range []string{"level=INFO", "status=405", "status=404"} {
+	// 钩子接管后的 404/405 与框架自己的 404/405 同档：Trace 下可见，Info 下静默。
+	for _, want := range []string{"level=DEBUG-4", "status=405", "status=404"} {
 		if !strings.Contains(logs, want) {
 			t.Fatalf("logs missing %q:\n%s", want, logs)
 		}

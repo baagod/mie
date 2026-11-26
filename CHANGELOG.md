@@ -14,6 +14,8 @@ mie 的用户可见变更记录。格式参考 [Keep a Changelog](https://keepac
 
 **路由派发改由注册进 `ServeMux` 的入口交回。** 注册期把处理器链装进注册给 `ServeMux` 的闭包，它被调用（即命中）时把链写到 writer，`App.ServeHTTP` 据此派发。`Ctx` 因此不再塞进 request context：`Ctx.R` 就是原请求本身，`Request.WithContext` 与 `context.WithValue` 的两笔分配消失（空 GET 465B/8 次 → 81B/5 次）。`ServeMux` 亲自处理的 404/405 与规范化重定向不经过这个入口，仍走原路径。已知限制：`GODEBUG=httpmuxgo121=1` 下旧 mux 不解析「方法 + 路径」写法，全站路由命中不了——这在此改动之前就成立，不是本次引入。
 
+**路由没命中的 404/405 降为 `LevelTrace`，`Info` 档下不再写访问日志。** 这两类以前记在 `LevelInfo`，与失败请求混在一起，路由被扫描器刷时尤其吵。现在与正常请求同档：默认配置（`LevelTrace`）照旧看得到，`Handler` 调到 `Info` 就静默。命中路由后处理器自己返回的 404/405 仍按失败记在 `Info`；客户端中止（499）同理。
+
 ### Fixed
 
 **嵌套值嵌入不再静默拷贝上下文。** `type Inner struct{ Ctx }` + `type Outer struct{ *Inner }` 这类写法仍能通过编译，但工厂返回的 `*Outer` 持有的是 `Ctx` 的拷贝。现在首次用到上下文时会校验 `mieCtx()` 是否指回本次请求的 `*Ctx`，不等（包括未填 `Ctx` 字段的 nil 指针）就 panic `mie: WithContext factory returned nil or a *C with wrong *Ctx`，不再让链状态静默分叉。
