@@ -462,3 +462,26 @@ func TestBindBodyUsesConfiguredDecoder(t *testing.T) {
 		t.Fatalf("status/body = %d/%q, want 200 with decoded body", rec.Code, rec.Body.String())
 	}
 }
+
+// 中间件改写请求的 Content-Type 后，body 必须按改写后的类型解码。
+func TestBindSeesContentTypeRewrittenByMiddleware(t *testing.T) {
+	l, _ := testLogger()
+	r := New(Config{Logger: l})
+	r.Use(He(func(c *Ctx, _ struct{}) error {
+		if strings.HasPrefix(c.HeaderGet(HeaderContentType), "text/plain") {
+			c.R.Header.Set(HeaderContentType, "application/json")
+		}
+		return c.Next()
+	}))
+	r.Post("/rewrite", func(c *Ctx, in *bodyIn) (string, error) { return in.Name, nil })
+
+	req := httptest.NewRequest(http.MethodPost, "/rewrite", strings.NewReader(`{"name":"x"}`))
+	req.Header.Set(HeaderContentType, "text/plain")
+	req.Header.Set(HeaderAccept, MIMEJSON)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != `"x"` {
+		t.Fatalf("status/body = %d/%q, want 200 with \"x\"", rec.Code, rec.Body.String())
+	}
+}

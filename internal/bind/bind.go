@@ -3,9 +3,7 @@ package bind
 import (
 	"encoding"
 	"errors"
-	"mime"
 	"mime/multipart"
-	"net/http"
 	"reflect"
 	"slices"
 	"strconv"
@@ -30,15 +28,6 @@ func Parse[T any](s []string) (v T, err error) {
 		return zero, err
 	}
 	return
-}
-
-// ParseForm 解析表单请求体：multipart 的值进 PostForm、文件进 MultipartForm，其余按 urlencoded 解析。
-// FormCache.Form 调用；测试也直接调用。
-func ParseForm(r *http.Request) error {
-	if ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); ct == "multipart/form-data" {
-		return r.ParseMultipartForm(multipartMemory)
-	}
-	return r.ParseForm()
 }
 
 // ParseFile 从已解析的 multipart 表单取文件字段并解析成 T。

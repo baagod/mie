@@ -16,6 +16,8 @@ mie 的用户可见变更记录。格式参考 [Keep a Changelog](https://keepac
 
 **路由没命中的 404/405 降为 `LevelTrace`，`Info` 档下不再写访问日志。** 这两类以前记在 `LevelInfo`，与失败请求混在一起，路由被扫描器刷时尤其吵。现在与正常请求同档：默认配置（`LevelTrace`）照旧看得到，`Handler` 调到 `Info` 就静默。命中路由后处理器自己返回的 404/405 仍按失败记在 `Info`；客户端中止（499）同理。
 
+**请求的 `Content-Type` 每请求只解析一次。** `Ctx.ContentType` 增加可选参数：`ContentType()` 仍返回原始头，`ContentType(true)` 返回不含参数的媒体类型。解析结果按原始头缓存，中间件改写请求头后会重新解析；`App.ServeHTTP` 的 body 上限判断、`BindBody` 与 `Ctx.Form` 共用这一次解析，JSON 与多来源请求各少一次 `mime.ParseMediaType`（少 48B / 1 次分配），空 GET 不变。
+
 ### Fixed
 
 **嵌套值嵌入不再静默拷贝上下文。** `type Inner struct{ Ctx }` + `type Outer struct{ *Inner }` 这类写法仍能通过编译，但工厂返回的 `*Outer` 持有的是 `Ctx` 的拷贝。现在首次用到上下文时会校验 `mieCtx()` 是否指回本次请求的 `*Ctx`，不等（包括未填 `Ctx` 字段的 nil 指针）就 panic `mie: WithContext factory returned nil or a *C with wrong *Ctx`，不再让链状态静默分叉。

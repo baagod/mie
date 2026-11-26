@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"github.com/baagod/mie/internal/xslices"
 	"log/slog"
-	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -84,14 +83,16 @@ func New(cfg ...Config) *App {
 	return a
 }
 
-func (a *App) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	if req.Body != nil && req.Body != http.NoBody && a.config.MaxBodyBytes > 0 {
-		if ct, _, _ := mime.ParseMediaType(req.Header.Get(HeaderContentType)); ct != MIMEMultipartForm {
-			req.Body = http.MaxBytesReader(w, req.Body, a.config.MaxBodyBytes)
+func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	c := newCtx(w, r, a)
+
+	// multipart 的文件大小由上传路由自己限制，这里只包其余请求。
+	// 传原始 w 而不是 c.W：超出上限时 MaxBytesReader 会借此标记连接不可复用。
+	if r.Body != nil && r.Body != http.NoBody && a.config.MaxBodyBytes > 0 {
+		if c.ContentType(true) != MIMEMultipartForm {
+			c.R.Body = http.MaxBytesReader(w, c.R.Body, a.config.MaxBodyBytes)
 		}
 	}
-
-	c := newCtx(w, req, a)
 
 	defer func() {
 		// handlePanic 可能重抛（如 ErrAbortHandler），用内层 defer 保证一定归还。

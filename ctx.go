@@ -44,7 +44,10 @@ type Ctx struct {
 	traceid string
 	start   time.Time
 	store   map[any]any // 请求级键值：Body/Bind 缓存与 Set 写入的值
-	form    bind.FormCache
+
+	form  bind.FormCache
+	ct    string // ContentType(true) 的解析结果
+	ctRaw string // 上次解析用的原始头，头被改写时据此重解析
 }
 
 // newCtx 从池中取上下文（没有则新建），并装上本次请求。
@@ -152,26 +155,10 @@ func (c *Ctx) Param(name string) string {
 	return c.R.PathValue(name)
 }
 
-// Form 取参数并解析成 T；同名 query 优先，未命中时读取并消费 body（框架不还原 c.R.Body），
-// 缺失或解析失败返回零值。T 为 *multipart.FileHeader（或其切片）时不查 query，改取上传文件，
-// multipart 同样在这条路径解析。T 可为标量、TextUnmarshaler 或它们的切片/数组/指针；元素层再套指针不支持。
+// Form 把同名参数解析成 T：先查 query，未命中再读 body（会消费 c.R.Body），失败返回零值。
+// 上传文件也走这条路径；支持的 T 与多值规则见 docs/design-handler.md。
 func (c *Ctx) Form[T any](name string) (v T) {
-	isFile := bind.IsFile[T]()
-	if !isFile {
-		q := c.form.Query(c.R)
-		if ss, ok := q[name]; ok {
-			v, _ = bind.Parse[T](ss)
-			return
-		}
-	}
-
-	p := c.form.Form(c.R)
-	if isFile {
-		v, _ = bind.ParseFile[T](c.R.MultipartForm, name)
-		return
-	}
-
-	v, _ = bind.Parse[T](p[name])
+	v, _ = c.form.ContentType(c.ContentType(true)).Get[T](c.R, name)
 	return
 }
 
@@ -204,9 +191,19 @@ func (c *Ctx) Type(value string) *Ctx {
 	return c
 }
 
-// ContentType 返回请求头的内容类型
-func (c *Ctx) ContentType() string {
-	return c.HeaderGet(HeaderContentType)
+// ContentType 返回 Content-Type 头；parsed 为 true 时返回解析后的媒体类型（不含参数）。
+// 解析结果按原始头缓存，头被改写时会重新解析。
+func (c *Ctx) ContentType(parsed ...bool) string {
+	if len(parsed) == 0 || !parsed[0] {
+		return c.HeaderGet(HeaderContentType)
+	}
+
+	if ct := c.HeaderGet(HeaderContentType); ct != c.ctRaw {
+		c.ct, _, _ = mime.ParseMediaType(ct)
+		c.ctRaw = ct
+	}
+
+	return c.ct
 }
 
 // Status 预设响应状态码，返回 Ctx 以便链式调用。
@@ -269,7 +266,7 @@ func (c *Ctx) Bind[IN any](in *IN) (err error) {
 		return err
 	}
 
-	if err = bind.Decode(c.R, in, &c.form); err != nil {
+	if err = bind.Decode(c.R, in, c.form.ContentType(c.ContentType(true))); err != nil {
 		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			return Status413RequestEntityTooLarge()
 		}
@@ -286,12 +283,8 @@ func (c *Ctx) BindBody[IN any](in *IN) (err error) {
 		return
 	}
 
-	ct := c.ContentType()
-	if ct == "" {
-		return Status415UnsupportedMediaType()
-	}
+	ct := c.ContentType(true)
 
-	ct, _, _ = mime.ParseMediaType(ct)
 	if ct == MIMEFormUrlencoded || ct == MIMEMultipartForm {
 		return
 	}

@@ -10,35 +10,35 @@ import (
 	"github.com/baagod/mie/internal/bind"
 )
 
-func TestParseFormURLEncoded(t *testing.T) {
+func TestFormCacheURLEncoded(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("name=%E5%BC%A0%E4%B8%89"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	if err := bind.ParseForm(req); err != nil {
-		t.Fatal(err)
-	}
-	if got := req.PostForm.Get("name"); got != "张三" {
+	var cache bind.FormCache
+	if got := cache.ContentType("application/x-www-form-urlencoded").Form(req).Get("name"); got != "张三" {
 		t.Fatalf("PostForm[name] = %q, want 张三", got)
 	}
 }
 
-func TestParseFormMultipart(t *testing.T) {
+func TestFormCacheMultipart(t *testing.T) {
 	req := multipartRequest(t, map[string]string{"name": "张三"})
 
-	if err := bind.ParseForm(req); err != nil {
-		t.Fatal(err)
-	}
-	if got := req.PostForm.Get("name"); got != "张三" {
+	var cache bind.FormCache
+	if got := cache.Form(req).Get("name"); got != "张三" {
 		t.Fatalf("PostForm[name] = %q, want 张三", got)
 	}
 }
 
-func TestParseFormMalformedMultipart(t *testing.T) {
+func TestFormCacheMalformedMultipart(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("not multipart"))
 	req.Header.Set("Content-Type", "multipart/form-data; boundary=missing")
 
-	if err := bind.ParseForm(req); err == nil {
-		t.Fatal("want error for malformed multipart, got nil")
+	var cache bind.FormCache
+	if got := cache.ContentType("multipart/form-data").Form(req).Get("name"); got != "" {
+		t.Fatalf("malformed multipart PostForm[name] = %q, want empty", got)
+	}
+	if req.MultipartForm != nil {
+		t.Fatalf("malformed multipart MultipartForm = %+v, want nil", req.MultipartForm)
 	}
 }
 
@@ -46,7 +46,7 @@ func TestParseFile(t *testing.T) {
 	req := multipartWithFiles(t, "avatar", []string{"a.txt", "b.txt"})
 
 	var cache bind.FormCache
-	cache.Form(req)
+	cache.ContentType("multipart/form-data").Form(req)
 	form := req.MultipartForm
 
 	files, err := bind.ParseFile[[]*multipart.FileHeader](form, "avatar")
