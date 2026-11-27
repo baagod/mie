@@ -211,9 +211,10 @@ func (c *Ctx) HeaderGet(name string, or ...string) string {
 	return h
 }
 
-// Type 设置 Content-Type 响应头。
+// Type 设置 Content-Type 响应头。内置媒体写入的是共享切片，
+// 拿到 Header() 后要整体替换，不要就地改它的元素。
 func (c *Ctx) Type(value string) *Ctx {
-	c.W.Header()[HeaderContentType] = []string{value}
+	c.W.Header()[HeaderContentType] = mediaHeader(value)
 	return c
 }
 
@@ -428,9 +429,10 @@ func (c *Ctx) writeError(err error) {
 		status = e.Status
 	}
 
-	if h := c.W.Header(); !c.W.written {
-		h.Set(HeaderContentType, MIMETextPlainUTF8)
-		h.Set(HeaderXContentTypeOptions, MIMEContentTypeNosniff)
+	if !c.W.written {
+		wh := c.W.Header()
+		wh[HeaderContentType] = mediaPlainUTF8
+		wh[HeaderXContentTypeOptions] = mediaNosniff
 		c.W.WriteHeader(status)
 	} else {
 		c.LogWarn("mie: error after response committed", "error", err)

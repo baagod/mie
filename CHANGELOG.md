@@ -20,6 +20,8 @@ mie 的用户可见变更记录。格式参考 [Keep a Changelog](https://keepac
 
 **请求体按 `Content-Length` 预分配容量，读到 EOF 为止。** `Ctx.Body` 以前走 `io.ReadAll`：从 512B 起步、装满就换更大的块，最后再复制到一个正好大小的切片。现在声明长度不超过 4KiB 时按它预分配容量再读到 EOF，JSON 场景 1012B → 627B、四种来源 1742B → 1358B（仓库 `bench_test.go` 口径；`docs/benchmark.md` 的对比表用 `benchcmp` 口径，绝对值不同），分配次数不变。声明的长度只用来预估容量，实际读多少由 EOF 决定——解压类中间件让 body 变长时不会被截断。chunked 请求（`ContentLength` 为 -1）、超过 4KiB 或超过 `MaxBodyBytes` 的请求仍走 `io.ReadAll`，413 行为不变；4KiB 这个上限还兼作放大保护，避免停滞连接仅凭声明的长度就占住大块内存。
 
+**响应头媒体值复用预置切片。** `Ctx.Type` 与错误响应头以前每次写入 `[]string{value}` / `h.Set(...)`，现在复用进程内共享的切片（11 个内置媒体 + `nosniff`），每个响应少一次 16B 分配：空 GET 49B/4 → 33B/3、JSON 626B/12 → 609B/11。`Content-Type` 与 `X-Content-Type-Options` 的值因此是共享切片——拿到 `Header()` 后只能整体替换（`Set` 或整键赋值）；就地改元素或 `append(h[键][:0], …)` 会改到那份共享切片，污染之后所有响应。
+
 ### Fixed
 
 **嵌套值嵌入不再静默拷贝上下文。** `type Inner struct{ Ctx }` + `type Outer struct{ *Inner }` 这类写法仍能通过编译，但工厂返回的 `*Outer` 持有的是 `Ctx` 的拷贝。现在首次用到上下文时会校验 `mieCtx()` 是否指回本次请求的 `*Ctx`，不等（包括未填 `Ctx` 字段的 nil 指针）就 panic `mie: WithContext factory returned nil or a *C with wrong *Ctx`，不再让链状态静默分叉。

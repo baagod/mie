@@ -487,3 +487,42 @@ func TestCtxContextForwarding(t *testing.T) {
 		t.Fatalf("Err = %v, want context.Canceled", err)
 	}
 }
+
+func TestMediaHeaderMapsBuiltinMedia(t *testing.T) {
+	builtin := []string{
+		MIMEJSON, MIMEXML, MIMETOML, MIMEYAML, MIMEMsgPack, MIMEProtobuf,
+		MIMECBOR, MIMEBSON, MIMETextPlainUTF8, MIMETextHTMLUTF8, MIMETextPlain,
+	}
+	for _, media := range builtin {
+		got := mediaHeader(media)
+		if len(got) != 1 || got[0] != media {
+			t.Fatalf("mediaHeader(%q) = %q", media, got)
+		}
+
+		if again := mediaHeader(media); &got[0] != &again[0] {
+			t.Fatalf("mediaHeader(%q) 每次都应返回同一份共享切片", media)
+		}
+	}
+
+	if got := mediaHeader("image/png"); len(got) != 1 || got[0] != "image/png" {
+		t.Fatalf("自定义媒体 = %q, want [image/png]", got)
+	}
+}
+
+// 锁定：Type 写进响应头的是包级共享切片本身，而不是每次新分配的副本；
+// 否则每响应多付一次 16B 分配，这项改动就白做了。
+func TestTypeReusesSharedMediaSlice(t *testing.T) {
+	var header http.Header
+	r := New()
+	r.Get("/shared", func(c *Ctx, _ struct{}) (struct{}, error) {
+		c.Type(MIMEJSON)
+		header = c.W.Header()
+		return struct{}{}, nil
+	})
+
+	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/shared", nil))
+
+	if &header[HeaderContentType][0] != &mediaJSON[0] {
+		t.Fatal("Type 应写入共享切片，实际新分配了一份")
+	}
+}
