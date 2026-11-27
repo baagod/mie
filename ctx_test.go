@@ -32,6 +32,38 @@ func TestHeaderAndTypeChain(t *testing.T) {
 	}
 }
 
+// 锁定：headerVal 跳过键规范化，所以只认规范形式的常量键。
+func TestHeaderValRequiresCanonicalKey(t *testing.T) {
+	h := http.Header{}
+	h.Set(HeaderContentType, MIMEJSON)
+
+	if got := headerVal(h, HeaderContentType); got != MIMEJSON {
+		t.Fatalf("headerVal(%s) = %q, want %q", HeaderContentType, got, MIMEJSON)
+	}
+	if got := headerVal(h, "content-type"); got != "" {
+		t.Fatalf("headerVal(小写键) = %q, want 空：这个 helper 不做键规范化", got)
+	}
+}
+
+// 锁定：ContentType() 返回原始请求头，ContentType(true) 返回解析后的媒体类型。
+func TestContentTypeRawAndParsed(t *testing.T) {
+	r := New()
+	r.Get("/ct", func(c *Ctx, _ struct{}) (struct{}, error) {
+		if got := c.ContentType(); got != "application/json; charset=utf-8" {
+			t.Errorf("ContentType() = %q, want 原始请求头", got)
+		}
+		if got := c.ContentType(true); got != MIMEJSON {
+			t.Errorf("ContentType(true) = %q, want %q", got, MIMEJSON)
+		}
+
+		return struct{}{}, nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/ct", nil)
+	req.Header.Set(HeaderContentType, "application/json; charset=utf-8")
+	r.ServeHTTP(httptest.NewRecorder(), req)
+}
+
 // 锁定：TraceID 自动生成 32 位十六进制，不往响应里补头。
 func TestTraceIDGeneratedWithoutResponseHeader(t *testing.T) {
 	r := New()

@@ -689,6 +689,29 @@ func TestPanicWritesDefault500(t *testing.T) {
 	}
 }
 
+func TestPanicRecordsRequestContentType(t *testing.T) {
+	var got *Panic
+	r := New(Config{
+		RecoverHandler: func(_ *Ctx, p *Panic) error {
+			got = p
+			return nil
+		},
+	})
+	r.Post("/panic", func(*Ctx, struct{}) (struct{}, error) { panic("boom") })
+
+	req := httptest.NewRequest(http.MethodPost, "/panic", strings.NewReader(`{}`))
+	req.Header.Set(HeaderContentType, MIMEJSON)
+
+	r.ServeHTTP(httptest.NewRecorder(), req)
+
+	if got == nil {
+		t.Fatal("RecoverHandler 没有被调用")
+	}
+	if got.ContentType != MIMEJSON {
+		t.Fatalf("Panic.ContentType = %q, want %q", got.ContentType, MIMEJSON)
+	}
+}
+
 func TestPanicAfterWriteAbortsResponse(t *testing.T) {
 	l, buf := testLogger()
 	r := New(Config{Logger: l})

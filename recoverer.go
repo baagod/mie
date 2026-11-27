@@ -49,7 +49,7 @@ func NewPanic(c *Ctx, err any) *Panic {
 		Method:      c.R.Method,
 		Host:        c.R.Host,
 		Path:        c.R.URL.Path,
-		ContentType: c.R.Header.Get(HeaderContentType),
+		ContentType: headerVal(c.R.Header, HeaderContentType),
 		IP:          c.RemoteIP(),
 		TraceID:     c.TraceID(),
 		Error:       fmt.Sprint(err),

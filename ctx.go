@@ -213,7 +213,7 @@ func (c *Ctx) HeaderGet(name string, or ...string) string {
 
 // Type 设置 Content-Type 响应头。
 func (c *Ctx) Type(value string) *Ctx {
-	c.W.Header().Set(HeaderContentType, value)
+	c.W.Header()[HeaderContentType] = []string{value}
 	return c
 }
 
@@ -221,10 +221,10 @@ func (c *Ctx) Type(value string) *Ctx {
 // 解析结果按原始头缓存，头被改写时会重新解析。
 func (c *Ctx) ContentType(parsed ...bool) string {
 	if len(parsed) == 0 || !parsed[0] {
-		return c.HeaderGet(HeaderContentType)
+		return headerVal(c.R.Header, HeaderContentType)
 	}
 
-	if ct := c.HeaderGet(HeaderContentType); ct != c.ctRaw {
+	if ct := headerVal(c.R.Header, HeaderContentType); ct != c.ctRaw {
 		c.ct, _, _ = mime.ParseMediaType(ct)
 		c.ctRaw = ct
 	}
@@ -266,11 +266,12 @@ func (c *Ctx) Send(v any) error {
 	}
 
 	// 处理器自己设了响应 Content-Type：它就是声明的格式，不再按 Accept 协商。
-	media := c.W.Header().Get(HeaderContentType)
+	media := headerVal(c.W.Header(), HeaderContentType)
 	if media == "" {
 		// 要在任何 return 之前设：406 也要带，否则缓存会把一次 406 当成对所有 Accept 都成立。
-		c.W.Header().Add(HeaderVary, HeaderAccept)
-		if media = negotiate(c.HeaderGet(HeaderAccept), mediaOf(v), c.app.config.Codecs.parsed); media == "" {
+		wh := c.W.Header()
+		wh[HeaderVary] = append(wh[HeaderVary], HeaderAccept)
+		if media = negotiate(headerVal(c.R.Header, HeaderAccept), mediaOf(v), c.app.config.Codecs.parsed); media == "" {
 			return Status406NotAcceptable() // 唯一表示「没有可满足类型」的信号
 		}
 	}
