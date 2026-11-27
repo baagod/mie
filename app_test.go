@@ -854,3 +854,27 @@ func TestPanicJSONKeepsInvalidUTF8(t *testing.T) {
 		t.Fatalf("字段丢了：%+v", got)
 	}
 }
+
+// http.NewRequest 造的空 body 请求是 Body == nil（不是 http.NoBody），
+// 直接调 ServeHTTP 时必须归一，否则 c.Body() 会在 io.ReadAll 里空指针 panic。
+func TestServeHTTPNormalizesNilRequestBody(t *testing.T) {
+	r := New()
+	r.Post("/x", func(c *Ctx, _ struct{}) (int, error) {
+		b, _ := c.Body()
+		return len(b), nil
+	})
+
+	req, err := http.NewRequest(http.MethodPost, "/x", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Body != nil {
+		t.Fatalf("前提错了：http.NewRequest 的 Body 不是 nil")
+	}
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || rec.Body.String() != "0" {
+		t.Fatalf("status/body = %d/%q, want 200/\"0\"", rec.Code, rec.Body.String())
+	}
+}
