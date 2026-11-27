@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -62,6 +63,59 @@ func TestContentTypeRawAndParsed(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/ct", nil)
 	req.Header.Set(HeaderContentType, "application/json; charset=utf-8")
 	r.ServeHTTP(httptest.NewRecorder(), req)
+}
+
+// 锁定：无参数的已知媒体只查 codec 表，不调 mime.ParseMediaType（后者无条件建参数 map）。
+func TestContentTypeKnownMediaSkipsParse(t *testing.T) {
+	c := &Ctx{R: httptest.NewRequest(http.MethodGet, "/", nil), app: New()}
+	c.R.Header.Set(HeaderContentType, MIMEJSON)
+
+	n := testing.AllocsPerRun(100, func() {
+		c.ctRaw = ""
+		if got := c.ContentType(true); got != MIMEJSON {
+			t.Fatalf("ContentType(true) = %q, want %q", got, MIMEJSON)
+		}
+	})
+
+	if n != 0 {
+		t.Fatalf("ContentType(true) 对无参数已知媒体分配了 %.1f 次，期望 0", n)
+	}
+}
+
+// 锁定：解析结果按原始头缓存，带参数的媒体不会每次调用都重新解析。
+func TestContentTypeCachesParsedMediaType(t *testing.T) {
+	c := &Ctx{R: httptest.NewRequest(http.MethodGet, "/", nil), app: New()}
+	c.R.Header.Set(HeaderContentType, "application/json; charset=utf-8")
+
+	if got := c.ContentType(true); got != MIMEJSON {
+		t.Fatalf("ContentType(true) = %q, want %q", got, MIMEJSON)
+	}
+
+	n := testing.AllocsPerRun(100, func() {
+		if got := c.ContentType(true); got != MIMEJSON {
+			t.Fatalf("ContentType(true) = %q, want %q", got, MIMEJSON)
+		}
+	})
+
+	if n != 0 {
+		t.Fatalf("带参数的媒体第二次起仍分配了 %.1f 次，期望 0：缓存没生效", n)
+	}
+}
+
+// 锁定快路径的前提：codec 表里的键都是不带参数的裸媒体，ParseMediaType 会原样返回。
+// 若某个 codec 的媒体常量带上参数，ContentType(true) 会把带参数的原值当成解析结果。
+func TestContentTypeCodecEntriesAreBareMedia(t *testing.T) {
+	for media := range New().config.Codecs.entries {
+		got, _, err := mime.ParseMediaType(media)
+		if err != nil {
+			t.Errorf("codec 媒体 %q 解析失败：%v", media, err)
+			continue
+		}
+
+		if got != media {
+			t.Errorf("codec 媒体 %q 解析后是 %q：快路径会返回带参数的原值", media, got)
+		}
+	}
 }
 
 // 锁定：TraceID 自动生成 32 位十六进制，不往响应里补头。

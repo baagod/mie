@@ -226,8 +226,11 @@ func (c *Ctx) ContentType(parsed ...bool) string {
 	}
 
 	if ct := canonHeader(c.R.Header, HeaderContentType); ct != c.ctRaw {
-		c.ct, _, _ = mime.ParseMediaType(ct)
-		c.ctRaw = ct
+		c.ctRaw, c.ct = ct, ct
+		// ct 不在编码表里才解析，因为 ParseMediaType 会无条件创建一个参数 map。
+		if _, ok := c.app.config.Codecs.entries[ct]; !ok {
+			c.ct, _, _ = mime.ParseMediaType(ct)
+		}
 	}
 
 	return c.ct
