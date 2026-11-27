@@ -118,6 +118,18 @@ func TestContentTypeCodecEntriesAreBareMedia(t *testing.T) {
 	}
 }
 
+// 锁定：表里有条目但没配编解码器时查询必须报 miss，否则调用方会调用 nil 函数。
+func TestCodecLookupSkipsUnconfiguredMedia(t *testing.T) {
+	codecs := New().config.Codecs
+	if _, ok := codecs.encoder(MIMETOML); ok {
+		t.Fatal("未配置的 TOML 不该返回编码器")
+	}
+
+	if _, ok := codecs.decoder(MIMECBOR); ok {
+		t.Fatal("未配置的 CBOR 不该返回解码器")
+	}
+}
+
 // 锁定：TraceID 自动生成 32 位十六进制，不往响应里补头。
 func TestTraceIDGeneratedWithoutResponseHeader(t *testing.T) {
 	r := New()

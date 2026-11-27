@@ -444,6 +444,26 @@ func TestBindBodyUnregisteredContentTypeIsUnsupported(t *testing.T) {
 	}
 }
 
+// 表里有这个媒体名、但没配解码器时同样是 415，不能落到 nil 解码器上。
+
+func TestBindBodyUnconfiguredMediaIsUnsupported(t *testing.T) {
+	type in struct {
+		Name string `json:"name"`
+	}
+
+	r := New()
+	r.Post("/p", func(c *Ctx, v in) (string, error) { return v.Name, nil })
+
+	req := httptest.NewRequest(http.MethodPost, "/p", strings.NewReader("x"))
+	req.Header.Set(HeaderContentType, MIMECBOR)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("status = %d, want 415", rec.Code)
+	}
+}
+
 // XML 也内置解码：application/xml 的 body 默认按 XML 解析。
 
 func TestBindBodyDecodesXMLByDefault(t *testing.T) {
