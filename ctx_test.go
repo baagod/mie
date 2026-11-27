@@ -32,16 +32,16 @@ func TestHeaderAndTypeChain(t *testing.T) {
 	}
 }
 
-// 锁定：headerVal 跳过键规范化，所以只认规范形式的常量键。
-func TestHeaderValRequiresCanonicalKey(t *testing.T) {
+// 锁定：canonHeader 跳过键规范化，所以只认规范形式的常量键。
+func TestCanonHeaderRequiresCanonicalKey(t *testing.T) {
 	h := http.Header{}
 	h.Set(HeaderContentType, MIMEJSON)
 
-	if got := headerVal(h, HeaderContentType); got != MIMEJSON {
-		t.Fatalf("headerVal(%s) = %q, want %q", HeaderContentType, got, MIMEJSON)
+	if got := canonHeader(h, HeaderContentType); got != MIMEJSON {
+		t.Fatalf("canonHeader(%s) = %q, want %q", HeaderContentType, got, MIMEJSON)
 	}
-	if got := headerVal(h, "content-type"); got != "" {
-		t.Fatalf("headerVal(小写键) = %q, want 空：这个 helper 不做键规范化", got)
+	if got := canonHeader(h, "content-type"); got != "" {
+		t.Fatalf("canonHeader(小写键) = %q, want 空：这个 helper 不做键规范化", got)
 	}
 }
 
