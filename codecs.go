@@ -44,16 +44,26 @@ type Codecs struct {
 }
 
 // encoder 查媒体对应的编码器；媒体类型去掉参数并忽略大小写。
+// 先按原值查一次：协商结果多是表里的裸媒体，省掉 baseMedia 的切分与转小写。
 func (c *Codecs) encoder(media string) (Encoder, bool) {
+	if codec, ok := c.entries[media]; ok && codec.Encode != nil {
+		return codec.Encode, true
+	}
+
 	codec, ok := c.entries[baseMedia(media)]
 	if !ok || codec.Encode == nil {
 		return nil, false
 	}
+
 	return codec.Encode, true
 }
 
 // decoder 查媒体类型对应的解码器；精确媒体没有解码器时，按结构化后缀找同 top-level 的基类型媒体。
 func (c *Codecs) decoder(media string) (Decoder, bool) {
+	if codec, ok := c.entries[media]; ok && codec.Decode != nil {
+		return codec.Decode, true
+	}
+
 	media = baseMedia(media)
 	if codec, ok := c.entries[media]; ok && codec.Decode != nil {
 		return codec.Decode, true
