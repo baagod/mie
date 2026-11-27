@@ -2,6 +2,7 @@ package mie
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -256,6 +257,119 @@ func TestBodyIsCached(t *testing.T) {
 	}
 	if got := rec.Body.String(); got != "hi|hi" {
 		t.Fatalf("body = %s, want %q", got, "hi|hi")
+	}
+}
+
+func TestBodyReadsPayloadAbovePreallocLimit(t *testing.T) {
+	payload := strings.Repeat("a", preallocBody+1)
+
+	r := New()
+	r.Post("/echo", func(c *Ctx, _ struct{}) (string, error) {
+		b, err := c.Body()
+		return string(b), err
+	})
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/echo", strings.NewReader(payload)))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if rec.Body.String() != payload {
+		t.Fatalf("body length = %d, want %d", rec.Body.Len(), len(payload))
+	}
+}
+
+func TestBodyReadsPastDeclaredLength(t *testing.T) {
+	const body = "hello world"
+
+	r := New()
+	r.Post("/echo", func(c *Ctx, _ struct{}) (string, error) {
+		b, err := c.Body()
+		return string(b), err
+	})
+
+	// 模拟解压类中间件：改写后的 body 比声明长度更长，不能被截断。
+	req := httptest.NewRequest(http.MethodPost, "/echo", strings.NewReader(body))
+	req.ContentLength = 5
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Body.String(); got != body {
+		t.Fatalf("body = %q, want %q", got, body)
+	}
+}
+
+type truncatedBody struct{}
+
+func (truncatedBody) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+
+func TestBodyTruncatedConnectionIs500(t *testing.T) {
+	r := New()
+	r.Post("/echo", func(c *Ctx, _ struct{}) (int, error) {
+		b, err := c.Body()
+		return len(b), err
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/echo", truncatedBody{})
+	req.ContentLength = 10
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}
+
+func TestBodyPreallocatesDeclaredLength(t *testing.T) {
+	const body = "0123456789"
+
+	r := New()
+	var capacity int
+	r.Post("/echo", func(c *Ctx, _ struct{}) (int, error) {
+		b, err := c.Body()
+		capacity = cap(b)
+		return len(b), err
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/echo", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if want := len(body) + 1; capacity != want {
+		t.Fatalf("cap(body) = %d, want %d（按声明长度预分配，留 1 字节余量）", capacity, want)
+	}
+}
+
+func TestBodyPreallocationIgnoresOversizedDeclaredLength(t *testing.T) {
+	r := New()
+	var capacity int
+	r.Post("/echo", func(c *Ctx, _ struct{}) (string, error) {
+		b, err := c.Body()
+		capacity = cap(b)
+		return string(b), err
+	})
+
+	// 声明远大于实际：读多少由 EOF 决定，不能按谎报的长度向堆要大块内存。
+	req := httptest.NewRequest(http.MethodPost, "/echo", strings.NewReader("x"))
+	req.ContentLength = 64 << 10
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Body.String(); got != "x" {
+		t.Fatalf("body = %q, want %q", got, "x")
+	}
+	if capacity > 1<<10 {
+		t.Fatalf("cap(body) = %d，超过预分配上限后仍按声明长度分配", capacity)
 	}
 }
 

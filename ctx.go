@@ -19,6 +19,11 @@ import (
 	"github.com/baagod/mie/internal/bind"
 )
 
+// preallocBody 是按 Content-Length 预分配容量的上限：不超过它时按声明值预分配再读到 EOF，
+// 超过时退回 io.ReadAll 的渐进增长。上限同时限制放大倍数：声明长度由客户端决定，
+// 停滞连接不发送 body 也会先占住这份内存，取值须远小于默认的 MaxBodyBytes。
+const preallocBody = 4 << 10
+
 type (
 	// bodyKey 是 store 中缓存 Body 读取结果的键
 	bodyKey struct{}
@@ -87,7 +92,28 @@ func (c *Ctx) Body() (b []byte, err error) {
 		return rb.b, rb.err
 	}
 
-	if b, err = io.ReadAll(c.R.Body); err != nil {
+	maxBody := c.app.config.MaxBodyBytes
+	if n := c.R.ContentLength; n > 0 && n <= preallocBody && (maxBody <= 0 || n <= maxBody) {
+		// 按声明的长度预分配容量，读到 EOF 为止。
+		// 容量留 1 字节余量，让「长度正好」的常见情况在 EOF 处不再扩容。
+		for b = make([]byte, 0, n+1); ; {
+			if len(b) == cap(b) {
+				b = append(b, 0)[:len(b)]
+			}
+			var m int
+			m, err = c.R.Body.Read(b[len(b):cap(b)])
+			if b = b[:len(b)+m]; err != nil {
+				if err == io.EOF {
+					err = nil
+				}
+				break
+			}
+		}
+	} else {
+		b, err = io.ReadAll(c.R.Body)
+	}
+
+	if err != nil {
 		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			b, err = nil, Status413RequestEntityTooLarge("mie: request body too large")
 		}
